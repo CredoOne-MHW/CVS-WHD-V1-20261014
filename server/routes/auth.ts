@@ -1,0 +1,91 @@
+import { Router } from "express";
+import bcrypt from "bcryptjs";
+import jwt from "jsonwebtoken";
+import { z } from "zod";
+import { User, Company } from "../models";
+import { requireAuth, signToken, setAuthCookie, COOKIE, buildContext } from "../middleware/auth";
+import { logActivity } from "../middleware/activity";
+import { h, parse, HttpError } from "../lib/http";
+import { COMPANY_MODULES, SA_MODULES } from "../../shared/constants";
+
+const r = Router();
+const SA_BACKUP = "lms_sa_token";
+
+// simple in-memory throttle per instance (pair with Vercel WAF rate limiting in production)
+const attempts = new Map<string, { n: number; until: number }>();
+
+/** One login page for everyone. The account's scope decides which console opens. */
+r.post("/login", h(async (req, res) => {
+  const { email, password } = parse(z.object({ email: z.string().email(), password: z.string().min(1) }), req.body);
+  const key = `${email.toLowerCase()}|${req.headers["x-forwarded-for"] || req.socket.remoteAddress}`;
+  const a = attempts.get(key);
+  if (a && a.until > Date.now()) throw new HttpError(429, "Too many attempts. Try again in a few minutes.");
+
+  const user = await User.findOne({ email: email.toLowerCase() });
+  const ok = user && user.active && (await bcrypt.compare(password, user.passwordHash));
+  if (!ok) {
+    const n = (a?.n || 0) + 1;
+    attempts.set(key, { n, until: n >= 5 ? Date.now() + 10 * 60_000 : 0 });
+    throw new HttpError(401, "Invalid email or password");
+  }
+  attempts.delete(key);
+
+  if (user.scope === "company") {
+    const company = await Company.findById(user.companyId).lean<any>();
+    if (!company || company.deletedAt) throw new HttpError(401, "Invalid email or password");
+    if (company.status !== "active") throw new HttpError(403, "Your company account is deactivated. Contact support.");
+  }
+  user.lastLoginAt = new Date();
+  await user.save();
+  setAuthCookie(res, signToken({ uid: String(user._id), scope: user.scope as any, cid: user.companyId ? String(user.companyId) : undefined, tv: user.tokenVersion }));
+  logActivity({ scope: user.scope, companyId: user.companyId, userId: user._id, userLabel: `${user.name} <${user.email}>`, action: "Login", module: "auth", item: user.email, response: 200 });
+  res.json({ scope: user.scope, redirect: user.scope === "super" ? "/sa" : "/app" });
+}));
+
+r.post("/logout", (req, res) => {
+  res.clearCookie(COOKIE, { path: "/" });
+  res.clearCookie(SA_BACKUP, { path: "/" });
+  res.json({ ok: true });
+});
+
+r.get("/me", requireAuth, h(async (req, res) => {
+  const a = req.auth!;
+  const nav = (a.scope === "super" ? SA_MODULES : COMPANY_MODULES).filter((m) => a.perms[m.key]?.read);
+  res.json({ ...a, nav });
+}));
+
+/** Super Admin → "Force Login" into a company's admin console. The SA session is parked in a second cookie. */
+r.post("/impersonate/:companyId", requireAuth, h(async (req, res) => {
+  const a = req.auth!;
+  if (a.scope !== "super" || !a.perms.companies?.update) throw new HttpError(403, "Only Super Admin can force login");
+  const owner = await User.findOne({ companyId: req.params.companyId, isOwner: true, scope: "company" }).lean<any>();
+  if (!owner) throw new HttpError(404, "Company has no admin user");
+  res.cookie(SA_BACKUP, req.cookies[COOKIE], { httpOnly: true, secure: process.env.NODE_ENV === "production", sameSite: "lax", path: "/", maxAge: 2 * 3600 * 1000 });
+  setAuthCookie(res, signToken({ uid: String(owner._id), scope: "company", cid: String(owner.companyId), tv: owner.tokenVersion, imp: a.email }, "2h"));
+  logActivity({ scope: "super", userId: a.userId, userLabel: `${a.name} <${a.email}>`, action: "Force login", module: "companies", item: String(req.params.companyId), response: 200 });
+  logActivity({ scope: "company", companyId: owner.companyId, userId: owner._id, userLabel: `${owner.name} <${owner.email}>`, impersonatedBy: a.email, action: "Force login (by Super Admin)", module: "auth", item: owner.email, response: 200 });
+  res.json({ redirect: "/app" });
+}));
+
+r.post("/impersonate-exit", h(async (req, res) => {
+  const backup = req.cookies[SA_BACKUP];
+  if (!backup) throw new HttpError(400, "Not impersonating");
+  const payload = jwt.verify(backup, process.env.JWT_SECRET!) as any;
+  await buildContext(payload); // ensure the SA session is still valid
+  setAuthCookie(res, backup);
+  res.clearCookie(SA_BACKUP, { path: "/" });
+  res.json({ redirect: "/sa/companies" });
+}));
+
+r.post("/change-password", requireAuth, h(async (req, res) => {
+  const b = parse(z.object({ current: z.string(), next: z.string().min(8) }), req.body);
+  const user = await User.findById(req.auth!.userId);
+  if (!user || !(await bcrypt.compare(b.current, user.passwordHash))) throw new HttpError(400, "Current password is wrong");
+  user.passwordHash = await bcrypt.hash(b.next, 12);
+  user.tokenVersion += 1;
+  await user.save();
+  res.clearCookie(COOKIE, { path: "/" });
+  res.json({ ok: true });
+}));
+
+export default r;
