@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import { headers } from "next/headers";
+import { initialsIcon } from "@shared/theme";
 
 export const dynamic = "force-dynamic";
 
@@ -30,7 +31,7 @@ export async function generateMetadata(): Promise<Metadata> {
     robots: { index: true, follow: false },
     openGraph: { title, description, url, siteName: b.shortName, type: "website", images: b.logoUrl ? [{ url: b.logoUrl }] : undefined },
     twitter: { card: "summary", title, description },
-    icons: b.kind === "company" && (b as any).faviconUrl ? { icon: (b as any).faviconUrl } : undefined,
+    icons: { icon: (b as any).faviconUrl || b.logoUrl || initialsIcon(b.shortName, b.themeColor) },
     other: { "theme-color": b.themeColor },
   };
 }

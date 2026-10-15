@@ -81,7 +81,7 @@ export default function Shell({ scope, children }: { scope: "super" | "company";
       .then((m) => {
         if (m.scope !== scope) return router.replace(m.scope === "super" ? "/sa" : "/app");
         applyTheme(m.branding?.themeColor, m.branding?.accentColor);
-        setFavicon(m.branding?.faviconUrl || m.branding?.logoUrl);
+        setFavicon(m.branding?.faviconUrl || m.branding?.logoUrl, { name: m.branding?.shortName || m.companyName || "CredoOne", color: m.branding?.themeColor });
         document.title = `${m.branding?.shortName || "Leads"} · Lead Management`;
         setMe(m);
       })

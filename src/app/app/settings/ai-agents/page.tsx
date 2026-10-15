@@ -2,6 +2,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Plus, Pencil, Trash2, Upload, FileText, X, MessageSquare, Send, BarChart3 } from "lucide-react";
 import { ModelCharges, UsageModal } from "@/components/AiUsage";
+import { toText } from "@shared/text";
 import { api } from "@/lib/api";
 import { PageHeader, Btn, Modal, Field, Badge, Empty, Spinner, Confirm, useToast } from "@/components/ui";
 import { usePerm } from "@/components/Shell";
@@ -283,7 +284,8 @@ function ChatTester({ state, setState, onUsage, credits }: { state: any; setStat
     setState({ ...state, messages, input: "", busy: true });
     try {
       const r = await api(`/co/ai-agents/${state.agent._id}/chat`, { body: { messages } });
-      setState({ ...state, messages: [...messages, { role: "assistant", content: r.text }], input: "", busy: false, usage: r.usage });
+      const text = toText(r?.text);
+      setState({ ...state, messages: [...messages, { role: "assistant", content: text || "(empty reply)" }], input: "", busy: false, usage: r?.usage || null });
       onUsage();
     } catch (e: any) {
       toast("err", e.message);
@@ -297,13 +299,13 @@ function ChatTester({ state, setState, onUsage, credits }: { state: any; setStat
           {!state.messages.length && <p className="py-10 text-center text-sm text-ink-400">Ask something a customer would ask.</p>}
           {state.messages.map((m: any, i: number) => (
             <div key={i} className={`max-w-[85%] whitespace-pre-wrap rounded-2xl px-4 py-2.5 text-sm ${m.role === "user" ? "ml-auto bg-hive-700 text-white" : "bg-hive-50 text-ink-900"}`}>
-              {m.content}
+              {toText(m.content)}
             </div>
           ))}
           {state.busy && <Spinner className="h-5 w-5 text-hive-600" />}
           <div ref={end} />
         </div>
-        <p className="py-2 text-xs text-ink-400">{state.usage ? `Last reply: ${state.usage.credits} credits · ${state.usage.remaining} left` : credits ? `${credits.remaining} credits left` : ""}</p>
+        <p className="py-2 text-xs text-ink-400">{state.usage ? `Last reply: ${state.usage.credits ?? 0} credits · ${state.usage.remaining ?? "—"} left` : credits ? `${credits.remaining} credits left` : ""}</p>
         <form
           className="flex gap-2"
           onSubmit={(e) => {

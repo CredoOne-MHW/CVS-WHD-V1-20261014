@@ -88,6 +88,7 @@ Prefer one well-aimed query. Never invent numbers.`
 }
 
 export async function assistantInfo(companyId: string) {
-  const ca = await CompanyAgent.findOne({ companyId, active: true, isAssistant: true }).select("name purpose").lean<any>();
-  return ca ? { enabled: true, ready: !!ca.agentId, name: ca.name, purpose: ca.purpose } : { enabled: false, ready: false };
+  const ca = await CompanyAgent.findOne({ companyId, active: true, isAssistant: true }).select("name purpose agentId").lean<any>();
+  const model = ca?.agentId ? await AiAgent.exists({ _id: ca.agentId, active: true }) : null;
+  return ca ? { enabled: true, ready: !!model, name: ca.name, purpose: ca.purpose } : { enabled: false, ready: false };
 }
