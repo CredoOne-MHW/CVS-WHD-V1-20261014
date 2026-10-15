@@ -5,7 +5,7 @@ import { decrypt, hmacValid } from "../lib/crypto";
 import { processIntake, runEvent } from "../lib/intake";
 import { fireEvent } from "../lib/whatsapp";
 import { getObject } from "../lib/s3";
-import { requestHost, companyForHost, isPlatformHost, publicBranding, platformBranding } from "../lib/tenant";
+import { requestHost, resolveHost, baseDomain, publicBranding, platformBranding } from "../lib/tenant";
 import { LOST_STATUS, WON_STATUS } from "../../shared/constants";
 
 const r = Router();
@@ -78,11 +78,11 @@ r.post("/intake/:key", h(async (req, res) => {
 /** Which login to show for this host: the platform (Super Admin) or a company's branded login. */
 r.get("/public/branding", h(async (req, res) => {
   const host = requestHost(req);
-  const company = await companyForHost(host);
+  const t = await resolveHost(host);
   res.setHeader("Cache-Control", "public, max-age=60, stale-while-revalidate=300");
-  if (company) return res.json({ ...publicBranding(company), host });
-  if (!isPlatformHost(host)) return res.status(404).json({ error: "No workspace is set up for this address.", host });
-  res.json({ ...platformBranding(), host });
+  if (t.kind === "company") return res.json({ ...publicBranding(t.company), host });
+  if (t.kind === "platform") return res.json({ ...platformBranding(), host });
+  res.status(404).json({ error: "No workspace is set up for this address.", host, baseDomain: baseDomain() || null });
 }));
 
 /** Streams a company's logo / banner / favicon from the private S3 bucket. */

@@ -72,3 +72,70 @@ body {
     @apply text-[11px] font-bold uppercase tracking-[.14em];
   }
 }
+
+/* ── Aura light orbiting the platform logo ─────────────────────── */
+@keyframes aura-spin {
+  to {
+    transform: rotate(1turn);
+  }
+}
+@keyframes aura-spin-rev {
+  to {
+    transform: rotate(-1turn);
+  }
+}
+@keyframes aura-breathe {
+  0%,
+  100% {
+    opacity: 0.8;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1.045);
+  }
+}
+.aura-glow,
+.aura-comet,
+.aura-trail {
+  position: absolute;
+  border-radius: 9999px;
+  pointer-events: none;
+}
+/* soft wide glow band that sweeps around */
+.aura-glow {
+  inset: -4%;
+  background: conic-gradient(from 0deg, transparent 0 40%, rgba(124, 115, 255, 0.0) 45%, rgba(150, 140, 255, 0.85) 62%, rgba(255, 255, 255, 0.95) 70%, rgba(110, 200, 255, 0.85) 78%, transparent 92%);
+  filter: blur(18px);
+  -webkit-mask: radial-gradient(farthest-side, transparent calc(100% - 34px), #000 calc(100% - 30px));
+  mask: radial-gradient(farthest-side, transparent calc(100% - 34px), #000 calc(100% - 30px));
+  animation: aura-spin 7s linear infinite;
+}
+/* crisp bright comet line riding the ring */
+.aura-comet {
+  inset: 0;
+  background: conic-gradient(from 0deg, transparent 0 58%, rgba(196, 190, 255, 0.4) 70%, #ffffff 74.5%, transparent 75%);
+  -webkit-mask: radial-gradient(farthest-side, transparent calc(100% - 2.5px), #000 calc(100% - 2px));
+  mask: radial-gradient(farthest-side, transparent calc(100% - 2.5px), #000 calc(100% - 2px));
+
+  animation: aura-spin 7s linear infinite;
+}
+/* faint counter-rotating trail on an inner orbit */
+.aura-trail {
+  inset: 9%;
+  background: conic-gradient(from 180deg, transparent 0 65%, rgba(125, 211, 252, 0.55) 85%, transparent 95%);
+  -webkit-mask: radial-gradient(farthest-side, transparent calc(100% - 1.5px), #000 calc(100% - 1px));
+  mask: radial-gradient(farthest-side, transparent calc(100% - 1.5px), #000 calc(100% - 1px));
+  animation: aura-spin-rev 11s linear infinite;
+}
+.aura-breathe {
+  animation: aura-breathe 5s ease-in-out infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  .aura-glow,
+  .aura-comet,
+  .aura-trail,
+  .aura-breathe {
+    animation: none;
+  }
+}

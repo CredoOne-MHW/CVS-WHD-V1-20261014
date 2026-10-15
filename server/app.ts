@@ -2,6 +2,7 @@ import express from "express";
 import cookieParser from "cookie-parser";
 import { connectDB } from "./lib/db";
 import { errorHandler, HttpError } from "./lib/http";
+import { requestHost, isPlatformHost, platformBranding, baseDomain } from "./lib/tenant";
 import { requireAuth } from "./middleware/auth";
 import { activityLogger } from "./middleware/activity";
 import authRoutes from "./routes/auth";
@@ -30,7 +31,38 @@ export function createApp() {
   app.use(express.urlencoded({ extended: true, limit: "1mb" }));
   app.use(cookieParser());
 
-  app.get("/api/health", (_req, res) => res.json({ ok: true, time: new Date().toISOString() }));
+  // Quick deployment check: open /api/health on any address to see how it is resolved.
+  app.get("/api/health", (req, res) =>
+    res.json({
+      ok: true,
+      time: new Date().toISOString(),
+      host: requestHost(req),
+      platformHost: isPlatformHost(requestHost(req)),
+      baseDomain: process.env.APP_BASE_DOMAIN ? baseDomain() : null,
+      mongoConfigured: !!process.env.MONGODB_URI,
+      jwtConfigured: !!process.env.JWT_SECRET,
+    })
+  );
+
+  // The platform login must render even if the database is unreachable.
+  app.get("/api/public/branding", async (req, res, next) => {
+    const host = requestHost(req);
+    const platform = () => {
+      res.setHeader("Cache-Control", "public, max-age=60, stale-while-revalidate=300");
+      res.json({ ...platformBranding(), host });
+    };
+    if (isPlatformHost(host)) return platform();
+    if (!baseDomain()) {
+      // Base domain not configured: a company custom domain still resolves when the DB is up;
+      // otherwise fall back to the platform login rather than a dead end.
+      try {
+        await connectDB();
+      } catch {
+        return platform();
+      }
+    }
+    next();
+  });
 
   app.use(async (_req, _res, next) => {
     try {

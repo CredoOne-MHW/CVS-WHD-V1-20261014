@@ -7,7 +7,14 @@ import { Company } from "../models";
  *  - <slug>.<APP_BASE_DOMAIN>                         → that company
  *  - any other host                                    → company whose customDomain matches
  */
-export const baseDomain = () => (process.env.APP_BASE_DOMAIN || "").toLowerCase().replace(/^https?:\/\//, "").replace(/\/.*$/, "");
+const cleanHost = (v: string) =>
+  v.trim().replace(/^["']|["']$/g, "").trim().toLowerCase().replace(/^https?:\/\//, "").replace(/\/.*$/, "").replace(/:\d+$/, "").replace(/\.$/, "");
+
+/** Tolerates "https://", trailing slashes, quotes and spaces — common copy-paste mistakes in Vercel env. */
+export const baseDomain = () => cleanHost(process.env.APP_BASE_DOMAIN || "");
+
+/** Extra addresses that always show the platform (Super Admin) login, comma-separated. */
+const extraPlatformHosts = () => (process.env.PLATFORM_HOSTS || "").split(",").map(cleanHost).filter(Boolean);
 
 export function requestHost(req: Request) {
   const raw = String(req.headers["x-forwarded-host"] || req.headers.host || "").split(",")[0].trim().toLowerCase();
@@ -16,7 +23,23 @@ export function requestHost(req: Request) {
 
 export function isPlatformHost(host: string) {
   const base = baseDomain();
-  return !host || host === "localhost" || host === "127.0.0.1" || host.endsWith(".vercel.app") || host === base || host === `www.${base}`;
+  if (!host || host === "localhost" || host === "127.0.0.1" || host.endsWith(".vercel.app")) return true;
+  if (base && (host === base || host === `www.${base}`)) return true;
+  return extraPlatformHosts().includes(host);
+}
+
+/**
+ * platform → Super Admin login · company → that company · unknown → nothing mapped here.
+ * If APP_BASE_DOMAIN isn't configured, an address that matches no company falls back to the
+ * platform login instead of a dead end (so a fresh deployment always shows a login).
+ */
+export async function resolveHost(host: string): Promise<{ kind: "platform" } | { kind: "company"; company: any } | { kind: "unknown" }> {
+  if (isPlatformHost(host)) return { kind: "platform" };
+  const company = await companyForHost(host);
+  if (company) return { kind: "company", company };
+  const base = baseDomain();
+  if (!base) return { kind: "platform" };
+  return { kind: "unknown" };
 }
 
 const cache = new Map<string, { at: number; company: any | null }>();

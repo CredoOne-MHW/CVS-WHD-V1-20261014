@@ -31,28 +31,45 @@ interface Brand {
  */
 export default function Login() {
   const [brand, setBrand] = useState<Brand | null>(null);
-  const [missing, setMissing] = useState("");
+  const [problem, setProblem] = useState<{ kind: "missing" | "down"; host: string; base?: string | null } | null>(null);
 
   useEffect(() => {
     fetch("/api/public/branding", { credentials: "include" })
       .then(async (r) => {
-        const j = await r.json();
-        if (!r.ok) return setMissing(j.host || "this address");
+        const j = await r.json().catch(() => ({}));
+        if (r.status === 404) return setProblem({ kind: "missing", host: j.host || window.location.host, base: j.baseDomain });
+        if (!r.ok) return setProblem({ kind: "down", host: window.location.host });
         applyTheme(j.themeColor, j.accentColor);
         setFavicon(j.faviconUrl || j.logoUrl);
         document.title = j.kind === "platform" ? `${j.name} · ${j.tagline}` : `Sign in · ${j.shortName}`;
         setBrand(j);
       })
-      .catch(() => setMissing("this address"));
+      .catch(() => setProblem({ kind: "down", host: window.location.host }));
   }, []);
 
-  if (missing)
+  if (problem)
     return (
       <div className="grid min-h-screen place-items-center px-6">
-        <div className="card max-w-md p-8 text-center">
+        <div className="card max-w-lg p-8 text-center">
           <AlertTriangle className="mx-auto h-8 w-8 text-honey-500" />
-          <h1 className="mt-3 text-xl font-extrabold">No workspace here yet</h1>
-          <p className="mt-2 text-sm text-ink-500">Nothing is set up for <b>{missing}</b>. If you just mapped this domain, DNS may still be propagating — try again in a few minutes.</p>
+          {problem.kind === "missing" ? (
+            <>
+              <h1 className="mt-3 text-xl font-extrabold">No workspace here yet</h1>
+              <p className="mt-2 text-sm text-ink-500">
+                Nothing is set up for <b>{problem.host}</b>. If you just mapped this domain, DNS may still be propagating — try again in a few minutes.
+              </p>
+              {problem.base && (
+                <p className="mt-4 rounded-xl bg-hive-50 px-4 py-3 text-left text-[13px] text-ink-700">
+                  Administrator: this server’s platform address is <b className="font-mono">{problem.base}</b>. If <b className="font-mono">{problem.host}</b> should open the Super Admin login, set <span className="font-mono">APP_BASE_DOMAIN={problem.host}</span> in Vercel and redeploy.
+                </p>
+              )}
+            </>
+          ) : (
+            <>
+              <h1 className="mt-3 text-xl font-extrabold">We can’t reach the server right now</h1>
+              <p className="mt-2 text-sm text-ink-500">Please try again in a minute. If this keeps happening, check the database connection (MONGODB_URI) in Vercel.</p>
+            </>
+          )}
         </div>
       </div>
     );
@@ -88,21 +105,21 @@ function SignInForm({ subtitle, variant }: { subtitle: string; variant: "platfor
 
   return (
     <form onSubmit={submit} className="w-full">
-      <h2 className="text-[34px] font-extrabold tracking-tight text-ink-900">Sign in</h2>
+      <h2 className="text-[clamp(28px,4.2vh,34px)] font-extrabold tracking-tight text-ink-900">Sign in</h2>
       <p className="mt-1.5 text-[15px] text-ink-500">{subtitle}</p>
 
-      <label className="mt-9 block">
+      <label className="mt-[4vh] block">
         <span className="label">Email</span>
         <div className="relative">
-          {variant === "company" && <Mail className="pointer-events-none absolute left-4 top-1/2 h-4 w-4 -translate-y-1/2 text-ink-400" />}
-          <input className={`input h-[52px] rounded-2xl text-[15px] ${variant === "company" ? "pl-11" : ""}`} type="email" autoComplete="username" required value={email} onChange={(e) => setEmail(e.target.value)} placeholder={variant === "company" ? "you@company.com" : ""} />
+          <Mail className="pointer-events-none absolute left-4 top-1/2 h-4 w-4 -translate-y-1/2 text-ink-400" />
+          <input className={`input h-[52px] rounded-2xl text-[15px] pl-11`} type="email" autoComplete="username" required value={email} onChange={(e) => setEmail(e.target.value)} placeholder="you@company.com" />
         </div>
       </label>
       <label className="mt-5 block">
         <span className="label">Password</span>
         <div className="relative">
-          {variant === "company" && <LockKeyhole className="pointer-events-none absolute left-4 top-1/2 h-4 w-4 -translate-y-1/2 text-ink-400" />}
-          <input className={`input h-[52px] rounded-2xl pr-16 text-[15px] ${variant === "company" ? "pl-11" : ""}`} type={show ? "text" : "password"} autoComplete="current-password" required value={password} onChange={(e) => setPassword(e.target.value)} />
+          <LockKeyhole className="pointer-events-none absolute left-4 top-1/2 h-4 w-4 -translate-y-1/2 text-ink-400" />
+          <input className={`input h-[52px] rounded-2xl pr-16 text-[15px] pl-11`} type={show ? "text" : "password"} autoComplete="current-password" required value={password} onChange={(e) => setPassword(e.target.value)} />
           <button type="button" onClick={() => setShow(!show)} className="absolute right-3 top-1/2 -translate-y-1/2 rounded-lg px-2 py-1 text-sm font-semibold text-ink-700 hover:bg-hive-50" aria-label={show ? "Hide password" : "Show password"}>
             {variant === "platform" ? (show ? "Hide" : "Show") : show ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
           </button>
@@ -118,43 +135,63 @@ function SignInForm({ subtitle, variant }: { subtitle: string; variant: "platfor
 
 /* ───────── Platform (Super Admin) — CredoOne style ───────── */
 const CHANNELS = [
-  { Icon: Globe, label: "Website", tint: "from-sky-400 to-blue-600" },
-  { Icon: MessageCircle, label: "WhatsApp", tint: "from-emerald-400 to-green-600" },
-  { Icon: Megaphone, label: "Meta lead ads", tint: "from-indigo-400 to-blue-700" },
-  { Icon: Search, label: "Google ads", tint: "from-amber-300 to-orange-500" },
-  { Icon: Mail, label: "Email", tint: "from-rose-400 to-red-600" },
-  { Icon: PhoneCall, label: "Calls / IVR", tint: "from-teal-400 to-cyan-600" },
-  { Icon: QrCode, label: "QR campaigns", tint: "from-slate-500 to-slate-800" },
-  { Icon: Handshake, label: "Partners", tint: "from-fuchsia-400 to-purple-600" },
-  { Icon: FileSpreadsheet, label: "Excel / CSV", tint: "from-lime-400 to-green-700" },
-  { Icon: Braces, label: "REST API", tint: "from-violet-400 to-indigo-700" },
+  { Icon: Globe, label: "Website" },
+  { Icon: MessageCircle, label: "WhatsApp" },
+  { Icon: Megaphone, label: "Meta Ads" },
+  { Icon: Search, label: "Google Ads" },
+  { Icon: Mail, label: "Email" },
+  { Icon: PhoneCall, label: "Calls / IVR" },
+  { Icon: QrCode, label: "QR Codes" },
+  { Icon: Handshake, label: "Partners" },
+  { Icon: FileSpreadsheet, label: "Excel / CSV" },
+  { Icon: Braces, label: "REST API" },
 ];
+
+/** Logo inside a breathing halo with an aura of light orbiting it. Sized from the viewport height so the page never scrolls. */
+function AuraLogo({ src, alt }: { src?: string; alt: string }) {
+  return (
+    <div className="relative grid aspect-square w-[min(38vh,380px)] shrink-0 place-items-center">
+      <span aria-hidden className="absolute inset-0 rounded-full border border-white/20" />
+      <span aria-hidden className="aura-glow" />
+      <span aria-hidden className="aura-comet" />
+      <span aria-hidden className="aura-trail" />
+      <span aria-hidden className="aura-breathe absolute inset-[14%] rounded-full" style={{ background: "radial-gradient(circle, #ffffff 0%, #f1f0ff 42%, rgba(200,194,255,.8) 64%, rgba(130,120,240,0) 78%)" }} />
+      <img src={src} alt={alt} className="relative w-[64%] drop-shadow-[0_6px_18px_rgba(40,30,120,.25)]" />
+    </div>
+  );
+}
 
 function PlatformLogin({ b }: { b: Brand }) {
   return (
-    <div className="grid min-h-screen bg-[#f3f4f8] lg:grid-cols-[1.05fr_1fr]">
-      <section className="relative hidden overflow-hidden px-10 py-12 text-white lg:flex lg:flex-col lg:items-center lg:justify-center" style={{ background: "radial-gradient(120% 90% at 50% 25%, #4a4fa3 0%, #2f3180 45%, #24236a 100%)" }}>
-        <div aria-hidden className="absolute inset-0 opacity-[.18]" style={{ backgroundImage: "radial-gradient(rgba(255,255,255,.35) 1px, transparent 1px)", backgroundSize: "22px 22px" }} />
-        <div className="relative grid h-[400px] w-[400px] place-items-center rounded-full border border-white/25">
-          <div className="absolute inset-[52px] rounded-full" style={{ background: "radial-gradient(circle, #ffffff 0%, #eef0ff 38%, rgba(196,190,255,.75) 62%, rgba(120,110,230,0) 76%)", filter: "blur(2px)" }} />
-          <img src={b.logoUrl} alt={b.name} className="relative w-[250px] drop-shadow-[0_6px_18px_rgba(40,30,120,.25)]" />
+    <div className="grid min-h-[100dvh] bg-[#f3f4f8] lg:h-[100dvh] lg:grid-cols-[1.05fr_1fr] lg:overflow-hidden">
+      <section
+        className="relative hidden h-full min-h-0 flex-col items-center justify-center overflow-hidden px-10 py-[3.5vh] text-white lg:flex"
+        style={{ background: "radial-gradient(120% 90% at 50% 22%, #4a4fa3 0%, #2f3180 46%, #1f1f5e 100%)" }}
+      >
+        <div aria-hidden className="absolute inset-0 opacity-[.16]" style={{ backgroundImage: "radial-gradient(rgba(255,255,255,.4) 1px, transparent 1px)", backgroundSize: "22px 22px" }} />
+        <AuraLogo src={b.logoUrl} alt={b.name} />
+        <h1 className="relative mt-[3.2vh] text-center text-[clamp(28px,4.6vh,46px)] font-extrabold leading-[1.08] tracking-[-0.02em]">{b.headline}</h1>
+        <p className="relative mt-[1.4vh] max-w-[560px] text-center text-[clamp(14px,1.9vh,17px)] leading-relaxed text-white/75">{b.subheadline}</p>
+
+        <div className="relative mt-[3vh] w-full max-w-[600px]">
+          <p className="mb-[1.4vh] text-center text-[11px] font-bold uppercase tracking-[.22em] text-white/55">Captures leads from {CHANNELS.length} channels</p>
+          <ul className="grid grid-cols-5 gap-x-3 gap-y-[1.6vh] rounded-[22px] border border-white/10 bg-white/[.05] px-5 py-[2vh] backdrop-blur-sm">
+            {CHANNELS.map(({ Icon, label }) => (
+              <li key={label} className="group flex flex-col items-center gap-[0.8vh]">
+                <span className="grid h-[clamp(36px,5.4vh,50px)] w-[clamp(36px,5.4vh,50px)] place-items-center rounded-[14px] bg-gradient-to-b from-white/[.16] to-white/[.04] shadow-[inset_0_1px_0_rgba(255,255,255,.25),0_8px_20px_-10px_rgba(0,0,0,.6)] ring-1 ring-white/15 transition group-hover:from-white/25 group-hover:ring-white/30">
+                  <Icon className="h-[46%] w-[46%] text-white" strokeWidth={1.75} aria-hidden />
+                </span>
+                <span className="whitespace-nowrap text-[clamp(10px,1.3vh,11.5px)] font-medium text-white/70">{label}</span>
+              </li>
+            ))}
+          </ul>
         </div>
-        <h1 className="relative mt-10 text-center text-[44px] font-extrabold leading-tight tracking-tight">{b.headline}</h1>
-        <p className="relative mt-4 max-w-[560px] text-center text-[17px] leading-relaxed text-white/80">{b.subheadline}</p>
-        <p className="relative mt-2 text-sm text-white/65">Captures from {CHANNELS.length} channels</p>
-        <ul className="relative mt-6 grid grid-cols-5 gap-3 rounded-3xl border border-white/15 bg-white/[.06] p-4 backdrop-blur">
-          {CHANNELS.map(({ Icon, label, tint }) => (
-            <li key={label} title={label} className={`grid h-14 w-14 place-items-center rounded-2xl bg-gradient-to-br ${tint} shadow-lg shadow-black/20`}>
-              <Icon className="h-6 w-6 text-white" aria-label={label} />
-            </li>
-          ))}
-        </ul>
-        <p className="relative mt-8 text-sm text-white/55">{b.footerText}</p>
+        <p className="relative mt-[2.6vh] text-[13px] text-white/45">{b.footerText}</p>
       </section>
 
-      <section className="flex items-center justify-center px-6 py-14">
-        <div className="w-full max-w-[460px]">
-          <div className="mb-12 flex items-center gap-3.5">
+      <section className="flex min-h-[100dvh] items-center justify-center overflow-y-auto px-6 py-10 lg:min-h-0">
+        <div className="w-full max-w-[440px]">
+          <div className="mb-[5vh] flex items-center gap-3.5">
             <img src={b.logoUrl} alt="" className="h-14 w-auto" />
             <div>
               <p className="text-[28px] font-extrabold leading-none tracking-tight text-hive-700">{b.name}</p>
@@ -162,7 +199,9 @@ function PlatformLogin({ b }: { b: Brand }) {
             </div>
           </div>
           <SignInForm subtitle="Use your company or admin login." variant="platform" />
-          <p className="mt-10 text-center text-xs text-ink-400 lg:hidden">{b.footerText}</p>
+          <p className="mt-8 flex items-center justify-center gap-1.5 text-xs text-ink-400">
+            <LockKeyhole className="h-3.5 w-3.5" /> Secured with encrypted sessions · {b.footerText}
+          </p>
         </div>
       </section>
     </div>
