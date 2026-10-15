@@ -224,3 +224,9 @@ CSP, HSTS (preload), frame-deny, Permissions-Policy, COOP · same-origin check o
 
 ### SEO / AEO
 Per-address title, description, canonical, Open Graph and JSON-LD (Organization for company logins, SoftwareApplication for the platform) on `/login` · per-host `robots.txt` and `sitemap.xml` · `/llms.txt` for answer engines.
+
+### 10.1 Fix — company modules visible on every plan (Oct 2026)
+- Report, Role Management, Activity Logs and AI Agent are now ticked on **every** plan (Trial and Standard included). Existing databases get a one-time migration (`meta.plans_v2`) on the first request after deploy; Super Admin can still narrow any plan in **Plan**.
+- New modules added later are ticked on all plans by default.
+- AI Agent: **Create** always works; the AI model is optional until Super Admin allocates one (Company › ⋯ › AI Agents & credits). The floating assistant button always shows on the company side, with a set-up card until it's ready.
+- S3 base folder is the company name exactly as typed (`WELLNESSHIVE DIAGNOSTICA LLP/logo`, `/banner`, `/brain`). Existing files (including the earlier hyphenated folders) are moved in the background once (`meta.s3_layout_v2`), and again for a company on its next upload. Manual: `POST /api/sa/companies/<id|all>/s3-relayout`.

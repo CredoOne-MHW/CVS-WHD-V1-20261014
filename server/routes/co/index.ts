@@ -11,7 +11,7 @@ import { h, parse, notFound, badRequest, forbidden, paging, dateRange, escapeReg
 import { upsertLead, mapFields, runEvent } from "../../lib/intake";
 import { dispatch, fireEvent } from "../../lib/whatsapp";
 import { parseSheet, leadTemplateBuffer, extractText, KB_EXTENSIONS } from "../../lib/files";
-import { putObject, deleteObject, folderFor } from "../../lib/s3";
+import { putObject, deleteObject, folderFor, companyFolder, relayoutCompany } from "../../lib/s3";
 import { encrypt, decrypt, randomKey, sha256, maskSecret } from "../../lib/crypto";
 import { chat } from "../../lib/ai";
 import { webhookRoutes, waLogRoutes, activityRoutes, roleRoutes } from "../shared";
@@ -429,6 +429,13 @@ r.post("/wa-post", can("wa_webhooks", "update"), upload.single("file"), h(async 
 }));
 
 /* ───────────── AI Agents (company) ───────────── */
+/** Where this company's files live in S3 (shown on the AI Agent screen). */
+r.get("/storage", can("ai_agents", "read"), h(async (req, res) => {
+  const company = await Company.findById(req.auth!.companyId).select("name s3Folder").lean<any>();
+  const folder = company?.s3Folder || companyFolder(company?.name || "company");
+  res.json({ folder, logo: `${folder}/logo`, banner: `${folder}/banner`, brain: `${folder}/brain` });
+}));
+
 r.get("/ai-agents/models", can("ai_agents", "read"), h(async (req, res) => {
   const allocs = await AiAllocation.find(tenant(req)).lean();
   const agents = await AiAgent.find({ _id: { $in: allocs.map((a: any) => a.agentId) }, active: true }).select("name llmVersion provider companyRate").lean();
@@ -443,7 +450,7 @@ r.get("/ai-agents", can("ai_agents", "read"), h(async (req, res) => {
 }));
 
 const caBody = z.object({
-  agentId: z.string(),
+  agentId: z.string().nullish().transform((v) => v || null),
   name: z.string().min(2).max(80),
   purpose: z.string().max(500).optional(),
   systemPrompt: z.string().max(8000).optional(),
@@ -459,6 +466,7 @@ async function claimAssistant(companyId: string, id: any, on?: boolean) {
 /** Knowledge base files → <Company-Name>/brain/…, extracted text → <Company-Name>/brain/_extracted/… */
 async function ingest(companyId: string, files: Express.Multer.File[]) {
   if (!files.length) return [];
+  await relayoutCompany(companyId).catch(() => undefined); // older files → <Company Name>/…
   const company = await Company.findById(companyId);
   const brain = `${await folderFor(company)}/brain`;
   const out = [];
@@ -475,7 +483,7 @@ async function ingest(companyId: string, files: Express.Multer.File[]) {
 
 r.post("/ai-agents", can("ai_agents", "create"), upload.array("files", 10), h(async (req, res) => {
   const b = parse(caBody, typeof req.body.data === "string" ? JSON.parse(req.body.data) : req.body);
-  if (!(await AiAllocation.exists({ ...tenant(req), agentId: b.agentId }))) throw badRequest("This AI model is not allocated to your company");
+  if (b.agentId && !(await AiAllocation.exists({ ...tenant(req), agentId: b.agentId }))) throw badRequest("This AI model is not allocated to your company");
   const knowledge = await ingest(req.auth!.companyId!, (req.files as Express.Multer.File[]) || []);
   const doc = await CompanyAgent.create({ ...b, ...tenant(req), knowledge });
   await claimAssistant(req.auth!.companyId!, doc._id, b.isAssistant);
@@ -489,6 +497,7 @@ r.put("/ai-agents/:id", can("ai_agents", "update"), upload.array("files", 10), h
   const doc = await CompanyAgent.findOne({ _id: req.params.id, ...tenant(req) });
   if (!doc) throw notFound();
   const { removeKeys, ...rest } = b;
+  if (rest.agentId && !(await AiAllocation.exists({ ...tenant(req), agentId: rest.agentId }))) throw badRequest("This AI model is not allocated to your company");
   doc.set(rest);
   if (removeKeys?.length) {
     for (const k of doc.knowledge.filter((x: any) => removeKeys.includes(x.key))) {
@@ -519,6 +528,7 @@ r.post("/ai-agents/:id/chat", can("ai_agents", "read"), h(async (req, res) => {
   const b = parse(z.object({ messages: z.array(z.object({ role: z.enum(["user", "assistant"]), content: z.string().max(8000) })).min(1).max(30) }), req.body);
   const ca = await CompanyAgent.findOne({ _id: req.params.id, ...tenant(req) }).lean<any>();
   if (!ca) throw notFound();
+  if (!ca.agentId) throw badRequest("Pick an AI model for this agent first (allocated by your Super Admin).");
   const agent = await AiAgent.findOne({ _id: ca.agentId, active: true }).lean();
   if (!agent) throw badRequest("Underlying AI model is unavailable");
   res.locals.logRead = true;
@@ -531,7 +541,8 @@ r.post("/ai-agents/:id/chat", can("ai_agents", "read"), h(async (req, res) => {
 r.get("/assistant", h(async (req, res) => {
   const info = await assistantInfo(req.auth!.companyId!);
   const company = await Company.findById(req.auth!.companyId).lean<any>();
-  res.json({ ...info, logoUrl: company ? publicBranding(company).logoUrl : undefined });
+  const b = company ? publicBranding(company) : null;
+  res.json({ ...info, name: info.name || `${b?.shortName || company?.name || "Company"} Assistant`, logoUrl: b?.logoUrl, canSetup: !!req.auth!.perms?.ai_agents?.create });
 }));
 r.post("/assistant/chat", h(async (req, res) => {
   const b = parse(z.object({ messages: z.array(z.object({ role: z.enum(["user", "assistant"]), content: z.string().max(4000) })).min(1).max(30) }), req.body);
