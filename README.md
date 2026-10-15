@@ -178,3 +178,6 @@ Each webhook = endpoint + method + headers (encrypted) + payload template, bound
 2. Vercel › Settings › Domains: add `mhw.credovation.tech` and `*.mhw.credovation.tech` (or use the button in Knowledgebase).
 3. At credovation.tech's DNS provider: remove existing records for `mhw`, add `NS mhw → ns1.vercel-dns.com` and `NS mhw → ns2.vercel-dns.com` (wildcard certificates need Vercel DNS for that sub-zone).
 4. Open `https://mhw.credovation.tech/login` → CredoOne login.
+
+### Troubleshooting the login address
+Open `https://<address>/api/health` — it shows how the address is resolved (`platformHost`, `baseDomain`) and whether MongoDB/JWT are configured. If `baseDomain` is `null`, set `APP_BASE_DOMAIN` in Vercel and redeploy (quotes, `https://` and trailing slashes are tolerated). Without it, any address that matches no company shows the platform login.
