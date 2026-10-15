@@ -1,7 +1,9 @@
 "use client";
 import { useEffect, useState } from "react";
 import Link from "next/link";
-import { Check, Copy as CopyIcon, Plus, Power, KeyRound, Trash2 } from "lucide-react";
+import { Check, Copy as CopyIcon, Plus, Power, KeyRound, Trash2, BookOpen, Play, ExternalLink, EyeOff } from "lucide-react";
+import { GuideSteps, GoogleSearchForm, McpForm, blankSearch, blankMcp } from "@/components/ConnectorGuide";
+import { GUIDES } from "@/lib/guides";
 import { icon } from "@/components/icons";
 import { api, fmtDate } from "@/lib/api";
 import { PageHeader, Btn, Modal, Field, Badge, Spinner, Confirm, JsonView, useToast } from "@/components/ui";
@@ -65,9 +67,12 @@ const HELP: Record<string, string> = {
   partner: "Give each partner their own connector. Every lead is credited via the referral field and attribution history.",
 };
 
+const PULL = ["google_search", "mcp"];
+
 export default function Integrations() {
   const [data, setData] = useState<any>(null);
   const [create, setCreate] = useState<any>(null);
+  const [guide, setGuide] = useState<{ type: string; label: string; c?: any } | null>(null);
   const [open, setOpen] = useState<any>(null);
   const [busy, setBusy] = useState(false);
   const perm = usePerm("integrations");
@@ -124,14 +129,19 @@ export default function Integrations() {
                   ))}
                 </ul>
               )}
-              <div className="mt-auto pt-4">
+              <div className="mt-auto flex flex-col gap-2 pt-4">
+                {GUIDES[t.type] && (
+                  <button type="button" onClick={() => setGuide({ type: t.type, label: t.label, c: mine[0] })} className="inline-flex items-center justify-center gap-1.5 text-sm font-semibold text-hive-700 hover:text-hive-900">
+                    <BookOpen className="h-4 w-4" /> Step-by-step setup guide
+                  </button>
+                )}
                 {local ? (
                   <Link href="/app/leads" className="btn-secondary w-full">
                     {t.inbound === "upload" ? "Import from Leads" : "Add from Leads"}
                   </Link>
                 ) : (
                   perm.create && (
-                    <Btn variant="secondary" className="w-full" onClick={() => setCreate({ type: t.type, name: mine.length ? `${t.label} ${mine.length + 1}` : t.label, defaultCampaign: "", defaultMedium: "", defaultSource: "", secret: "" })}>
+                    <Btn variant="secondary" className="w-full" onClick={() => setCreate({ type: t.type, name: mine.length ? `${t.label} ${mine.length + 1}` : t.label, defaultCampaign: "", defaultMedium: "", defaultSource: "", secret: "", config: t.type === "google_search" ? { ...blankSearch } : t.type === "mcp" ? { ...blankMcp } : undefined })}>
                       <Plus className="h-4 w-4" /> {mine.length ? "Add another" : "Connect"}
                     </Btn>
                   )
@@ -159,6 +169,8 @@ export default function Integrations() {
                 try {
                   const body = { ...create };
                   if (!body.secret) delete body.secret;
+                  if (body.config?.keywords) body.config = { ...body.config, keywords: body.config.keywords.map((k: string) => k.trim()).filter(Boolean) };
+                  if (body.config && !body.config.cx) delete body.config.cx;
                   const c = await api("/co/integrations", { body });
                   setCreate(null);
                   load();
@@ -177,7 +189,24 @@ export default function Integrations() {
       >
         {create && (
           <div className="grid gap-4 sm:grid-cols-2">
-            <p className="rounded-xl bg-hive-50 p-3 text-sm text-ink-700 sm:col-span-2">{HELP[create.type]}</p>
+            <div className="flex items-start justify-between gap-3 rounded-xl bg-hive-50 p-3 text-sm text-ink-700 sm:col-span-2">
+              <p>{GUIDES[create.type]?.summary || HELP[create.type]}</p>
+              {GUIDES[create.type] && (
+                <button type="button" className="shrink-0 font-semibold text-hive-700" onClick={() => setGuide({ type: create.type, label: data.types.find((t: any) => t.type === create.type)?.label })}>
+                  Guide →
+                </button>
+              )}
+            </div>
+            {create.type === "google_search" && (
+              <div className="sm:col-span-2">
+                <GoogleSearchForm cfg={create.config} set={(v) => setCreate({ ...create, config: v })} secret={create.secret} setSecret={(v) => setCreate({ ...create, secret: v })} />
+              </div>
+            )}
+            {create.type === "mcp" && (
+              <div className="sm:col-span-2">
+                <McpForm cfg={create.config} set={(v) => setCreate((c: any) => ({ ...c, config: v }))} secret={create.secret} setSecret={(v) => setCreate((c: any) => ({ ...c, secret: v }))} />
+              </div>
+            )}
             <Field label="Name" required className="sm:col-span-2">
               <input className="input" value={create.name} onChange={(e) => setCreate({ ...create, name: e.target.value })} />
             </Field>
@@ -200,12 +229,28 @@ export default function Integrations() {
       </Modal>
 
       <ConnectorDrawer c={open} onClose={() => setOpen(null)} onChanged={load} />
+
+      <Modal open={!!guide} onClose={() => setGuide(null)} title={`Setup guide · ${guide?.label || ""}`} size="lg">
+        {guide && (
+          <>
+            {!guide.c && !["manual", "bulk_import"].includes(guide.type) && (
+              <p className="mb-4 rounded-xl bg-[#f7f8f6] px-3 py-2 text-xs text-ink-500">Connect first to see your own URL and keys filled into the steps.</p>
+            )}
+            <GuideSteps type={guide.type} c={guide.c} />
+          </>
+        )}
+      </Modal>
     </>
   );
 }
 
 function ConnectorDrawer({ c, onClose, onChanged }: { c: any; onClose: () => void; onChanged: () => void }) {
-  const [tab, setTab] = useState<"setup" | "mapping" | "deliveries">("setup");
+  const [tab, setTab] = useState<"setup" | "settings" | "results" | "mapping" | "deliveries">("setup");
+  const [running, setRunning] = useState(false);
+  const [lastRun, setLastRun] = useState<any>(null);
+  const [cfg, setCfg] = useState<any>(null);
+  const [newSecret, setNewSecret] = useState("");
+  const [prospects, setProspects] = useState<any>(null);
   const [secret, setSecret] = useState<string | undefined>();
   const [map, setMap] = useState<Record<string, string>>({});
   const [events, setEvents] = useState<any>(null);
@@ -220,7 +265,14 @@ function ConnectorDrawer({ c, onClose, onChanged }: { c: any; onClose: () => voi
     setSecret(c.secret);
     setMap(c.fieldMap || {});
     setEvents(null);
+    setLastRun(c.lastRun ? { ...c.lastRun, at: c.lastRunAt } : null);
+    setCfg(c.config ? { ...(c.type === "google_search" ? blankSearch : blankMcp), ...c.config } : null);
+    setNewSecret("");
+    setProspects(null);
   }, [c]);
+  useEffect(() => {
+    if (c && tab === "results") api(`/co/integrations/${c._id}/prospects`, { fresh: true }).then(setProspects);
+  }, [c, tab]);
   useEffect(() => {
     if (c && tab === "deliveries") api(`/co/integrations/${c._id}/events`).then(setEvents);
   }, [c, tab]);
@@ -231,11 +283,134 @@ function ConnectorDrawer({ c, onClose, onChanged }: { c: any; onClose: () => voi
 
   return (
     <Modal open={!!c} onClose={onClose} title={c.name} size="lg">
-      <Tabs value={tab} onChange={setTab} tabs={[{ key: "setup", label: "Setup" }, { key: "mapping", label: "Field mapping" }, { key: "deliveries", label: "Deliveries" }]} />
-      {tab === "setup" && (
+      <Tabs
+        value={tab}
+        onChange={setTab}
+        tabs={[
+          { key: "setup", label: PULL.includes(c.type) ? "Overview" : "Setup" },
+          ...(PULL.includes(c.type) ? [{ key: "settings" as const, label: "Settings" }] : []),
+          ...(c.type === "google_search" ? [{ key: "results" as const, label: "Results" }] : []),
+          { key: "mapping" as const, label: "Field mapping" },
+          { key: "deliveries" as const, label: PULL.includes(c.type) ? "Imported" : "Deliveries" },
+        ]}
+      />
+      {tab === "setup" && PULL.includes(c.type) && (
         <div className="space-y-4">
-          <p className="rounded-xl bg-hive-50 p-3 text-sm text-ink-700">{HELP[c.type]}</p>
+          <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-ink-400/15 p-4">
+            <div>
+              <p className="text-sm font-semibold">Runs daily at 2:00 AM IST</p>
+              <p className="text-xs text-ink-500">
+                {lastRun?.at || c.lastRunAt ? `Last run ${fmtDate(lastRun?.at || c.lastRunAt)}` : "Not run yet"}
+                {lastRun && (lastRun.ok === false ? ` · failed: ${lastRun.error || (lastRun.errors || []).join("; ")}` : ` · ${lastRun.found ?? 0} found · ${lastRun.created ?? 0} new lead(s) · ${lastRun.duplicates ?? 0} merged${lastRun.newProspects != null ? ` · ${lastRun.newProspects} new result(s)` : ""}`)}
+              </p>
+              {lastRun?.errors?.length > 0 && lastRun.ok !== false && <p className="mt-1 text-xs text-red-700">{lastRun.errors.join(" · ")}</p>}
+            </div>
+            {perm.update && (
+              <Btn
+                loading={running}
+                onClick={async () => {
+                  setRunning(true);
+                  try {
+                    const r = await api(`/co/integrations/${c._id}/run`, { method: "POST" });
+                    setLastRun({ ...r, at: new Date().toISOString() });
+                    toast(r.ok === false ? "err" : "ok", r.ok === false ? r.error || "Run failed" : `${r.found ?? 0} found · ${r.created ?? 0} new lead(s)`);
+                    onChanged();
+                  } catch (e: any) {
+                    toast("err", e.message);
+                  } finally {
+                    setRunning(false);
+                  }
+                }}
+              >
+                <Play className="h-4 w-4" /> Run now
+              </Btn>
+            )}
+          </div>
+          <GuideSteps type={c.type} c={c} compact />
+        </div>
+      )}
+      {tab === "settings" && cfg && (
+        <div className="space-y-4">
+          {c.type === "google_search" ? (
+            <GoogleSearchForm cfg={cfg} set={setCfg} secret={newSecret} setSecret={setNewSecret} editing />
+          ) : (
+            <McpForm cfg={cfg} set={setCfg} secret={newSecret} setSecret={setNewSecret} connectorId={c._id} editing />
+          )}
+          {perm.update && (
+            <Btn
+              onClick={async () => {
+                try {
+                  const config = { ...cfg, ...(cfg.keywords ? { keywords: cfg.keywords.map((k: string) => k.trim()).filter(Boolean) } : {}) };
+                  if (!config.cx) delete config.cx;
+                  await api(`/co/integrations/${c._id}`, { method: "PUT", body: { config, ...(newSecret ? { secret: newSecret } : {}) } });
+                  toast("ok", "Settings saved");
+                  onChanged();
+                } catch (e: any) {
+                  toast("err", e.message);
+                }
+              }}
+            >
+              Save settings
+            </Btn>
+          )}
+        </div>
+      )}
+      {tab === "results" && (
+        <div className="overflow-x-auto">
+          {!prospects ? (
+            <div className="flex justify-center py-10 text-hive-700">
+              <Spinner />
+            </div>
+          ) : (
+            <table className="w-full min-w-[700px]">
+              <thead>
+                <tr>
+                  {["Found", "Keyword", "Result", "Contact", ""].map((h) => (
+                    <th key={h} className="th">
+                      {h}
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {prospects.items.map((p: any) => (
+                  <tr key={p._id} className={p.status === "dismissed" ? "opacity-50" : ""}>
+                    <td className="td whitespace-nowrap text-ink-500">{fmtDate(p.createdAt)}</td>
+                    <td className="td text-xs">{p.keyword}</td>
+                    <td className="td max-w-[320px]">
+                      <a href={p.url} target="_blank" rel="noreferrer noopener" className="inline-flex items-center gap-1 font-semibold text-hive-800 hover:underline">
+                        <span className="line-clamp-1">{p.title}</span> <ExternalLink className="h-3 w-3 shrink-0" />
+                      </a>
+                      <p className="line-clamp-2 text-xs text-ink-500">{p.snippet}</p>
+                    </td>
+                    <td className="td text-xs">{[...(p.phones || []), ...(p.emails || [])].join(", ") || "—"}</td>
+                    <td className="td whitespace-nowrap">
+                      {p.status === "lead" ? (
+                        <Badge color="green">In Leads</Badge>
+                      ) : perm.update ? (
+                        <button
+                          className="btn-ghost"
+                          onClick={async () => {
+                            await api(`/co/integrations/prospects/${p._id}`, { method: "PUT", body: { status: p.status === "dismissed" ? "new" : "dismissed" } });
+                            setProspects(await api(`/co/integrations/${c._id}/prospects`, { fresh: true }));
+                          }}
+                        >
+                          <EyeOff className="h-4 w-4" /> {p.status === "dismissed" ? "Restore" : "Dismiss"}
+                        </button>
+                      ) : null}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+          {prospects && !prospects.items.length && <p className="py-10 text-center text-sm text-ink-400">No results yet — click Run now on the Overview tab.</p>}
+        </div>
+      )}
+      {tab === "setup" && !PULL.includes(c.type) && (
+        <div className="space-y-4">
           <CopyRow label="Endpoint URL" value={c.endpoint} />
+
           {secret ? (
             <div className="rounded-xl border border-honey-300 bg-honey-100/60 p-3">
               <CopyRow label="Secret / API key — shown once, copy it now" value={secret} />
@@ -255,12 +430,14 @@ function ConnectorDrawer({ c, onClose, onChanged }: { c: any; onClose: () => voi
               </div>
             </div>
           )}
-          {["rest_api", "website_form", "partner", "telephony", "email"].includes(c.type) && (
-            <div>
-              <p className="label">{c.type === "website_form" ? "HTML form" : "Example request"}</p>
-              <JsonView value={c.type === "website_form" ? html : curl} />
+          <details className="group rounded-2xl border border-ink-400/15 p-4" open>
+            <summary className="flex cursor-pointer list-none items-center gap-2 text-sm font-bold">
+              <BookOpen className="h-4 w-4 text-hive-700" /> Step-by-step setup
+            </summary>
+            <div className="mt-4">
+              <GuideSteps type={c.type} c={{ ...c, secret }} compact />
             </div>
-          )}
+          </details>
           <div className="flex flex-wrap gap-2 border-t border-ink-400/10 pt-4">
             {perm.update && (
               <Btn

@@ -5,7 +5,7 @@ import crypto from "crypto";
 import { z } from "zod";
 import mongoose, { Types } from "mongoose";
 import * as XLSX from "xlsx";
-import { Lead, Connector, IntakeEvent, Company, User, Webhook, Otp, AiAgent, AiAllocation, CompanyAgent, Role, Plan, AiProvider, AiUsage, Subscription, SubscriptionCycle, SubscriptionPlan } from "../../models";
+import { Lead, Connector, IntakeEvent, Company, User, Webhook, Otp, AiAgent, AiAllocation, CompanyAgent, Role, Plan, AiProvider, AiUsage, Subscription, SubscriptionCycle, SubscriptionPlan, ConnectorKey, Prospect, AiEndpoint, EndpointKey } from "../../models";
 import { can, requireScope, tenant, invalidateAuth } from "../../middleware/auth";
 import { h, parse, notFound, badRequest, forbidden, paging, dateRange, escapeRegex, HttpError } from "../../lib/http";
 import { upsertLead, mapFields, runEvent } from "../../lib/intake";
@@ -15,9 +15,13 @@ import { putObject, deleteObject, folderFor, companyFolder, relayoutCompany } fr
 import { encrypt, decrypt, randomKey, sha256, maskSecret } from "../../lib/crypto";
 import { chat, walletFor } from "../../lib/ai";
 import { renewAllocations, billingAlert, enrichCycles, refreshIfStale } from "../../lib/billing";
+import { currentDb } from "../../lib/context";
+import { assertPublicUrl } from "../../lib/net";
+import { mcpSession } from "../../lib/mcp";
+import { runPull } from "../../lib/pull";
 import { webhookRoutes, waLogRoutes, activityRoutes, roleRoutes } from "../shared";
 import { reportRoutes } from "../reports";
-import { assistantChat, assistantInfo } from "../../lib/agentic";
+import { assistantChat, assistantInfo, withAgentDb, endpointChat } from "../../lib/agentic";
 import { rateLimit, invalidate } from "../../lib/cache";
 import { publicBranding } from "../../lib/tenant";
 import { LEAD_STATUSES, LOST_REASONS, LOST_STATUS, WON_STATUS, CONNECTOR_TYPES, normalizePhone } from "../../../shared/constants";
@@ -290,14 +294,48 @@ const connectorBody = z.object({
   defaultCampaign: z.string().max(120).optional(),
   defaultMedium: z.string().max(60).optional(),
   fieldMap: z.record(z.string()).optional(),
-  secret: z.string().max(500).optional(), // API key / Meta page token / Google key; generated if blank
+  secret: z.string().max(500).optional(), // API key / Meta page token / Google key / search API key / MCP token; generated if blank
   active: z.boolean().optional(),
+  config: z.record(z.any()).optional(), // validated per type below
 });
+
+/** Per-type settings for pull connectors (Google Search, MCP). Secrets never go here — they use `secret`. */
+const googleSearchCfg = z.object({
+  provider: z.enum(["serpapi", "brave", "google_cse"]).default("serpapi"),
+  keywords: z.array(z.string().trim().min(2).max(120)).min(1).max(25),
+  location: z.string().max(80).optional(),
+  country: z.string().regex(/^[a-z]{2}$/i).default("in"),
+  language: z.string().regex(/^[a-z]{2}$/i).default("en"),
+  cx: z.string().max(120).optional(), // Google Programmable Search engine id
+  sites: z.array(z.string().trim().regex(/^[a-z0-9.-]+\.[a-z]{2,}$/i, "Use a domain like justdial.com")).max(10).optional(),
+  maxResults: z.coerce.number().int().min(10).max(50).default(20),
+  recentOnly: z.boolean().default(true),
+});
+const mcpCfg = z.object({
+  serverUrl: z.string().url().max(500),
+  toolName: z.string().min(1).max(120),
+  toolArgs: z.record(z.any()).default({}),
+  itemsPath: z.string().max(120).optional(),
+  defaultSource: z.string().max(60).optional(),
+});
+async function connectorConfig(type: string, cfg: any) {
+  if (type === "google_search") return parse(googleSearchCfg, cfg || {});
+  if (type === "mcp") {
+    const c = parse(mcpCfg, cfg || {});
+    await assertPublicUrl(c.serverUrl);
+    return c;
+  }
+  return undefined;
+}
+const PULL = ["google_search", "mcp"];
 
 r.post("/integrations", can("integrations", "create"), h(async (req, res) => {
   const b = parse(connectorBody, req.body);
-  const secret = b.secret || randomKey(24);
-  const doc = await Connector.create({ ...b, secret: undefined, ...tenant(req), key: `${b.type.slice(0, 3)}_${randomKey(10)}`, secretEnc: encrypt(secret), verifyToken: b.type === "meta_leads" ? randomKey(12) : undefined });
+  if (b.type === "google_search" && !b.secret) throw badRequest("Enter your search API key (SerpAPI, Brave or Google)");
+  const config = await connectorConfig(b.type, b.config);
+  const secret = b.secret || (b.type === "mcp" ? "" : randomKey(24));
+  const doc = await Connector.create({ ...b, config, secret: undefined, ...tenant(req), key: `${b.type.slice(0, 3)}_${randomKey(10)}`, secretEnc: secret ? encrypt(secret) : undefined, verifyToken: b.type === "meta_leads" ? randomKey(12) : undefined });
+  await ConnectorKey.create({ key: doc.key, companyId: doc.companyId, db: currentDb(), type: doc.type, active: doc.active !== false });
   res.locals.item = doc.name;
   // the full secret is shown once, on creation
   res.status(201).json({ ...serializeConnector(doc.toObject(), req), secret });
@@ -305,11 +343,16 @@ r.post("/integrations", can("integrations", "create"), h(async (req, res) => {
 
 r.put("/integrations/:id", can("integrations", "update"), h(async (req, res) => {
   const b = parse(connectorBody.partial().omit({ type: true }), req.body);
+  const cur = await Connector.findOne({ _id: req.params.id, ...tenant(req) }).select("type").lean<any>();
+  if (!cur) throw notFound();
   const set: any = { ...b };
   delete set.secret;
   if (b.secret) set.secretEnc = encrypt(b.secret);
-  const doc = await Connector.findOneAndUpdate({ _id: req.params.id, ...tenant(req) }, { $set: set }, { new: true }).lean();
+  if (b.config !== undefined) set.config = await connectorConfig(cur.type, b.config);
+  const doc = await Connector.findOneAndUpdate({ _id: req.params.id, ...tenant(req) }, { $set: set }, { new: true }).lean<any>();
   if (!doc) throw notFound();
+  if (b.active !== undefined) await ConnectorKey.updateOne({ key: doc.key }, { $set: { active: b.active } });
+  await invalidate(`conn:${doc.key}`);
   res.locals.item = (doc as any).name;
   res.json(serializeConnector(doc, req));
 }));
@@ -325,8 +368,49 @@ r.post("/integrations/:id/rotate", can("integrations", "update"), h(async (req, 
 r.delete("/integrations/:id", can("integrations", "delete"), h(async (req, res) => {
   const d = await Connector.findOneAndDelete({ _id: req.params.id, ...tenant(req) });
   if (!d) throw notFound();
+  await ConnectorKey.deleteOne({ key: d.key });
+  await invalidate(`conn:${d.key}`);
   res.locals.item = d.name;
   res.json({ ok: true });
+}));
+
+/** Pull connectors: run now (otherwise daily at 02:00 IST). */
+r.post("/integrations/:id/run", can("integrations", "update"), h(async (req, res) => {
+  const c = await Connector.findOne({ _id: req.params.id, ...tenant(req) }).lean<any>();
+  if (!c) throw notFound();
+  if (!PULL.includes(c.type)) throw badRequest("Only Google Search and MCP connectors are pulled");
+  if (!(await rateLimit(`pull:${c._id}`, 6, 3600))) throw new HttpError(429, "Run limit reached — try again in an hour (searches cost API credits)");
+  res.locals.action = "Run now";
+  res.locals.item = c.name;
+  res.json(await runPull(c));
+}));
+
+/** MCP setup helper: connect to a server and list its tools (nothing is saved). */
+r.post("/integrations/mcp/tools", can("integrations", "create"), h(async (req, res) => {
+  const b = parse(z.object({ serverUrl: z.string().url().max(500), token: z.string().max(2000).optional(), connectorId: z.string().optional() }), req.body);
+  let token = b.token;
+  if (!token && b.connectorId) {
+    const c = await Connector.findOne({ _id: b.connectorId, ...tenant(req) }).select("secretEnc").lean<any>();
+    token = c ? decrypt(c.secretEnc) : undefined;
+  }
+  const s = await mcpSession(b.serverUrl, token || undefined);
+  const tools = await s.listTools();
+  res.json({ server: s.server, tools: tools.map((t: any) => ({ name: t.name, description: t.description, inputSchema: t.inputSchema })) });
+}));
+
+/** Google Search results kept for review (with or without contact details). */
+r.get("/integrations/:id/prospects", can("integrations", "read"), h(async (req, res) => {
+  const { page, limit, skip } = paging(req.query);
+  const q: any = { connectorId: req.params.id, ...tenant(req) };
+  if (req.query.status && ["new", "lead", "dismissed"].includes(String(req.query.status))) q.status = req.query.status;
+  const [items, total] = await Promise.all([Prospect.find(q).sort({ createdAt: -1 }).skip(skip).limit(limit).lean(), Prospect.countDocuments(q)]);
+  res.json({ items, total, page, limit });
+}));
+r.put("/integrations/prospects/:pid", can("integrations", "update"), h(async (req, res) => {
+  const { status } = parse(z.object({ status: z.enum(["new", "dismissed"]) }), req.body);
+  const p = await Prospect.findOneAndUpdate({ _id: req.params.pid, ...tenant(req) }, { $set: { status } }, { new: true }).lean();
+  if (!p) throw notFound();
+  res.json(p);
 }));
 
 r.get("/integrations/:id/events", can("integrations", "read"), h(async (req, res) => {
@@ -595,12 +679,100 @@ r.post("/ai-agents/:id/chat", can("ai_agents", "read"), h(async (req, res) => {
   const ca = await CompanyAgent.findOne({ _id: req.params.id, ...tenant(req) }).lean<any>();
   if (!ca) throw notFound();
   if (!ca.agentId) throw badRequest("Pick an AI model for this agent first (allocated by your Super Admin).");
-  const agent = await AiAgent.findOne({ _id: ca.agentId, active: true }).lean();
+  const agent = await AiAgent.findOne({ _id: ca.agentId, active: true }).lean<any>();
   if (!agent) throw badRequest("Underlying AI model is unavailable");
   res.locals.logRead = true;
   res.locals.action = "AI chat";
   res.locals.item = ca.name;
-  res.json(await chat({ agent, companyAgent: ca, companyId: req.auth!.companyId!, messages: b.messages, userId: req.auth!.userId }));
+  res.json(await withAgentDb(req.auth!.companyId!, agent._id, () => chat({ agent, companyAgent: ca, companyId: req.auth!.companyId!, messages: b.messages, userId: req.auth!.userId })));
+}));
+
+/* ───────────── AI Agent › Endpoint (external systems ask questions over HTTPS) ───────────── */
+const epBody = z.object({
+  name: z.string().trim().min(2).max(80),
+  mode: z.enum(["agent", "model"]),
+  companyAgentId: z.string().regex(/^[a-f0-9]{24}$/).nullish(),
+  agentId: z.string().regex(/^[a-f0-9]{24}$/).nullish(),
+  instructions: z.string().max(4000).optional(),
+  dataAccess: z.enum(["none", "aggregate", "full"]).default("aggregate"),
+  allowedOrigins: z.array(z.string().trim().regex(/^https?:\/\/[a-z0-9.-]+(:\d+)?$/i, "Origins look like https://www.example.com")).max(20).default([]),
+  rateLimitPerMin: z.coerce.number().int().min(1).max(600).default(60),
+  active: z.boolean().default(true),
+});
+const epUrl = (req: any) => `${baseUrl(req)}/api/ai/v1/chat`;
+const epOut = (e: any, req: any) => ({ ...e, url: epUrl(req) });
+
+async function checkEndpointTarget(req: any, b: any) {
+  if (b.mode === "agent") {
+    if (!b.companyAgentId || !(await CompanyAgent.exists({ _id: b.companyAgentId, ...tenant(req) }))) throw badRequest("Pick one of your AI agents");
+  } else if (!b.agentId || !(await AiAllocation.exists({ ...tenant(req), agentId: b.agentId, allocated: { $ne: false } }))) throw badRequest("Pick a model allocated to your company");
+}
+const newEpKey = () => `ep_live_${randomKey(32)}`;
+
+r.get("/ai-endpoints", can("ai_agents", "read"), h(async (req, res) => {
+  const list = await AiEndpoint.find(tenant(req)).sort({ createdAt: -1 }).lean<any[]>();
+  const [agents, models] = await Promise.all([
+    CompanyAgent.find(tenant(req)).select("name agentId").lean<any[]>(),
+    AiAgent.find({ _id: { $in: list.map((e) => e.agentId).filter(Boolean) } }).select("name llmVersion").lean<any[]>(),
+  ]);
+  res.json({ db: currentDb(), items: list.map((e) => ({ ...epOut(e, req), agentName: agents.find((a) => String(a._id) === String(e.companyAgentId))?.name, modelName: models.find((m) => String(m._id) === String(e.agentId))?.name })) });
+}));
+
+r.post("/ai-endpoints", can("ai_agents", "create"), h(async (req, res) => {
+  const b = parse(epBody, req.body);
+  await checkEndpointTarget(req, b);
+  const key = newEpKey();
+  const doc = await AiEndpoint.create({ ...b, ...tenant(req), keyPrefix: key.slice(0, 14) });
+  await EndpointKey.create({ keyHash: sha256(key), companyId: doc.companyId, db: currentDb(), endpointId: doc._id });
+  res.locals.item = doc.name;
+  res.status(201).json({ ...epOut(doc.toObject(), req), key }); // the key is shown once
+}));
+
+r.put("/ai-endpoints/:id", can("ai_agents", "update"), h(async (req, res) => {
+  const b = parse(epBody.partial(), req.body);
+  const cur = await AiEndpoint.findOne({ _id: req.params.id, ...tenant(req) }).lean<any>();
+  if (!cur) throw notFound();
+  await checkEndpointTarget(req, { ...cur, ...b });
+  const doc = await AiEndpoint.findOneAndUpdate({ _id: cur._id }, { $set: b }, { new: true }).lean();
+  await invalidate(`ep:`);
+  res.locals.item = cur.name;
+  res.json(epOut(doc, req));
+}));
+
+r.post("/ai-endpoints/:id/rotate", can("ai_agents", "update"), h(async (req, res) => {
+  const ep = await AiEndpoint.findOne({ _id: req.params.id, ...tenant(req) }).lean<any>();
+  if (!ep) throw notFound();
+  const key = newEpKey();
+  await EndpointKey.deleteMany({ endpointId: ep._id });
+  await EndpointKey.create({ keyHash: sha256(key), companyId: ep.companyId, db: currentDb(), endpointId: ep._id });
+  await AiEndpoint.updateOne({ _id: ep._id }, { $set: { keyPrefix: key.slice(0, 14) } });
+  await invalidate(`ep:`);
+  res.locals.action = "Rotate key";
+  res.locals.item = ep.name;
+  res.json({ key });
+}));
+
+r.delete("/ai-endpoints/:id", can("ai_agents", "delete"), h(async (req, res) => {
+  const ep = await AiEndpoint.findOneAndDelete({ _id: req.params.id, ...tenant(req) });
+  if (!ep) throw notFound();
+  await EndpointKey.deleteMany({ endpointId: ep._id });
+  await invalidate(`ep:`);
+  res.locals.item = ep.name;
+  res.json({ ok: true });
+}));
+
+/** Console test: same engine as the public endpoint, without needing the key. */
+r.post("/ai-endpoints/:id/test", can("ai_agents", "read"), h(async (req, res) => {
+  const b = parse(z.object({ question: z.string().trim().min(1).max(4000), history: z.array(z.object({ role: z.enum(["user", "assistant"]), content: z.string().max(4000) })).max(20).optional() }), req.body);
+  const ep = await AiEndpoint.findOne({ _id: req.params.id, ...tenant(req) }).lean<any>();
+  if (!ep) throw notFound();
+  if (!(await rateLimit(`eptest:${req.auth!.userId}`, 20, 60))) throw new HttpError(429, "Too many test questions — wait a moment");
+  const out: any = await endpointChat(ep, { _id: req.auth!.companyId, name: req.auth!.companyName || "" }, [...(b.history || []), { role: "user", content: b.question }]);
+  await AiEndpoint.updateOne({ _id: ep._id }, { $inc: { "stats.calls": 1, "stats.credits": out.usage?.credits || 0 }, $set: { "stats.lastAt": new Date() } });
+  res.locals.logRead = true;
+  res.locals.action = "Endpoint test";
+  res.locals.item = ep.name;
+  res.json({ answer: out.text, usage: out.usage });
 }));
 
 /* ───────────── Floating AI assistant (read-only) ───────────── */

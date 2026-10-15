@@ -86,7 +86,7 @@ export default function Companies() {
     setBusy(true);
     try {
       const body = { ...form, branding: { ...form.branding, shortName: form.branding.shortName || form.name } };
-      for (const k of ["_id", "createdAt", "updatedAt", "deletedAt", "domain", "brandingPublic", "allocations", "leadCount", "connectors", "platformUrl", "customUrl", "status", "trialEndsAt", "s3Folder", "__v"]) delete body[k];
+      for (const k of ["_id", "createdAt", "updatedAt", "deletedAt", "domain", "brandingPublic", "allocations", "leadCount", "connectors", "platformUrl", "customUrl", "status", "trialEndsAt", "s3Folder", "dbName", "dbReadyAt", "__v"]) delete body[k];
       if (!body.password) delete body.password;
       if (!body.slug) delete body.slug;
       for (const k of ["logoKey", "bannerKey", "faviconKey", "updatedAt"]) delete body.branding[k];
@@ -291,8 +291,16 @@ export default function Companies() {
                 <Field label="Company name" required>
                   <input className="input" value={form.name} onChange={(e) => set("name", e.target.value)} />
                 </Field>
-                <Field label="Company code" required hint="Short unique code, e.g. WHIVE">
-                  <input className="input uppercase" value={form.code} onChange={(e) => set("code", e.target.value.toUpperCase())} />
+                <Field
+                  label="Company code"
+                  required
+                  hint={
+                    form._id
+                      ? `Database: ${form.dbName || form.code} (fixed${form.dbReadyAt ? "" : " — moves on first use"})`
+                      : `Also the name of this company's own database${form.code ? `: ${form.code.toUpperCase()}` : ""}. Letters, numbers, - and _; can't be reused.`
+                  }
+                >
+                  <input className="input uppercase" value={form.code} onChange={(e) => set("code", e.target.value.toUpperCase().replace(/[^A-Z0-9_-]/g, ""))} />
                 </Field>
                 <Field label="Contact person">
                   <input className="input" value={form.contactPerson} onChange={(e) => set("contactPerson", e.target.value)} />

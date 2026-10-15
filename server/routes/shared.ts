@@ -1,4 +1,6 @@
 import { Router, type Request } from "express";
+import { runInMain, setTenantDb } from "../lib/context";
+import { dbOf, forEachCompanyDb } from "../lib/tenantdb";
 import { z } from "zod";
 import { Webhook, WaLog, ActivityLog, EventType, Role, Company, Plan } from "../models";
 import { can, invalidateAuth } from "../middleware/auth";
@@ -127,7 +129,11 @@ export function waLogRoutes(scope: Scope) {
   r.get("/", can("wa_logs", "read"), h(async (req, res) => {
     const { page, limit, skip } = paging(req.query);
     const q: any = { ...scopeFilter(req, scope), ...dateRange(req.query) };
-    if (scope === "super" && req.query.companyId) Object.assign(q, { scope: "company", companyId: req.query.companyId });
+    if (scope === "super" && req.query.companyId) {
+      if (!/^[a-f0-9]{24}$/.test(String(req.query.companyId))) throw notFound();
+      Object.assign(q, { scope: "company", companyId: req.query.companyId });
+      setTenantDb(await dbOf(req.query.companyId)); // that company's logs live in its own database
+    }
     if (req.query.event) q.event = req.query.event;
     if (req.query.phone) q.to = { $regex: escapeRegex(String(req.query.phone).replace(/\D/g, "")) }; // "To" filter (`to` is the date range end)
     if (req.query.result) q.result = req.query.result;
@@ -135,11 +141,13 @@ export function waLogRoutes(scope: Scope) {
     res.json({ items, total, page, limit });
   }));
   r.get("/:id", can("wa_logs", "read"), h(async (req, res) => {
+    if (scope === "super" && /^[a-f0-9]{24}$/.test(String(req.query.companyId || ""))) setTenantDb(await dbOf(req.query.companyId));
     const log = await WaLog.findOne({ _id: req.params.id, ...(scope === "company" ? { companyId: req.auth!.companyId } : {}) }).lean();
     if (!log) throw notFound();
     res.json(log);
   }));
   r.post("/:id/resend", can("wa_logs", "update"), h(async (req, res) => {
+    if (scope === "super" && /^[a-f0-9]{24}$/.test(String(req.query.companyId || ""))) setTenantDb(await dbOf(req.query.companyId));
     const log = await WaLog.findOne({ _id: req.params.id, ...(scope === "company" ? { companyId: req.auth!.companyId } : {}) }).lean();
     if (!log) throw notFound();
     res.locals.action = "Resend";
@@ -161,7 +169,23 @@ export function activityRoutes(scope: Scope) {
     else if (side === "company" && req.query.companyId) q.companyId = req.query.companyId;
     if (req.query.module) q.module = req.query.module;
     if (req.query.q) q.$or = [{ userLabel: { $regex: escapeRegex(String(req.query.q)), $options: "i" } }, { item: { $regex: escapeRegex(String(req.query.q)), $options: "i" } }];
-    const [items, total] = await Promise.all([ActivityLog.find(q).sort({ createdAt: -1 }).skip(skip).limit(limit).lean(), ActivityLog.countDocuments(q)]);
+    let items: any[];
+    let total: number;
+    if (scope === "super" && side === "company") {
+      if (q.companyId) {
+        setTenantDb(await dbOf(q.companyId));
+        [items, total] = await Promise.all([ActivityLog.find(q).sort({ createdAt: -1 }).skip(skip).limit(limit).lean(), ActivityLog.countDocuments(q)]);
+      } else {
+        // all companies: newest first across every company database (each contributes at most skip+limit rows)
+        const per = await forEachCompanyDb(async (co) => {
+          const qq = { ...q, companyId: co._id };
+          const [rows, n] = await Promise.all([ActivityLog.find(qq).sort({ createdAt: -1 }).limit(skip + limit).lean(), ActivityLog.countDocuments(qq)]);
+          return { rows, n };
+        });
+        total = per.reduce((a, p) => a + p.value.n, 0);
+        items = per.flatMap((p) => p.value.rows).sort((a: any, b: any) => +new Date(b.createdAt) - +new Date(a.createdAt)).slice(skip, skip + limit);
+      }
+    } else [items, total] = await Promise.all([ActivityLog.find(q).sort({ createdAt: -1 }).skip(skip).limit(limit).lean(), ActivityLog.countDocuments(q)]);
     let companies: Record<string, string> = {};
     if (scope === "super" && side === "company") {
       const ids = [...new Set(items.map((i: any) => String(i.companyId)))];
@@ -199,7 +223,7 @@ export function roleRoutes(scope: Scope) {
     const roles = await Role.find(q).sort({ name: 1 }).lean();
     const plan = scope === "company" ? await Plan.findOne({ name: req.auth!.plan }).lean<any>() : req.query.plan ? await Plan.findOne({ name: req.query.plan }).lean<any>() : null;
     let templates: any[] = [];
-    if (scope === "company") templates = await Role.find({ scope: "super", plan: req.auth!.plan }).lean();
+    if (scope === "company") templates = await runInMain(() => Role.find({ scope: "super", plan: req.auth!.plan }).lean()); // platform templates
     res.json({ roles, modules: COMPANY_MODULES, planCaps: plan?.permissions || null, templates });
   }));
 

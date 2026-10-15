@@ -1,5 +1,4 @@
 import type { Request, Response, NextFunction } from "express";
-import { AsyncLocalStorage } from "async_hooks";
 import { Company } from "../models";
 import { cached, invalidate } from "./cache";
 
@@ -22,12 +21,7 @@ export const configuredBases = () =>
 
 const extraPlatformHosts = () => (process.env.PLATFORM_HOSTS || "").split(",").map(cleanHost).filter(Boolean);
 
-interface Ctx {
-  host: string;
-  base?: string;
-  baseSource?: "env" | "auto";
-}
-const als = new AsyncLocalStorage<Ctx>();
+import { als } from "./context";
 
 /** Express middleware: opens the request context. */
 export function hostContext(req: Request, _res: Response, next: NextFunction) {
