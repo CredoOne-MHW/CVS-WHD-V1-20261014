@@ -230,3 +230,8 @@ Per-address title, description, canonical, Open Graph and JSON-LD (Organization 
 - New modules added later are ticked on all plans by default.
 - AI Agent: **Create** always works; the AI model is optional until Super Admin allocates one (Company › ⋯ › AI Agents & credits). The floating assistant button always shows on the company side, with a set-up card until it's ready.
 - S3 base folder is the company name exactly as typed (`WELLNESSHIVE DIAGNOSTICA LLP/logo`, `/banner`, `/brain`). Existing files (including the earlier hyphenated folders) are moved in the background once (`meta.s3_layout_v2`), and again for a company on its next upload. Manual: `POST /api/sa/companies/<id|all>/s3-relayout`.
+
+### 10.2 AI models for every company + usage history (Oct 2026)
+- Every **active** model in Super Admin › AI Agents is offered to every company automatically. The company's credit wallet for a model opens with that model's **Credits (default)** the first time it's listed or used; Super Admin can still top up per company (Company › ⋯ › AI Agents & credits). Deactivate a model to withdraw it.
+- Create / Edit AI agent: picking a model shows its charges — ₹ per credit, token weights, an estimated cost of a typical reply, and credits left.
+- AI Agent list › Action › **Usage**: credits left, cost incurred, credits used, calls, tokens, a 30-day trend, a breakdown by use (agent chat / floating assistant / agentic report) and the full call history (`GET /api/co/ai-agents/:id/usage`).

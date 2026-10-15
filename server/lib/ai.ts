@@ -70,10 +70,22 @@ async function callProvider(agent: any, system: string, messages: Msg[], opts: {
   return { text: j.choices?.[0]?.message?.content || "", inTok: j.usage?.prompt_tokens || 0, outTok: j.usage?.completion_tokens || 0 };
 }
 
+/**
+ * Every active Super Admin model is offered to every company. The company's credit wallet for a model is
+ * opened automatically with that model's default credits the first time it is listed or used
+ * (Super Admin can still top up / change it per company).
+ */
+export async function walletFor(companyId: any, agent: any) {
+  return AiAllocation.findOneAndUpdate(
+    { companyId, agentId: agent._id },
+    { $setOnInsert: { companyId, agentId: agent._id, credits: Number(agent.credits) || 0, used: 0 } },
+    { upsert: true, new: true }
+  );
+}
+
 /** Credits left for a company on a model; throws 402 when exhausted (after alerting once). */
 async function ensureCredits(companyId: string, agent: any) {
-  const alloc = await AiAllocation.findOne({ companyId, agentId: agent._id });
-  if (!alloc) throw new HttpError(402, "This AI model is not allocated to your company.");
+  const alloc = await walletFor(companyId, agent);
   if (alloc.credits - alloc.used <= 0) {
     await notifyExhausted(companyId, agent, alloc);
     throw new HttpError(402, "AI credits are exhausted. Your administrator has been notified on WhatsApp.");
