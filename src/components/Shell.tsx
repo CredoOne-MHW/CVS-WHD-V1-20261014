@@ -5,6 +5,8 @@ import { usePathname, useRouter } from "next/navigation";
 import { Menu, LogOut, ChevronRight, ChevronDown, ShieldAlert, Globe, X } from "lucide-react";
 import { icon } from "./icons";
 import { Assistant } from "./Assistant";
+import { ErrorBoundary, InlineError as InlineErrorCard } from "./ErrorBoundary";
+import { installGlobalErrorHandlers } from "@/lib/clientErrors";
 import { api } from "@/lib/api";
 import { Spinner } from "./ui";
 import type { PermMap } from "@shared/constants";
@@ -74,6 +76,7 @@ export default function Shell({ scope, children }: { scope: "super" | "company";
   const router = useRouter();
 
   useEffect(() => {
+    installGlobalErrorHandlers();
     try {
       setExpanded(localStorage.getItem("lms_nav") === "open");
     } catch {}
@@ -248,7 +251,18 @@ export default function Shell({ scope, children }: { scope: "super" | "company";
         <main id="main" className="mx-auto max-w-[1480px] px-4 py-7 sm:px-6 lg:px-8 lg:py-8">
           {current ? children : <div className="card p-10 text-center text-ink-500">Your plan or role does not include this module.</div>}
         </main>
-        {scope === "company" && <Assistant companyName={me.companyName} />}
+        {scope === "company" && (
+          <ErrorBoundary
+            where="assistant"
+            fallback={(err, reset) => (
+              <div className="fixed bottom-5 right-5 z-40 w-[min(360px,calc(100vw-40px))] sm:bottom-7 sm:right-7">
+                <InlineErrorCard error={err} onReset={reset} />
+              </div>
+            )}
+          >
+            <Assistant companyName={me.companyName} />
+          </ErrorBoundary>
+        )}
       </div>
     </MeCtx.Provider>
   );

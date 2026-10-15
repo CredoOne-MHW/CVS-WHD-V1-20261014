@@ -1,10 +1,11 @@
 import express, { type Request, type Response, type NextFunction } from "express";
 import cookieParser from "cookie-parser";
 import { connectDB } from "./lib/db";
+import { rateLimit } from "./lib/cache";
 import { errorHandler, HttpError } from "./lib/http";
 import { requestHost, isPlatformHost, platformBranding, baseDomain, baseSource, configuredBases, hostContext, resolveHost } from "./lib/tenant";
 import { requireAuth } from "./middleware/auth";
-import { activityLogger } from "./middleware/activity";
+import { activityLogger, logActivity } from "./middleware/activity";
 import authRoutes from "./routes/auth";
 import saRoutes from "./routes/sa";
 import coRoutes from "./routes/co";
@@ -27,7 +28,7 @@ function sameOrigin(req: Request, _res: Response, next: NextFunction) {
   const origin = req.headers.origin;
   if (!origin) return next(); // non-browser clients (no cookies sent cross-site anyway)
   try {
-    if (new URL(origin).host.toLowerCase() === requestHost(req)) return next();
+    if (new URL(origin).hostname.toLowerCase() === requestHost(req)) return next();
   } catch {}
   next(new HttpError(403, "Cross-site request blocked"));
 }
@@ -124,6 +125,18 @@ export function createApp() {
       await resolveHost(requestHost(req));
     } catch {}
     next();
+  });
+
+  /** Browser crash reports → Activity Logs (Error status) + Vercel function logs, so a client error is never invisible. */
+  app.post("/api/client-error", sameOrigin, requireAuth, async (req, res) => {
+    const ip = String(req.headers["x-forwarded-for"] || req.socket.remoteAddress || "").split(",")[0].trim();
+    if (!(await rateLimit(`clienterr:${req.auth!.userId}`, 20, 600))) return res.status(204).end();
+    const b = req.body || {};
+    const clip = (v: any, n: number) => String(v ?? "").slice(0, n);
+    const payload = { message: clip(b.message, 500), where: clip(b.where, 80), url: clip(b.url, 300), stack: clip(b.stack, 4000), componentStack: clip(b.componentStack, 2000), userAgent: clip(req.headers["user-agent"], 300), build: clip(b.build, 40) };
+    console.error("[client-error]", req.auth!.email, JSON.stringify(payload));
+    await logActivity({ scope: req.auth!.scope, companyId: req.auth!.companyId, userId: req.auth!.userId, userLabel: `${req.auth!.name} <${req.auth!.email}>`, impersonatedBy: req.auth!.impersonatedBy, action: "Screen error", module: "client", item: payload.where || payload.url, response: 500, error: payload.message, payload, ip });
+    res.status(204).end();
   });
 
   app.use("/api", publicRoutes); // intake, hosted forms, cron, branding

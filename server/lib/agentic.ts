@@ -1,4 +1,5 @@
 import { AiAgent, CompanyAgent } from "../models";
+import { toText } from "../../shared/text";
 import { complete, knowledge, agentSystem, parseJson, type Msg } from "./ai";
 import { runReport, schemaForPrompt, specSchema } from "./reports";
 import { HttpError } from "./http";
@@ -55,6 +56,15 @@ export async function agenticReport(a: AuthCtx, companyAgentId: string, prompt: 
  * Floating assistant. Read-only by construction: the only data tool it has is the report engine,
  * which executes whitelisted aggregations scoped to the user's company AND the user's module permissions.
  */
+/** The assistant must always hand the browser a plain string, whatever shape the model replied in. */
+function answerText(j: any, raw: string): string {
+  const t = j ? j.text ?? j.answer ?? j.message ?? j.content : undefined;
+  if (typeof t === "string" && t.trim()) return t;
+  if (t && typeof t === "object") return toText(t) || Object.values(t).filter((v) => typeof v === "string").join("\n") || JSON.stringify(t, null, 2);
+  const plain = toText(raw).replace(/^```(?:json)?|```$/g, "").trim();
+  return plain && !/^\{[\s\S]*\}$/.test(plain) ? plain : "I couldn't put that into words — please rephrase the question.";
+}
+
 export async function assistantChat(a: AuthCtx, messages: Msg[]) {
   const { ca, agent } = await loadAgent(a.companyId!, undefined, true);
   const kb = await knowledge(ca);
@@ -70,11 +80,14 @@ Prefer one well-aimed query. Never invent numbers.`
   );
   const convo: Msg[] = messages.slice(-12);
   let usage: any;
+  const deadline = Date.now() + 52_000; // stay inside the 60 s serverless limit across all steps
   for (let step = 0; step < 4; step++) {
-    const r = await complete({ agent, companyId: a.companyId!, system, messages: convo, purpose: "assistant", userId: a.userId, companyAgentId: ca._id, json: true, maxTokens: 900 });
+    const left = deadline - Date.now();
+    if (left < 8_000) break;
+    const r = await complete({ agent, companyId: a.companyId!, system, messages: convo, purpose: "assistant", userId: a.userId, companyAgentId: ca._id, json: true, maxTokens: 900, timeoutMs: left });
     usage = r.usage;
     const j = parseJson(r.text);
-    if (!j || j.action === "answer" || !j.spec) return { text: j?.text || r.text, usage, agent: ca.name };
+    if (!j || j.action === "answer" || !j.spec) return { text: answerText(j, r.text), usage, agent: ca.name };
     let result: string;
     try {
       const rep = await runReport(a, { ...j.spec, limit: Math.min(Number(j.spec.limit) || 50, 100) });
