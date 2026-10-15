@@ -1,6 +1,7 @@
 "use client";
 import { useEffect, useRef, useState } from "react";
-import { Plus, Pencil, Trash2, Upload, FileText, X, MessageSquare, Send } from "lucide-react";
+import { Plus, Pencil, Trash2, Upload, FileText, X, MessageSquare, Send, BarChart3 } from "lucide-react";
+import { ModelCharges, UsageModal } from "@/components/AiUsage";
 import { api } from "@/lib/api";
 import { PageHeader, Btn, Modal, Field, Badge, Empty, Spinner, Confirm, useToast } from "@/components/ui";
 import { usePerm } from "@/components/Shell";
@@ -15,6 +16,7 @@ export default function CompanyAiAgents() {
   const [remove, setRemove] = useState<string[]>([]);
   const [del, setDel] = useState<any>(null);
   const [chat, setChat] = useState<any>(null);
+  const [usage, setUsage] = useState<any>(null);
   const [busy, setBusy] = useState(false);
   const perm = usePerm("ai_agents");
   const toast = useToast();
@@ -57,7 +59,7 @@ export default function CompanyAiAgents() {
     <>
       <PageHeader
         title="AI Agent"
-        subtitle="Build assistants on your allocated AI models, grounded in your own price lists, FAQs and SOPs."
+        subtitle="Build assistants on the AI models offered by your platform, grounded in your own price lists, FAQs and SOPs."
         actions={
           perm.create && (
             <Btn onClick={() => openForm()}>
@@ -68,8 +70,8 @@ export default function CompanyAiAgents() {
       />
       {list && !models.length && (
         <div className="mb-5 rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
-          <b>No AI model allocated yet.</b> You can create agents and upload knowledge files now; chat and the floating Assistant start working once the
-          Super Admin allocates an AI model with credits (Company › ⋯ › AI Agents &amp; credits).
+          <b>No AI models are offered yet.</b> You can create agents and upload knowledge files now; chat and the floating Assistant start working as soon as
+          the Super Admin adds an AI model (Super Admin › AI Agents).
         </div>
       )}
       {models.length > 0 && (
@@ -77,6 +79,7 @@ export default function CompanyAiAgents() {
           {models.map((m) => (
             <div key={m._id} className="card flex items-center gap-3 px-4 py-3">
               <span className="text-sm font-semibold">{m.name}</span>
+              <span className="text-xs text-ink-500">₹{m.companyRate}/credit</span>
               <Badge color={m.remaining > m.credits * 0.1 ? "green" : "red"}>
                 {m.remaining.toLocaleString("en-IN")} / {m.credits.toLocaleString("en-IN")} credits
               </Badge>
@@ -88,8 +91,8 @@ export default function CompanyAiAgents() {
         <table className="w-full min-w-[760px]">
           <thead>
             <tr>
-              {["Agent name", "AI model", "Purpose", "Knowledge base", "Prompts", ""].map((h) => (
-                <th key={h} className="th">
+              {["Agent name", "AI model", "Purpose", "Knowledge base", "Prompts", "Action"].map((h) => (
+                <th key={h} className={`th ${h === "Action" ? "text-right" : ""}`}>
                   {h}
                 </th>
               ))}
@@ -116,6 +119,9 @@ export default function CompanyAiAgents() {
                 <td className="td">{a.knowledge.length} file(s)</td>
                 <td className="td">{a.prompts.length}</td>
                 <td className="td whitespace-nowrap text-right">
+                  <button className="btn-ghost" onClick={() => setUsage(a)} title="Usage history, cost and credits left">
+                    <BarChart3 className="h-4 w-4" /> Usage
+                  </button>
                   <button className="btn-ghost" onClick={() => setChat({ agent: a, messages: [], input: "", busy: false, usage: null })}>
                     <MessageSquare className="h-4 w-4" /> Test
                   </button>
@@ -161,15 +167,16 @@ export default function CompanyAiAgents() {
         {form && (
           <div className="grid gap-5 lg:grid-cols-2">
             <div className="space-y-4">
-              <Field label="AI Agent" required>
+              <Field label="AI model">
                 <select className="input" value={form.agentId || ""} onChange={(e) => setForm({ ...form, agentId: e.target.value })}>
-                  {!models.length && <option value="">No AI model allocated yet — pick later</option>}
+                  {!models.length ? <option value="">No AI model offered yet — pick later</option> : <option value="">Select an AI model…</option>}
                   {models.map((m) => (
                     <option key={m._id} value={m._id}>
-                      {m.name} · {m.remaining} credits left
+                      {m.name} · ₹{m.companyRate}/credit
                     </option>
                   ))}
                 </select>
+                <ModelCharges model={models.find((m) => m._id === form.agentId)} />
               </Field>
               <label className="flex items-start gap-3 rounded-2xl border border-hive-200 bg-hive-50/70 p-3.5">
                 <input type="checkbox" className="mt-0.5 h-4 w-4 accent-hive-700" checked={!!form.isAssistant} onChange={(e) => setForm({ ...form, isAssistant: e.target.checked })} />
@@ -247,6 +254,7 @@ export default function CompanyAiAgents() {
         )}
       </Modal>
 
+      <UsageModal agent={usage} onClose={() => { setUsage(null); api("/co/ai-agents/models").then(setModels); }} />
       <ChatTester state={chat} setState={setChat} onUsage={() => api("/co/ai-agents/models").then(setModels)} credits={chat ? credits(chat.agent.agentId?._id) : null} />
 
       <Confirm

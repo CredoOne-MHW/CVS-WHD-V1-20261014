@@ -3,9 +3,9 @@ import multer from "multer";
 import bcrypt from "bcryptjs";
 import crypto from "crypto";
 import { z } from "zod";
-import mongoose from "mongoose";
+import mongoose, { Types } from "mongoose";
 import * as XLSX from "xlsx";
-import { Lead, Connector, IntakeEvent, Company, User, Webhook, Otp, AiAgent, AiAllocation, CompanyAgent, Role, Plan } from "../../models";
+import { Lead, Connector, IntakeEvent, Company, User, Webhook, Otp, AiAgent, AiAllocation, CompanyAgent, Role, Plan, AiProvider, AiUsage } from "../../models";
 import { can, requireScope, tenant, invalidateAuth } from "../../middleware/auth";
 import { h, parse, notFound, badRequest, forbidden, paging, dateRange, escapeRegex, HttpError } from "../../lib/http";
 import { upsertLead, mapFields, runEvent } from "../../lib/intake";
@@ -13,7 +13,7 @@ import { dispatch, fireEvent } from "../../lib/whatsapp";
 import { parseSheet, leadTemplateBuffer, extractText, KB_EXTENSIONS } from "../../lib/files";
 import { putObject, deleteObject, folderFor, companyFolder, relayoutCompany } from "../../lib/s3";
 import { encrypt, decrypt, randomKey, sha256, maskSecret } from "../../lib/crypto";
-import { chat } from "../../lib/ai";
+import { chat, walletFor } from "../../lib/ai";
 import { webhookRoutes, waLogRoutes, activityRoutes, roleRoutes } from "../shared";
 import { reportRoutes } from "../reports";
 import { assistantChat, assistantInfo } from "../../lib/agentic";
@@ -436,13 +436,35 @@ r.get("/storage", can("ai_agents", "read"), h(async (req, res) => {
   res.json({ folder, logo: `${folder}/logo`, banner: `${folder}/banner`, brain: `${folder}/brain` });
 }));
 
+/** Every active model from Super Admin › AI Agents, with its charges and this company's credit wallet. */
 r.get("/ai-agents/models", can("ai_agents", "read"), h(async (req, res) => {
-  const allocs = await AiAllocation.find(tenant(req)).lean();
-  const agents = await AiAgent.find({ _id: { $in: allocs.map((a: any) => a.agentId) }, active: true }).select("name llmVersion provider companyRate").lean();
-  res.json(agents.map((a: any) => {
-    const al: any = allocs.find((x: any) => String(x.agentId) === String(a._id));
-    return { ...a, credits: al?.credits || 0, used: +(al?.used || 0).toFixed(3), remaining: +((al?.credits || 0) - (al?.used || 0)).toFixed(3) };
-  }));
+  const cid = new Types.ObjectId(req.auth!.companyId!);
+  const agents = await AiAgent.find({ active: true }).select("name llmVersion provider companyRate tokenWeights credits").sort({ name: 1 }).lean<any[]>();
+  const [wallets, providers, spend] = await Promise.all([
+    Promise.all(agents.map((a) => walletFor(cid, a))),
+    AiProvider.find().select("key name").lean<any[]>(),
+    AiUsage.aggregate([{ $match: { companyId: cid } }, { $group: { _id: "$agentId", billed: { $sum: "$billed" }, calls: { $sum: 1 } } }]),
+  ]);
+  res.json(
+    agents.map((a, i) => {
+      const w: any = wallets[i];
+      const s = spend.find((x: any) => String(x._id) === String(a._id));
+      return {
+        _id: a._id,
+        name: a.name,
+        llmVersion: a.llmVersion,
+        provider: a.provider,
+        providerName: providers.find((p) => p.key === a.provider)?.name || a.provider,
+        companyRate: a.companyRate || 0,
+        tokenWeights: { input: a.tokenWeights?.input ?? 1, output: a.tokenWeights?.output ?? 3 },
+        credits: w?.credits || 0,
+        used: +(w?.used || 0).toFixed(3),
+        remaining: +((w?.credits || 0) - (w?.used || 0)).toFixed(3),
+        spent: +(s?.billed || 0).toFixed(2),
+        calls: s?.calls || 0,
+      };
+    })
+  );
 }));
 
 r.get("/ai-agents", can("ai_agents", "read"), h(async (req, res) => {
@@ -483,7 +505,7 @@ async function ingest(companyId: string, files: Express.Multer.File[]) {
 
 r.post("/ai-agents", can("ai_agents", "create"), upload.array("files", 10), h(async (req, res) => {
   const b = parse(caBody, typeof req.body.data === "string" ? JSON.parse(req.body.data) : req.body);
-  if (b.agentId && !(await AiAllocation.exists({ ...tenant(req), agentId: b.agentId }))) throw badRequest("This AI model is not allocated to your company");
+  if (b.agentId && !(await AiAgent.exists({ _id: b.agentId, active: true }))) throw badRequest("This AI model is no longer offered");
   const knowledge = await ingest(req.auth!.companyId!, (req.files as Express.Multer.File[]) || []);
   const doc = await CompanyAgent.create({ ...b, ...tenant(req), knowledge });
   await claimAssistant(req.auth!.companyId!, doc._id, b.isAssistant);
@@ -497,7 +519,7 @@ r.put("/ai-agents/:id", can("ai_agents", "update"), upload.array("files", 10), h
   const doc = await CompanyAgent.findOne({ _id: req.params.id, ...tenant(req) });
   if (!doc) throw notFound();
   const { removeKeys, ...rest } = b;
-  if (rest.agentId && !(await AiAllocation.exists({ ...tenant(req), agentId: rest.agentId }))) throw badRequest("This AI model is not allocated to your company");
+  if (rest.agentId && !(await AiAgent.exists({ _id: rest.agentId, active: true }))) throw badRequest("This AI model is no longer offered");
   doc.set(rest);
   if (removeKeys?.length) {
     for (const k of doc.knowledge.filter((x: any) => removeKeys.includes(x.key))) {
@@ -511,6 +533,45 @@ r.put("/ai-agents/:id", can("ai_agents", "update"), upload.array("files", 10), h
   await claimAssistant(req.auth!.companyId!, doc._id, b.isAssistant);
   res.locals.item = doc.name;
   res.json(doc);
+}));
+
+/** Usage history of one company agent: totals, daily trend, by purpose, and the latest calls (paged). */
+r.get("/ai-agents/:id/usage", can("ai_agents", "read"), h(async (req, res) => {
+  const cid = new Types.ObjectId(req.auth!.companyId!);
+  const ca = await CompanyAgent.findOne({ _id: req.params.id, companyId: cid }).populate("agentId", "name llmVersion provider companyRate tokenWeights credits active").lean<any>();
+  if (!ca) throw notFound();
+  const page = Math.max(1, Number(req.query.page) || 1);
+  const limit = 25;
+  const match = { companyId: cid, companyAgentId: ca._id };
+  const since = new Date(Date.now() - 29 * 86400_000);
+  since.setHours(0, 0, 0, 0);
+  const model: any = ca.agentId;
+  const [totals, byPurpose, daily, rows, total, wallet] = await Promise.all([
+    AiUsage.aggregate([{ $match: match }, { $group: { _id: null, calls: { $sum: 1 }, inputTokens: { $sum: "$inputTokens" }, outputTokens: { $sum: "$outputTokens" }, credits: { $sum: "$credits" }, billed: { $sum: "$billed" }, first: { $min: "$createdAt" }, last: { $max: "$createdAt" } } }]),
+    AiUsage.aggregate([{ $match: match }, { $group: { _id: "$purpose", calls: { $sum: 1 }, credits: { $sum: "$credits" }, billed: { $sum: "$billed" } } }, { $sort: { billed: -1 } }]),
+    AiUsage.aggregate([
+      { $match: { ...match, createdAt: { $gte: since } } },
+      { $group: { _id: { $dateToString: { format: "%Y-%m-%d", date: "$createdAt", timezone: "Asia/Kolkata" } }, calls: { $sum: 1 }, credits: { $sum: "$credits" }, billed: { $sum: "$billed" } } },
+      { $sort: { _id: 1 } },
+    ]),
+    AiUsage.find(match).sort({ createdAt: -1 }).skip((page - 1) * limit).limit(limit).select("-cost").lean<any[]>(),
+    AiUsage.countDocuments(match),
+    model?._id ? walletFor(cid, model) : null,
+  ]);
+  const users = await User.find({ _id: { $in: [...new Set(rows.map((r) => String(r.userId)).filter(Boolean))] } }).select("name email").lean<any[]>();
+  const t = totals[0] || { calls: 0, inputTokens: 0, outputTokens: 0, credits: 0, billed: 0 };
+  res.json({
+    agent: { _id: ca._id, name: ca.name, isAssistant: !!ca.isAssistant },
+    model: model ? { name: model.name, llmVersion: model.llmVersion, companyRate: model.companyRate || 0, tokenWeights: model.tokenWeights || { input: 1, output: 3 } } : null,
+    wallet: wallet ? { credits: wallet.credits || 0, used: +(wallet.used || 0).toFixed(3), remaining: +((wallet.credits || 0) - (wallet.used || 0)).toFixed(3) } : null,
+    totals: { calls: t.calls, inputTokens: t.inputTokens, outputTokens: t.outputTokens, credits: +t.credits.toFixed(3), billed: +t.billed.toFixed(2), first: t.first, last: t.last },
+    byPurpose: byPurpose.map((x: any) => ({ purpose: x._id || "chat", calls: x.calls, credits: +x.credits.toFixed(3), billed: +x.billed.toFixed(2) })),
+    daily: daily.map((x: any) => ({ day: x._id, calls: x.calls, credits: +x.credits.toFixed(3), billed: +x.billed.toFixed(2) })),
+    rows: rows.map((r) => ({ _id: r._id, at: r.createdAt, purpose: r.purpose || "chat", user: users.find((u) => String(u._id) === String(r.userId))?.name || "—", inputTokens: r.inputTokens || 0, outputTokens: r.outputTokens || 0, credits: +(r.credits || 0).toFixed(3), billed: +(r.billed || 0).toFixed(2) })),
+    page,
+    limit,
+    total,
+  });
 }));
 
 r.delete("/ai-agents/:id", can("ai_agents", "delete"), h(async (req, res) => {
