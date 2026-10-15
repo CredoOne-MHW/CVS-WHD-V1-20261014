@@ -1,20 +1,52 @@
-import type { Request } from "express";
+import type { Request, Response, NextFunction } from "express";
+import { AsyncLocalStorage } from "async_hooks";
 import { Company } from "../models";
+import { cached, invalidate } from "./cache";
 
 /**
- * Host → tenant.
- *  - APP_BASE_DOMAIN itself, *.vercel.app, localhost  → platform (Super Admin login)
- *  - <slug>.<APP_BASE_DOMAIN>                         → that company
- *  - any other host                                    → company whose customDomain matches
+ * Host → tenant, resolved PER REQUEST so one codebase serves prod and dev side by side:
+ *   mhw.credovation.tech            → platform (prod)      <slug>.mhw.credovation.tech     → company
+ *   dev-mhw.credovation.tech        → platform (dev)       <slug>.dev-mhw.credovation.tech → company
+ *   *.vercel.app, localhost         → platform
+ *   any other host                  → company whose customDomain matches
+ *
+ * APP_BASE_DOMAIN accepts a comma-separated list (e.g. "mhw.credovation.tech,dev-mhw.credovation.tech").
+ * If the current address isn't in the list (typical when Vercel env vars are scoped to Production only),
+ * the base is auto-detected from the address itself, so a Preview/dev deployment still works.
  */
 const cleanHost = (v: string) =>
   v.trim().replace(/^["']|["']$/g, "").trim().toLowerCase().replace(/^https?:\/\//, "").replace(/\/.*$/, "").replace(/:\d+$/, "").replace(/\.$/, "");
 
-/** Tolerates "https://", trailing slashes, quotes and spaces — common copy-paste mistakes in Vercel env. */
-export const baseDomain = () => cleanHost(process.env.APP_BASE_DOMAIN || "");
+export const configuredBases = () =>
+  [...(process.env.APP_BASE_DOMAIN || "").split(","), ...(process.env.APP_BASE_DOMAINS || "").split(",")].map(cleanHost).filter(Boolean);
 
-/** Extra addresses that always show the platform (Super Admin) login, comma-separated. */
 const extraPlatformHosts = () => (process.env.PLATFORM_HOSTS || "").split(",").map(cleanHost).filter(Boolean);
+
+interface Ctx {
+  host: string;
+  base?: string;
+  baseSource?: "env" | "auto";
+}
+const als = new AsyncLocalStorage<Ctx>();
+
+/** Express middleware: opens the request context. */
+export function hostContext(req: Request, _res: Response, next: NextFunction) {
+  als.run({ host: requestHost(req) }, next);
+}
+
+const matchConfigured = (host: string) => configuredBases().find((b) => host === b || host === `www.${b}` || host.endsWith(`.${b}`));
+
+/** Base domain for the current request (falls back to the first configured one outside a request). */
+export function baseDomain(): string {
+  const ctx = als.getStore();
+  if (ctx?.base) return ctx.base;
+  if (ctx?.host) {
+    const m = matchConfigured(ctx.host);
+    if (m) return m;
+  }
+  return configuredBases()[0] || "";
+}
+export const baseSource = () => als.getStore()?.baseSource || (configuredBases().length ? "env" : "auto");
 
 export function requestHost(req: Request) {
   const raw = String(req.headers["x-forwarded-host"] || req.headers.host || "").split(",")[0].trim().toLowerCase();
@@ -22,45 +54,63 @@ export function requestHost(req: Request) {
 }
 
 export function isPlatformHost(host: string) {
-  const base = baseDomain();
   if (!host || host === "localhost" || host === "127.0.0.1" || host.endsWith(".vercel.app")) return true;
-  if (base && (host === base || host === `www.${base}`)) return true;
-  return extraPlatformHosts().includes(host);
+  if (extraPlatformHosts().includes(host)) return true;
+  return configuredBases().some((b) => host === b || host === `www.${b}`);
 }
 
-/**
- * platform → Super Admin login · company → that company · unknown → nothing mapped here.
- * If APP_BASE_DOMAIN isn't configured, an address that matches no company falls back to the
- * platform login instead of a dead end (so a fresh deployment always shows a login).
- */
+const setCtx = (base: string, source: "env" | "auto") => {
+  const ctx = als.getStore();
+  if (ctx) {
+    ctx.base = base;
+    ctx.baseSource = source;
+  }
+};
+
+const findCompany = (q: any) => cached(`tenant:${JSON.stringify(q)}`, 60, () => Company.findOne({ ...q, deletedAt: null }).lean());
+
+/** platform → Super Admin login · company → that company · unknown → an unused sub-domain of our base. */
 export async function resolveHost(host: string): Promise<{ kind: "platform" } | { kind: "company"; company: any } | { kind: "unknown" }> {
+  // 1. configured base or a sub-domain of it
+  const m = matchConfigured(host);
+  if (m) {
+    setCtx(m, "env");
+    if (host === m || host === `www.${m}`) return { kind: "platform" };
+    const slug = host.slice(0, -(m.length + 1));
+    if (!slug.includes(".")) {
+      const company = await findCompany({ slug });
+      if (company) return { kind: "company", company };
+    }
+    return { kind: "unknown" }; // <unknown>.<our base>
+  }
   if (isPlatformHost(host)) return { kind: "platform" };
-  const company = await companyForHost(host);
-  if (company) return { kind: "company", company };
-  const base = baseDomain();
-  if (!base) return { kind: "platform" };
-  return { kind: "unknown" };
+  // 2. a company's own domain
+  const custom = await findCompany({ customDomain: host });
+  if (custom) {
+    setCtx(configuredBases()[0] || "", "env");
+    return { kind: "company", company: custom };
+  }
+  // 3. auto-detect <slug>.<some base> when the base isn't configured for this environment
+  const labels = host.split(".");
+  if (labels.length >= 4) {
+    const company = await findCompany({ slug: labels[0] });
+    if (company) {
+      setCtx(labels.slice(1).join("."), "auto");
+      return { kind: "company", company };
+    }
+  }
+  // 4. unknown address → treat it as this environment's platform address
+  setCtx(host, "auto");
+  return { kind: "platform" };
 }
 
-const cache = new Map<string, { at: number; company: any | null }>();
-const TTL = 60_000;
-export const clearTenantCache = () => cache.clear();
-
-export async function companyForHost(host: string): Promise<any | null> {
-  if (isPlatformHost(host)) return null;
-  const hit = cache.get(host);
-  if (hit && Date.now() - hit.at < TTL) return hit.company;
-  const base = baseDomain();
-  let q: any;
-  if (base && host.endsWith(`.${base}`)) {
-    const slug = host.slice(0, -(base.length + 1));
-    if (slug.includes(".")) return null; // only one level of subdomain
-    q = { slug };
-  } else q = { customDomain: host };
-  const company = await Company.findOne({ ...q, deletedAt: null }).lean();
-  cache.set(host, { at: Date.now(), company });
-  return company;
+/** Kept for callers that only need the company. */
+export async function companyForHost(host: string) {
+  const t = await resolveHost(host);
+  return t.kind === "company" ? t.company : null;
 }
+
+export const clearTenantCache = () => invalidate("tenant:");
 
 export function tenantUrls(c: { slug?: string; customDomain?: string }) {
   const base = baseDomain();

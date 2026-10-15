@@ -1,0 +1,12 @@
+# CredoOne Lead Management
+
+> Multi-tenant lead management platform by Credovation Solutions Pvt Ltd (Kolkata, India). Each business gets its own branded workspace to capture enquiries from websites, WhatsApp, Meta and Google lead ads, email, phone/IVR, QR campaigns and partners; qualify them through a sales pipeline; follow up on WhatsApp; and report on conversion.
+
+## Key facts
+- Product: CredoOne Lead Management Console (white-label; each company signs in on its own address)
+- Capabilities: unified lead intake with de-duplication and source attribution, sales pipeline with lost-reason tracking, WhatsApp reminders and broadcasts, DIY and AI-generated reports with Excel/CSV export, read-only AI assistant
+- Audience: Indian SMBs — diagnostic centres, clinics, F&B, services
+- Access: invitation only; workspaces are created by the platform administrator
+
+## Pages
+- /login: sign-in for administrators and company teams

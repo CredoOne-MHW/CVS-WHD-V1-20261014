@@ -119,6 +119,7 @@ export function DnsPanel({ companyId, autoCheck = false }: { companyId: string; 
                         <td className="td">
                           <span className="rounded-md bg-hive-900 px-2 py-0.5 font-mono text-[11.5px] font-bold text-white">{r.type}</span>
                           {!r.required && <p className="mt-1 text-[11px] text-ink-400">optional</p>}
+                          {r.unique && <p className="mt-1 text-[11px] font-semibold text-hive-700">unique to this company</p>}
                         </td>
                         <td className="td">
                           <div className="flex items-center gap-1">
@@ -152,9 +153,12 @@ export function DnsPanel({ companyId, autoCheck = false }: { companyId: string; 
             </div>
           </div>
           <div className="flex flex-wrap items-center gap-x-6 gap-y-2 rounded-2xl bg-hive-50/70 px-4 py-3 text-sm">
+            <span>
+              Domain ownership: {rep.ownershipVerified ? <b className="text-hive-700">verified</b> : <b className="text-honey-700">waiting for the {"_credoone-verify"} TXT</b>}
+            </span>
             <span className="flex items-center gap-2">
               <Globe2 className="h-4 w-4 text-hive-700" />
-              Hosting: {rep.vercel.configured ? (rep.vercel.added ? "domain registered on the Vercel project" : "not registered yet") : "Vercel API not connected — add the domain in Vercel › Settings › Domains"}
+              Hosting: {rep.vercel.configured ? (rep.vercel.added ? "registered on the Vercel project" : "not registered yet") : `Vercel API not connected — add ${rep.company.customDomain} in Vercel › Settings › Domains`}
             </span>
             {rep.vercel.configured && <span>Ownership: {rep.vercel.verified ? <b className="text-hive-700">verified</b> : <b className="text-honey-700">pending TXT</b>}</span>}
             {rep.vercel.lastCheckedAt && <span className="text-ink-500">Last checked {fmtDate(rep.vercel.lastCheckedAt)}</span>}

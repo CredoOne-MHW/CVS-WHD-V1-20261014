@@ -4,25 +4,17 @@ import { h, HttpError } from "../lib/http";
 import { decrypt, hmacValid } from "../lib/crypto";
 import { processIntake, runEvent } from "../lib/intake";
 import { fireEvent } from "../lib/whatsapp";
+import { cached, rateLimit } from "../lib/cache";
 import { getObject } from "../lib/s3";
 import { requestHost, resolveHost, baseDomain, publicBranding, platformBranding } from "../lib/tenant";
 import { LOST_STATUS, WON_STATUS } from "../../shared/constants";
 
 const r = Router();
 
-// naive per-instance rate limit for public intake (pair with Vercel Firewall rules)
-const hits = new Map<string, { n: number; reset: number }>();
-function rateLimit(key: string, max = 60) {
-  const now = Date.now();
-  const e = hits.get(key);
-  if (!e || e.reset < now) return void hits.set(key, { n: 1, reset: now + 60_000 });
-  if (++e.n > max) throw new HttpError(429, "Rate limit exceeded");
-}
-
 async function loadConnector(key: string) {
-  const c = await Connector.findOne({ key, active: true }).lean<any>();
+  const c = await cached(`conn:${key}`, 60, () => Connector.findOne({ key, active: true }).lean<any>());
   if (!c) throw new HttpError(404, "Unknown or inactive connector");
-  const company = await Company.findOne({ _id: c.companyId, status: "active", deletedAt: null }).select("_id").lean();
+  const company = await cached(`conn:co:${c.companyId}`, 60, () => Company.findOne({ _id: c.companyId, status: "active", deletedAt: null }).select("_id").lean());
   if (!company) throw new HttpError(403, "Company inactive");
   return c;
 }
@@ -45,7 +37,8 @@ r.get("/intake/:key", h(async (req, res) => {
  * Idempotency: `Idempotency-Key` header, else provider id, else hash of the body.
  */
 r.post("/intake/:key", h(async (req, res) => {
-  rateLimit(`${req.params.key}|${req.headers["x-forwarded-for"] || req.socket.remoteAddress}`, 120);
+  const ip = String(req.headers["x-forwarded-for"] || req.socket.remoteAddress || "").split(",")[0].trim();
+  if (!(await rateLimit(`intake:${req.params.key}|${ip}`, 120, 60))) throw new HttpError(429, "Rate limit exceeded");
   const c = await loadConnector(req.params.key);
   const secret = decrypt(c.secretEnc);
   const body = req.body || {};

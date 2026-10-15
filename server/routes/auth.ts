@@ -3,7 +3,8 @@ import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
 import { z } from "zod";
 import { User, Company } from "../models";
-import { requireAuth, signToken, setAuthCookie, COOKIE, buildContext } from "../middleware/auth";
+import { requireAuth, signToken, setAuthCookie, COOKIE, buildContext, invalidateAuth } from "../middleware/auth";
+import { rateLimit } from "../lib/cache";
 import { logActivity } from "../middleware/activity";
 import { h, parse, HttpError } from "../lib/http";
 import { COMPANY_MODULES, SA_MODULES } from "../../shared/constants";
@@ -12,24 +13,17 @@ import { requestHost, resolveHost, publicBranding, platformBranding, tenantUrls 
 const r = Router();
 const SA_BACKUP = "lms_sa_token";
 
-// simple in-memory throttle per instance (pair with Vercel WAF rate limiting in production)
-const attempts = new Map<string, { n: number; until: number }>();
+// Brute-force protection: 8 tries / 10 min per email+IP, 40 / 10 min per IP (shared across instances with Redis)
 
 /** One login page for everyone. The account's scope decides which console opens. */
 r.post("/login", h(async (req, res) => {
   const { email, password } = parse(z.object({ email: z.string().email(), password: z.string().min(1) }), req.body);
-  const key = `${email.toLowerCase()}|${req.headers["x-forwarded-for"] || req.socket.remoteAddress}`;
-  const a = attempts.get(key);
-  if (a && a.until > Date.now()) throw new HttpError(429, "Too many attempts. Try again in a few minutes.");
+  const ip = String(req.headers["x-forwarded-for"] || req.socket.remoteAddress || "").split(",")[0].trim();
+  if (!(await rateLimit(`login:${email.toLowerCase()}|${ip}`, 8, 600)) || !(await rateLimit(`login-ip:${ip}`, 40, 600))) throw new HttpError(429, "Too many attempts. Try again in a few minutes.");
 
   const user = await User.findOne({ email: email.toLowerCase() });
   const ok = user && user.active && (await bcrypt.compare(password, user.passwordHash));
-  if (!ok) {
-    const n = (a?.n || 0) + 1;
-    attempts.set(key, { n, until: n >= 5 ? Date.now() + 10 * 60_000 : 0 });
-    throw new HttpError(401, "Invalid email or password");
-  }
-  attempts.delete(key);
+  if (!ok) throw new HttpError(401, "Invalid email or password");
 
   // White-label isolation: on a company's own URL only that company's users can sign in;
   // Super Admins sign in on the platform URL only.
@@ -37,10 +31,7 @@ r.post("/login", h(async (req, res) => {
   const t = await resolveHost(host);
   if (t.kind === "unknown") throw new HttpError(404, "No workspace is set up for this address");
   const hostCompany = t.kind === "company" ? t.company : null;
-  if (hostCompany && (user.scope !== "company" || String(user.companyId) !== String(hostCompany._id))) {
-    attempts.set(key, { n: (a?.n || 0) + 1, until: 0 });
-    throw new HttpError(401, "Invalid email or password");
-  }
+  if (hostCompany && (user.scope !== "company" || String(user.companyId) !== String(hostCompany._id))) throw new HttpError(401, "Invalid email or password");
   if (user.scope === "company") {
     const company = await Company.findById(user.companyId).lean<any>();
     if (!company || company.deletedAt) throw new HttpError(401, "Invalid email or password");
@@ -100,6 +91,7 @@ r.post("/change-password", requireAuth, h(async (req, res) => {
   user.passwordHash = await bcrypt.hash(b.next, 12);
   user.tokenVersion += 1;
   await user.save();
+  await invalidateAuth();
   res.clearCookie(COOKIE, { path: "/" });
   res.json({ ok: true });
 }));

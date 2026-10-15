@@ -6,19 +6,28 @@ import { z } from "zod";
 import mongoose from "mongoose";
 import * as XLSX from "xlsx";
 import { Lead, Connector, IntakeEvent, Company, User, Webhook, Otp, AiAgent, AiAllocation, CompanyAgent, Role, Plan } from "../../models";
-import { can, requireScope, tenant } from "../../middleware/auth";
+import { can, requireScope, tenant, invalidateAuth } from "../../middleware/auth";
 import { h, parse, notFound, badRequest, forbidden, paging, dateRange, escapeRegex, HttpError } from "../../lib/http";
 import { upsertLead, mapFields, runEvent } from "../../lib/intake";
 import { dispatch, fireEvent } from "../../lib/whatsapp";
 import { parseSheet, leadTemplateBuffer, extractText, KB_EXTENSIONS } from "../../lib/files";
-import { putObject, deleteObject } from "../../lib/s3";
+import { putObject, deleteObject, folderFor } from "../../lib/s3";
 import { encrypt, decrypt, randomKey, sha256, maskSecret } from "../../lib/crypto";
 import { chat } from "../../lib/ai";
 import { webhookRoutes, waLogRoutes, activityRoutes, roleRoutes } from "../shared";
+import { reportRoutes } from "../reports";
+import { assistantChat, assistantInfo } from "../../lib/agentic";
+import { rateLimit, invalidate } from "../../lib/cache";
+import { publicBranding } from "../../lib/tenant";
 import { LEAD_STATUSES, LOST_REASONS, LOST_STATUS, WON_STATUS, CONNECTOR_TYPES, normalizePhone } from "../../../shared/constants";
 
 const r = Router();
 r.use(requireScope("company"));
+// connector edits must reach the public intake cache immediately
+r.use("/integrations", (req, res, next) => {
+  if (req.method !== "GET") res.on("finish", () => invalidate("conn:").catch(() => undefined));
+  next();
+});
 // Vercel caps request bodies at ~4.5 MB; keep uploads under that.
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 4 * 1024 * 1024, files: 10 } });
 const oid = (s: string) => new mongoose.Types.ObjectId(s);
@@ -363,6 +372,7 @@ r.put("/users/:id", can("roles", "update"), h(async (req, res) => {
   }
   if (b.active === false) u.tokenVersion += 1;
   await u.save();
+  await invalidateAuth();
   res.locals.item = u.email;
   res.json({ ok: true });
 }));
@@ -439,16 +449,25 @@ const caBody = z.object({
   systemPrompt: z.string().max(8000).optional(),
   prompts: z.array(z.object({ title: z.string().max(80), text: z.string().max(4000) })).max(20).optional(),
   active: z.boolean().optional(),
+  isAssistant: z.boolean().optional(),
 });
+/** Only one agent per company is the floating assistant. */
+async function claimAssistant(companyId: string, id: any, on?: boolean) {
+  if (on) await CompanyAgent.updateMany({ companyId, _id: { $ne: id } }, { $set: { isAssistant: false } });
+}
 
+/** Knowledge base files → <Company-Name>/brain/…, extracted text → <Company-Name>/brain/_extracted/… */
 async function ingest(companyId: string, files: Express.Multer.File[]) {
+  if (!files.length) return [];
+  const company = await Company.findById(companyId);
+  const brain = `${await folderFor(company)}/brain`;
   const out = [];
   for (const f of files) {
     const ext = f.originalname.toLowerCase().split(".").pop() || "";
     if (!KB_EXTENSIONS.includes(ext)) throw badRequest(`Unsupported file: ${f.originalname}`);
-    const stored = await putObject(companyId, "kb", f.originalname, f.buffer, f.mimetype);
+    const stored = await putObject(brain, f.originalname, f.buffer, f.mimetype);
     const text = await extractText(f.buffer, f.originalname).catch(() => "");
-    const extracted = text ? await putObject(companyId, "kb-text", `${f.originalname}.txt`, text, "text/plain; charset=utf-8") : undefined;
+    const extracted = text ? await putObject(`${brain}/_extracted`, `${f.originalname}.txt`, text, "text/plain; charset=utf-8") : undefined;
     out.push({ fileName: f.originalname, key: stored.key, url: stored.url, size: f.size, mime: f.mimetype, chars: text.length, extractedKey: extracted?.key });
   }
   return out;
@@ -459,6 +478,7 @@ r.post("/ai-agents", can("ai_agents", "create"), upload.array("files", 10), h(as
   if (!(await AiAllocation.exists({ ...tenant(req), agentId: b.agentId }))) throw badRequest("This AI model is not allocated to your company");
   const knowledge = await ingest(req.auth!.companyId!, (req.files as Express.Multer.File[]) || []);
   const doc = await CompanyAgent.create({ ...b, ...tenant(req), knowledge });
+  await claimAssistant(req.auth!.companyId!, doc._id, b.isAssistant);
   res.locals.item = doc.name;
   res.status(201).json(doc);
 }));
@@ -479,6 +499,7 @@ r.put("/ai-agents/:id", can("ai_agents", "update"), upload.array("files", 10), h
   }
   doc.knowledge.push(...(await ingest(req.auth!.companyId!, (req.files as Express.Multer.File[]) || [])));
   await doc.save();
+  await claimAssistant(req.auth!.companyId!, doc._id, b.isAssistant);
   res.locals.item = doc.name;
   res.json(doc);
 }));
@@ -503,9 +524,26 @@ r.post("/ai-agents/:id/chat", can("ai_agents", "read"), h(async (req, res) => {
   res.locals.logRead = true;
   res.locals.action = "AI chat";
   res.locals.item = ca.name;
-  res.json(await chat({ agent, companyAgent: ca, companyId: req.auth!.companyId!, messages: b.messages }));
+  res.json(await chat({ agent, companyAgent: ca, companyId: req.auth!.companyId!, messages: b.messages, userId: req.auth!.userId }));
 }));
 
+/* ───────────── Floating AI assistant (read-only) ───────────── */
+r.get("/assistant", h(async (req, res) => {
+  const info = await assistantInfo(req.auth!.companyId!);
+  const company = await Company.findById(req.auth!.companyId).lean<any>();
+  res.json({ ...info, logoUrl: company ? publicBranding(company).logoUrl : undefined });
+}));
+r.post("/assistant/chat", h(async (req, res) => {
+  const b = parse(z.object({ messages: z.array(z.object({ role: z.enum(["user", "assistant"]), content: z.string().max(4000) })).min(1).max(30) }), req.body);
+  if (!(await rateLimit(`assistant:${req.auth!.userId}`, 30, 60))) throw new HttpError(429, "You're asking very fast — give it a few seconds");
+  res.locals.module = "assistant";
+  res.locals.logRead = true;
+  res.locals.action = "Assistant question";
+  res.locals.item = b.messages[b.messages.length - 1].content.slice(0, 80);
+  res.json(await assistantChat(req.auth!, b.messages));
+}));
+
+r.use("/reports", reportRoutes("company"));
 r.use("/roles", roleRoutes("company"));
 r.use("/activity-logs", activityRoutes("company"));
 r.use("/webhooks", webhookRoutes("company"));
