@@ -1,3 +1,4 @@
+import { toText } from "../../shared/text";
 import { AiAllocation, AiUsage, AiProvider, Company, User } from "../models";
 import { decrypt } from "./crypto";
 import { getObjectText } from "./s3";
@@ -30,7 +31,7 @@ async function callProvider(agent: any, system: string, messages: Msg[], opts: {
   if (!key) throw new HttpError(400, "This AI model has no API key configured");
   const p = await providerFor(agent);
   const timeout = AbortSignal.timeout(55_000);
-  const max = opts.maxTokens || 1200;
+  const max = Math.max(opts.maxTokens || 1500, 1500); // reasoning models (Kimi K2.5, o-series, R1) spend tokens thinking first
 
   if (p.apiStyle === "anthropic") {
     const r = await fetch(`${p.baseUrl || "https://api.anthropic.com"}/v1/messages`, {
@@ -67,7 +68,10 @@ async function callProvider(agent: any, system: string, messages: Msg[], opts: {
   });
   const j: any = await r.json().catch(() => ({}));
   if (!r.ok) throw new HttpError(502, j?.error?.message || `Provider error ${r.status}`);
-  return { text: j.choices?.[0]?.message?.content || "", inTok: j.usage?.prompt_tokens || 0, outTok: j.usage?.completion_tokens || 0 };
+  const msg = j.choices?.[0]?.message || {};
+  let text = toText(msg.content).trim();
+  if (!text && (msg.reasoning || msg.reasoning_content)) text = "I ran out of room before finishing my answer. Please ask again, a little more specifically.";
+  return { text, inTok: j.usage?.prompt_tokens || 0, outTok: j.usage?.completion_tokens || 0 };
 }
 
 /**
