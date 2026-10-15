@@ -1,4 +1,4 @@
-import { toText } from "../../shared/text";
+import { toText, stripThinking, errorText } from "../../shared/text";
 import { AiAllocation, AiUsage, AiProvider, Company, User } from "../models";
 import { decrypt } from "./crypto";
 import { getObjectText } from "./s3";
@@ -26,11 +26,11 @@ async function providerFor(agent: any) {
 }
 
 /** Raw provider call. Returns text + token counts. */
-async function callProvider(agent: any, system: string, messages: Msg[], opts: { maxTokens?: number; json?: boolean }) {
+async function callProvider(agent: any, system: string, messages: Msg[], opts: { maxTokens?: number; json?: boolean; timeoutMs?: number }) {
   const key = decrypt(agent.apiKeyEnc);
   if (!key) throw new HttpError(400, "This AI model has no API key configured");
   const p = await providerFor(agent);
-  const timeout = AbortSignal.timeout(55_000);
+  const timeout = AbortSignal.timeout(Math.max(5_000, Math.min(opts.timeoutMs ?? 50_000, 50_000))); // Vercel function cap is 60 s
   const max = Math.max(opts.maxTokens || 1500, 1500); // reasoning models (Kimi K2.5, o-series, R1) spend tokens thinking first
 
   if (p.apiStyle === "anthropic") {
@@ -40,9 +40,9 @@ async function callProvider(agent: any, system: string, messages: Msg[], opts: {
       body: JSON.stringify({ model: agent.llmVersion, max_tokens: max, system, messages }),
       signal: timeout,
     });
-    const j: any = await r.json();
-    if (!r.ok) throw new HttpError(502, j?.error?.message || `Provider error ${r.status}`);
-    return { text: (j.content || []).map((c: any) => c.text || "").join(""), inTok: j.usage?.input_tokens || 0, outTok: j.usage?.output_tokens || 0 };
+    const j: any = await r.json().catch(() => ({}));
+    if (!r.ok || j?.type === "error") throw new HttpError(502, errorText(j, r.status));
+    return { text: stripThinking(toText((j.content || []).filter((c: any) => c.type === "text"))), inTok: j.usage?.input_tokens || 0, outTok: j.usage?.output_tokens || 0 };
   }
   if (p.apiStyle === "google") {
     const r = await fetch(`${p.baseUrl}/v1beta/models/${agent.llmVersion}:generateContent?key=${encodeURIComponent(key)}`, {
@@ -55,9 +55,9 @@ async function callProvider(agent: any, system: string, messages: Msg[], opts: {
       }),
       signal: timeout,
     });
-    const j: any = await r.json();
-    if (!r.ok) throw new HttpError(502, j?.error?.message || `Provider error ${r.status}`);
-    return { text: j.candidates?.[0]?.content?.parts?.map((x: any) => x.text).join("") || "", inTok: j.usageMetadata?.promptTokenCount || 0, outTok: j.usageMetadata?.candidatesTokenCount || 0 };
+    const j: any = await r.json().catch(() => ({}));
+    if (!r.ok || j?.error) throw new HttpError(502, errorText(j, r.status));
+    return { text: stripThinking(toText(j.candidates?.[0]?.content?.parts?.filter((x: any) => !x.thought))), inTok: j.usageMetadata?.promptTokenCount || 0, outTok: j.usageMetadata?.candidatesTokenCount || 0 };
   }
   // OpenAI wire format: OpenAI, OpenRouter, Groq, Mistral, DeepSeek, Together, any compatible gateway
   const r = await fetch(`${p.baseUrl}/chat/completions`, {
@@ -66,10 +66,17 @@ async function callProvider(agent: any, system: string, messages: Msg[], opts: {
     body: JSON.stringify({ model: agent.llmVersion, max_tokens: max, messages: [{ role: "system", content: system }, ...messages], ...(opts.json ? { response_format: { type: "json_object" } } : {}) }),
     signal: timeout,
   });
-  const j: any = await r.json().catch(() => ({}));
-  if (!r.ok) throw new HttpError(502, j?.error?.message || `Provider error ${r.status}`);
-  const msg = j.choices?.[0]?.message || {};
-  let text = toText(msg.content).trim();
+  const raw = await r.text();
+  let j: any = {};
+  try {
+    j = raw ? JSON.parse(raw) : {};
+  } catch {
+    throw new HttpError(502, `AI provider returned an invalid response (${r.status}). Please try again.`);
+  }
+  // OpenRouter can answer 200 with an error body when the upstream provider fails
+  if (!r.ok || j?.error || !Array.isArray(j?.choices)) throw new HttpError(502, errorText(j, r.status));
+  const msg = j.choices[0]?.message || {};
+  let text = stripThinking(toText(msg.content));
   if (!text && (msg.reasoning || msg.reasoning_content)) text = "I ran out of room before finishing my answer. Please ask again, a little more specifically.";
   return { text, inTok: j.usage?.prompt_tokens || 0, outTok: j.usage?.completion_tokens || 0 };
 }
@@ -114,9 +121,17 @@ async function notifyExhausted(companyId: string, agent: any, alloc: any) {
  * One metered completion. weighted = in × w_in + out × w_out; credits = weighted / 1000.
  * Every AI feature (chat test, assistant, agentic reports) goes through here.
  */
-export async function complete(args: { agent: any; companyId: string; system: string; messages: Msg[]; purpose: string; userId?: string; companyAgentId?: any; maxTokens?: number; json?: boolean }) {
+export async function complete(args: { agent: any; companyId: string; system: string; messages: Msg[]; purpose: string; userId?: string; companyAgentId?: any; maxTokens?: number; json?: boolean; timeoutMs?: number }) {
   const alloc = await ensureCredits(args.companyId, args.agent);
-  const { text, inTok, outTok } = await callProvider(args.agent, args.system, args.messages, args);
+  let out;
+  try {
+    out = await callProvider(args.agent, args.system, args.messages, args);
+  } catch (e: any) {
+    if (e?.name === "TimeoutError" || e?.name === "AbortError") throw new HttpError(504, "The AI model took too long to answer. Please try again, or ask a shorter question.");
+    if (e instanceof HttpError) throw e;
+    throw new HttpError(502, `Could not reach the AI provider (${e?.message || "network error"}).`);
+  }
+  const { text, inTok, outTok } = out;
   const weighted = inTok * (args.agent.tokenWeights?.input ?? 1) + outTok * (args.agent.tokenWeights?.output ?? 1);
   const credits = weighted / 1000;
   const after = await AiAllocation.findOneAndUpdate({ _id: alloc._id }, { $inc: { used: credits } }, { new: true }).lean<any>();

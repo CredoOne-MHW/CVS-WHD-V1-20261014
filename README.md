@@ -241,3 +241,13 @@ Per-address title, description, canonical, Open Graph and JSON-LD (Organization 
 - Test chat / assistant: replies from reasoning models (e.g. Kimi K2.5 via OpenRouter) that come back as an array of parts or with empty content no longer crash the page; text is normalised server- and client-side (`shared/text.ts`), and min output tokens raised to 1,500.
 - Error boundaries for `/app` and `/sa` so a screen error shows "Try again" instead of a blank page.
 - Browser-tab icon: company favicon → logo → a monogram in the theme colour (never the generic globe), on login and inside the console. The assistant button uses the same monogram when no logo is uploaded.
+
+### 10.4 AI chat hardening + client error capture (Oct 2026)
+Verified end-to-end (production build, real CSP, FerretDB as Mongo, a mock OpenRouter returning Kimi-style replies): Test chat and the floating assistant render every reply shape — plain, null/reasoning-only, part arrays, `<think>` blocks, JSON with object `text`, missing text, provider error bodies — without crashing.
+- **Provider replies**: `<think>` stripped; OpenRouter "200 with error body" and non-JSON responses become clear errors (`AI provider error 429: …`) instead of `[object Object]`/empty replies; the assistant always returns a plain string.
+- **Time budget**: provider calls ≤ 50 s and the assistant's multi-step loop stays inside Vercel's 60 s cap; timeouts show "The AI model took too long…".
+- **Never a blank page**: error boundaries around the floating assistant, its message list and the Test chat; `/app`, `/sa` and `global-error` pages show the actual error message with Try again / Reload.
+- **Error reporting**: any screen error is posted to `POST /api/client-error` → Activity Logs (action "Screen error", module `client`, Error status, payload with stack + browser) and Vercel function logs.
+- **Stale deployments**: a tab left open across a deploy that fails to load code ("ChunkLoadError") reloads itself once.
+- **CSRF check** compares Origin by hostname (port-safe).
+- **Browser extensions**: chat inputs opt out of Grammarly/Editor/password-manager overlays; chat areas are `translate="no"`; a small DOM guard in the root layout tolerates nodes moved by extensions.

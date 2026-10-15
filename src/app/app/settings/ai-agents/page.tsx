@@ -3,6 +3,8 @@ import { useEffect, useRef, useState } from "react";
 import { Plus, Pencil, Trash2, Upload, FileText, X, MessageSquare, Send, BarChart3 } from "lucide-react";
 import { ModelCharges, UsageModal } from "@/components/AiUsage";
 import { toText } from "@shared/text";
+import { ErrorBoundary } from "@/components/ErrorBoundary";
+import { NO_EXTENSIONS } from "@/components/Assistant";
 import { api } from "@/lib/api";
 import { PageHeader, Btn, Modal, Field, Badge, Empty, Spinner, Confirm, useToast } from "@/components/ui";
 import { usePerm } from "@/components/Shell";
@@ -295,7 +297,8 @@ function ChatTester({ state, setState, onUsage, credits }: { state: any; setStat
   return (
     <Modal open onClose={() => setState(null)} title={`Test · ${state.agent.name}`} size="md">
       <div className="flex h-[55vh] flex-col">
-        <div className="flex-1 space-y-3 overflow-y-auto pr-1">
+        <ErrorBoundary where="agent-test-chat" onReset={() => setState({ ...state, messages: [], busy: false })}>
+        <div translate="no" className="notranslate flex-1 space-y-3 overflow-y-auto pr-1">
           {!state.messages.length && <p className="py-10 text-center text-sm text-ink-400">Ask something a customer would ask.</p>}
           {state.messages.map((m: any, i: number) => (
             <div key={i} className={`max-w-[85%] whitespace-pre-wrap rounded-2xl px-4 py-2.5 text-sm ${m.role === "user" ? "ml-auto bg-hive-700 text-white" : "bg-hive-50 text-ink-900"}`}>
@@ -305,6 +308,7 @@ function ChatTester({ state, setState, onUsage, credits }: { state: any; setStat
           {state.busy && <Spinner className="h-5 w-5 text-hive-600" />}
           <div ref={end} />
         </div>
+        </ErrorBoundary>
         <p className="py-2 text-xs text-ink-400">{state.usage ? `Last reply: ${state.usage.credits ?? 0} credits · ${state.usage.remaining ?? "—"} left` : credits ? `${credits.remaining} credits left` : ""}</p>
         <form
           className="flex gap-2"
@@ -313,7 +317,7 @@ function ChatTester({ state, setState, onUsage, credits }: { state: any; setStat
             if (state.input.trim() && !state.busy) send();
           }}
         >
-          <input className="input" value={state.input} onChange={(e) => setState({ ...state, input: e.target.value })} placeholder="Type a message" />
+          <input {...NO_EXTENSIONS} className="input" value={state.input} onChange={(e) => setState({ ...state, input: e.target.value })} placeholder="Type a message" />
           <Btn type="submit" disabled={!state.input.trim() || state.busy} aria-label="Send">
             <Send className="h-4 w-4" />
           </Btn>
