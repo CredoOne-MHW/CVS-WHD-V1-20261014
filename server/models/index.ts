@@ -350,7 +350,7 @@ export const AiAllocation = m<any>("AiAllocation", AiAllocationSchema);
 const CompanyAgentSchema = new Schema(
   {
     companyId: { type: ObjectId, required: true, index: true },
-    agentId: { type: ObjectId, ref: "AiAgent", required: true },
+    agentId: { type: ObjectId, ref: "AiAgent", default: null }, // optional until Super Admin allocates a model
     name: { type: String, required: true },
     purpose: String,
     systemPrompt: String,

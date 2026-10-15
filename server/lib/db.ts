@@ -1,6 +1,7 @@
 import mongoose from "mongoose";
 import bcrypt from "bcryptjs";
 import { User, Plan, AiProvider } from "../models";
+import { invalidate } from "./cache";
 import { COMPANY_MODULES, PLAN_TIERS, fullPerm, noPerm, type PermMap } from "../../shared/constants";
 
 type Cache = { conn: typeof mongoose | null; promise: Promise<typeof mongoose> | null; bootstrapped: boolean };
@@ -71,23 +72,44 @@ async function bootstrap() {
   ];
   if (!(await AiProvider.estimatedDocumentCount())) await AiProvider.insertMany(providers).catch(() => undefined);
 
-  const defaults: Record<string, string[]> = {
-    Trial: ["dashboard", "leads", "integrations", "wa_webhooks", "wa_logs"],
-    Standard: ["dashboard", "leads", "integrations", "activity_logs", "wa_webhooks", "wa_logs", "roles"],
-    Pro: COMPANY_MODULES.map((m) => m.key),
-    Enterprise: COMPANY_MODULES.map((m) => m.key),
-  };
+  // Every tier starts with every module ticked; Super Admin narrows a plan from Plan › grid.
+  const all = COMPANY_MODULES.map((m) => m.key);
   for (const tier of PLAN_TIERS) {
     const permissions: PermMap = {};
-    for (const mod of COMPANY_MODULES) permissions[mod.key] = defaults[tier].includes(mod.key) ? fullPerm() : noPerm();
+    for (const mod of COMPANY_MODULES) permissions[mod.key] = all.includes(mod.key) ? fullPerm() : noPerm();
     await Plan.updateOne({ name: tier }, { $setOnInsert: { name: tier, permissions } }, { upsert: true });
   }
-  // Modules added after a plan was created: Pro/Enterprise get them, other plans start unticked.
+
+  const meta = mongoose.connection.db!.collection<{ _id: string; at: Date }>("meta");
+  let changed = false;
+
+  // One-time (v2): Report, Role Management, Activity Logs and AI Agent switched on for every existing plan
+  // (earlier seeds left them off for Trial/Standard, which hid them from company sidebars).
+  if (!(await meta.findOne({ _id: "plans_v2" }))) {
+    const set: any = {};
+    for (const k of ["reports", "roles", "activity_logs", "ai_agents"]) set[`permissions.${k}`] = fullPerm();
+    await Plan.updateMany({}, { $set: set });
+    await meta.updateOne({ _id: "plans_v2" }, { $set: { at: new Date() } }, { upsert: true });
+    changed = true;
+  }
+
+  // Modules added later: ticked on every plan by default (Super Admin can untick per plan).
   for (const plan of await Plan.find().lean<any[]>()) {
     const missing = COMPANY_MODULES.filter((m) => !plan.permissions?.[m.key]);
     if (!missing.length) continue;
     const set: any = {};
-    for (const m of missing) set[`permissions.${m.key}`] = ["Pro", "Enterprise"].includes(plan.name) ? fullPerm() : noPerm();
+    for (const m of missing) set[`permissions.${m.key}`] = fullPerm();
     await Plan.updateOne({ _id: plan._id }, { $set: set });
+    changed = true;
+  }
+  if (changed) await invalidate("auth:").catch(() => undefined);
+
+  // One-time (v2): move existing logos/banners/knowledge files into <Company Name>/logo · /banner · /brain.
+  // Runs in the background so the first request isn't delayed; idempotent if an instance stops midway.
+  if (process.env.S3_BUCKET && !(await meta.findOne({ _id: "s3_layout_v2" }))) {
+    import("./s3")
+      .then(({ relayoutAll }) => relayoutAll())
+      .then(() => meta.updateOne({ _id: "s3_layout_v2" }, { $set: { at: new Date() } }, { upsert: true }))
+      .catch((e) => console.warn("S3 relayout:", e?.message));
   }
 }

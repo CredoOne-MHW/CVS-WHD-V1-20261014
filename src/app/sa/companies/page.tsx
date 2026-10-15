@@ -86,7 +86,7 @@ export default function Companies() {
     setBusy(true);
     try {
       const body = { ...form, branding: { ...form.branding, shortName: form.branding.shortName || form.name } };
-      for (const k of ["_id", "createdAt", "updatedAt", "deletedAt", "domain", "brandingPublic", "allocations", "leadCount", "connectors", "platformUrl", "customUrl", "status", "trialEndsAt", "__v"]) delete body[k];
+      for (const k of ["_id", "createdAt", "updatedAt", "deletedAt", "domain", "brandingPublic", "allocations", "leadCount", "connectors", "platformUrl", "customUrl", "status", "trialEndsAt", "s3Folder", "__v"]) delete body[k];
       if (!body.password) delete body.password;
       if (!body.slug) delete body.slug;
       for (const k of ["logoKey", "bannerKey", "faviconKey", "updatedAt"]) delete body.branding[k];
@@ -366,6 +366,11 @@ export default function Companies() {
                     <h3 className="mb-3 flex items-center gap-2 font-bold">
                       <ImagePlus className="h-4 w-4 text-hive-700" /> Images
                     </h3>
+                    <p className="-mt-1 mb-3 text-xs text-ink-500">
+                      Stored in S3 under <span className="mono">{form.s3Folder || form.name || "<Company name>"}/logo</span> and{" "}
+                      <span className="mono">{form.s3Folder || form.name || "<Company name>"}/banner</span>; AI knowledge files go to{" "}
+                      <span className="mono">…/brain</span>.
+                    </p>
                     <div className="grid gap-4 sm:grid-cols-3">
                       {(
                         [

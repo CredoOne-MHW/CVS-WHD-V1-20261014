@@ -19,6 +19,7 @@ Use groupBy + metrics for totals, trends and breakdowns; use columns for lists. 
 async function loadAgent(companyId: string, companyAgentId?: string, assistant = false) {
   const ca = await CompanyAgent.findOne({ companyId, active: true, ...(assistant ? { isAssistant: true } : { _id: companyAgentId }) }).lean<any>();
   if (!ca) throw new HttpError(assistant ? 404 : 400, assistant ? "No AI assistant is enabled for this company" : "Select an AI agent");
+  if (!ca.agentId) throw new HttpError(400, `“${ca.name}” has no AI model yet. Ask your Super Admin to allocate an AI model with credits, then pick it in Settings › AI Agent.`);
   const agent = await AiAgent.findOne({ _id: ca.agentId, active: true }).lean();
   if (!agent) throw new HttpError(400, "The AI model behind this agent is unavailable");
   return { ca, agent };
@@ -88,5 +89,5 @@ Prefer one well-aimed query. Never invent numbers.`
 
 export async function assistantInfo(companyId: string) {
   const ca = await CompanyAgent.findOne({ companyId, active: true, isAssistant: true }).select("name purpose").lean<any>();
-  return ca ? { enabled: true, name: ca.name, purpose: ca.purpose } : { enabled: false };
+  return ca ? { enabled: true, ready: !!ca.agentId, name: ca.name, purpose: ca.purpose } : { enabled: false, ready: false };
 }

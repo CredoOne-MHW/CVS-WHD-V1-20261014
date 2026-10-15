@@ -18,10 +18,12 @@ export default function CompanyAiAgents() {
   const [busy, setBusy] = useState(false);
   const perm = usePerm("ai_agents");
   const toast = useToast();
+  const [storage, setStorage] = useState<{ brain: string } | null>(null);
   const load = () => api("/co/ai-agents").then(setList);
   useEffect(() => {
     load();
     api("/co/ai-agents/models").then(setModels);
+    api("/co/storage").then(setStorage).catch(() => undefined);
   }, []);
 
   function openForm(a?: any) {
@@ -58,12 +60,18 @@ export default function CompanyAiAgents() {
         subtitle="Build assistants on your allocated AI models, grounded in your own price lists, FAQs and SOPs."
         actions={
           perm.create && (
-            <Btn onClick={() => openForm()} disabled={!models.length}>
+            <Btn onClick={() => openForm()}>
               <Plus className="h-4 w-4" /> Create
             </Btn>
           )
         }
       />
+      {list && !models.length && (
+        <div className="mb-5 rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+          <b>No AI model allocated yet.</b> You can create agents and upload knowledge files now; chat and the floating Assistant start working once the
+          Super Admin allocates an AI model with credits (Company › ⋯ › AI Agents &amp; credits).
+        </div>
+      )}
       {models.length > 0 && (
         <div className="mb-5 flex flex-wrap gap-3">
           {models.map((m) => (
@@ -94,7 +102,13 @@ export default function CompanyAiAgents() {
                   {a.name} {a.isAssistant && <Badge color="green">Assistant</Badge>}
                 </td>
                 <td className="td">
-                  {a.agentId?.name} <span className="mono text-ink-400">{a.agentId?.llmVersion}</span>
+                  {a.agentId ? (
+                    <>
+                      {a.agentId.name} <span className="mono text-ink-400">{a.agentId.llmVersion}</span>
+                    </>
+                  ) : (
+                    <Badge color="honey">No model yet</Badge>
+                  )}
                 </td>
                 <td className="td max-w-[260px]">
                   <p className="line-clamp-2 text-ink-700">{a.purpose || "—"}</p>
@@ -138,7 +152,7 @@ export default function CompanyAiAgents() {
             <Btn variant="secondary" onClick={() => setForm(null)}>
               Cancel
             </Btn>
-            <Btn loading={busy} onClick={save} disabled={!form?.name || !form?.agentId}>
+            <Btn loading={busy} onClick={save} disabled={!form?.name}>
               Save
             </Btn>
           </>
@@ -148,7 +162,8 @@ export default function CompanyAiAgents() {
           <div className="grid gap-5 lg:grid-cols-2">
             <div className="space-y-4">
               <Field label="AI Agent" required>
-                <select className="input" value={form.agentId} onChange={(e) => setForm({ ...form, agentId: e.target.value })}>
+                <select className="input" value={form.agentId || ""} onChange={(e) => setForm({ ...form, agentId: e.target.value })}>
+                  {!models.length && <option value="">No AI model allocated yet — pick later</option>}
                   {models.map((m) => (
                     <option key={m._id} value={m._id}>
                       {m.name} · {m.remaining} credits left
@@ -175,6 +190,7 @@ export default function CompanyAiAgents() {
                   <Upload className="mb-1.5 h-5 w-5 text-hive-600" />
                   <span className="text-sm font-semibold">Add files</span>
                   <span className="text-xs text-ink-500">csv, Excel, zip, .txt, json, .docx, .pdf · 4 MB each</span>
+                  {storage && <span className="mt-1 text-[11px] text-ink-400">Saved to AWS S3 › <span className="mono">{storage.brain}</span></span>}
                   <input type="file" multiple accept={ACCEPT} className="hidden" onChange={(e) => setFiles([...files, ...Array.from(e.target.files || [])])} />
                 </label>
                 <ul className="mt-2 space-y-1.5">
