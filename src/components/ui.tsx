@@ -44,8 +44,8 @@ export function Modal({ open, onClose, title, children, footer, size = "lg" }: {
   if (!open) return null;
   const w = { sm: "max-w-md", md: "max-w-xl", lg: "max-w-3xl", xl: "max-w-5xl" }[size];
   return (
-    <div className="fixed inset-0 z-50 flex items-end justify-center bg-ink-900/40 p-0 backdrop-blur-[2px] sm:items-center sm:p-6" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
-      <div role="dialog" aria-modal className={`flex max-h-[92vh] w-full ${w} flex-col overflow-hidden rounded-t-3xl bg-white shadow-2xl sm:rounded-3xl`}>
+    <div className="fixed inset-0 z-50 flex items-end justify-center bg-ink-900/45 p-0 backdrop-blur-sm sm:items-center sm:p-6" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
+      <div role="dialog" aria-modal className={`flex max-h-[92vh] w-full ${w} flex-col overflow-hidden rounded-t-3xl bg-white shadow-2xl ring-1 ring-black/5 sm:rounded-[28px]`}>
         <div className="flex items-center justify-between border-b border-ink-400/15 px-6 py-4 sm:px-7 sm:py-5">
           <h2 className="text-lg font-bold text-ink-900 sm:text-xl">{title}</h2>
           <button onClick={onClose} className="rounded-lg p-1.5 text-ink-400 hover:bg-hive-50 hover:text-ink-900" aria-label="Close">
@@ -100,10 +100,10 @@ export function Badge({ color = "gray", children }: { color?: keyof typeof BADGE
 
 export function PageHeader({ title, subtitle, actions }: { title: string; subtitle?: string; actions?: ReactNode }) {
   return (
-    <div className="mb-6 flex flex-wrap items-end justify-between gap-4">
+    <div className="mb-7 flex flex-wrap items-end justify-between gap-4">
       <div>
-        <h1 className="text-2xl font-extrabold tracking-tight text-ink-900">{title}</h1>
-        {subtitle && <p className="mt-1 text-sm text-ink-500">{subtitle}</p>}
+        <h1 className="text-[28px] font-extrabold leading-tight tracking-[-0.02em] text-ink-900">{title}</h1>
+        {subtitle && <p className="mt-1.5 text-[14.5px] text-ink-500">{subtitle}</p>}
       </div>
       {actions && <div className="flex flex-wrap items-center gap-2">{actions}</div>}
     </div>
@@ -186,13 +186,17 @@ export function JsonView({ value }: { value: any }) {
 }
 
 export function Stat({ label, value, hint, tone = "green" }: { label: string; value: ReactNode; hint?: ReactNode; tone?: "green" | "honey" | "red" | "gray" }) {
-  const bar = { green: "bg-hive-500", honey: "bg-honey-500", red: "bg-red-500", gray: "bg-ink-400" }[tone];
+  const dot = { green: "bg-hive-500", honey: "bg-honey-500", red: "bg-red-500", gray: "bg-ink-400" }[tone];
+  const glow = { green: "from-hive-100", honey: "from-honey-100", red: "from-red-50", gray: "from-ink-400/10" }[tone];
   return (
     <div className="card relative overflow-hidden p-5">
-      <span className={`absolute inset-x-0 top-0 h-1 ${bar}`} />
-      <p className="text-[13px] font-semibold text-ink-500">{label}</p>
-      <p className="mt-2 text-3xl font-extrabold tracking-tight text-ink-900">{value}</p>
-      {hint && <p className="mt-1 text-xs text-ink-400">{hint}</p>}
+      <span aria-hidden className={`pointer-events-none absolute -right-10 -top-10 h-32 w-32 rounded-full bg-gradient-to-br ${glow} to-transparent`} />
+      <p className="relative flex items-center gap-2 text-[13px] font-semibold text-ink-500">
+        <span className={`h-2 w-2 rounded-full ${dot}`} />
+        {label}
+      </p>
+      <p className="relative mt-3 text-[32px] font-extrabold leading-none tracking-[-0.02em] text-ink-900 tabular-nums">{value}</p>
+      {hint && <p className="relative mt-2 text-xs text-ink-500">{hint}</p>}
     </div>
   );
 }

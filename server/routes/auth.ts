@@ -7,6 +7,7 @@ import { requireAuth, signToken, setAuthCookie, COOKIE, buildContext } from "../
 import { logActivity } from "../middleware/activity";
 import { h, parse, HttpError } from "../lib/http";
 import { COMPANY_MODULES, SA_MODULES } from "../../shared/constants";
+import { requestHost, companyForHost, isPlatformHost, publicBranding, platformBranding, tenantUrls } from "../lib/tenant";
 
 const r = Router();
 const SA_BACKUP = "lms_sa_token";
@@ -30,6 +31,15 @@ r.post("/login", h(async (req, res) => {
   }
   attempts.delete(key);
 
+  // White-label isolation: on a company's own URL only that company's users can sign in;
+  // Super Admins sign in on the platform URL only.
+  const host = requestHost(req);
+  const hostCompany = await companyForHost(host);
+  if (!isPlatformHost(host) && !hostCompany) throw new HttpError(404, "No workspace is set up for this address");
+  if (hostCompany && (user.scope !== "company" || String(user.companyId) !== String(hostCompany._id))) {
+    attempts.set(key, { n: (a?.n || 0) + 1, until: 0 });
+    throw new HttpError(401, "Invalid email or password");
+  }
   if (user.scope === "company") {
     const company = await Company.findById(user.companyId).lean<any>();
     if (!company || company.deletedAt) throw new HttpError(401, "Invalid email or password");
@@ -51,7 +61,12 @@ r.post("/logout", (req, res) => {
 r.get("/me", requireAuth, h(async (req, res) => {
   const a = req.auth!;
   const nav = (a.scope === "super" ? SA_MODULES : COMPANY_MODULES).filter((m) => a.perms[m.key]?.read);
-  res.json({ ...a, nav });
+  let branding: any = platformBranding();
+  if (a.scope === "company") {
+    const c = await Company.findById(a.companyId).lean<any>();
+    if (c) branding = { ...publicBranding(c), ...tenantUrls(c) };
+  }
+  res.json({ ...a, nav, branding });
 }));
 
 /** Super Admin → "Force Login" into a company's admin console. The SA session is parked in a second cookie. */

@@ -2,8 +2,24 @@
 @tailwind components;
 @tailwind utilities;
 
+/* Default theme (overwritten at runtime by the company's / platform's theme color) */
 :root {
-  --bg: #f6f8f4;
+  --brand-50: 244 248 242;
+  --brand-100: 230 239 226;
+  --brand-200: 199 215 193;
+  --brand-300: 157 181 151;
+  --brand-400: 111 144 102;
+  --brand-500: 85 121 75;
+  --brand-600: 63 103 54;
+  --brand-700: 47 92 36;
+  --brand-800: 38 74 29;
+  --brand-900: 28 55 22;
+  --brand-950: 20 39 15;
+  --accent-100: 249 243 213;
+  --accent-300: 232 211 127;
+  --accent-500: 217 181 42;
+  --accent-700: 126 105 24;
+  --bg: #f6f7f5;
 }
 html,
 body {
@@ -12,40 +28,47 @@ body {
 }
 body {
   -webkit-font-smoothing: antialiased;
+  font-feature-settings: "cv11", "ss01";
+}
+::selection {
+  background: rgb(var(--brand-200));
 }
 
 @layer components {
   .input {
-    @apply w-full rounded-xl border border-ink-400/30 bg-white px-3.5 py-2.5 text-sm text-ink-900 outline-none transition placeholder:text-ink-400 focus:border-hive-500 focus:ring-4 focus:ring-hive-100 disabled:bg-hive-50/60;
+    @apply w-full rounded-xl border border-ink-400/25 bg-white px-3.5 py-2.5 text-sm text-ink-900 shadow-[0_1px_0_rgba(16,24,40,.03)] outline-none transition placeholder:text-ink-400 hover:border-ink-400/40 focus:border-hive-500 focus:ring-4 focus:ring-hive-100 disabled:bg-hive-50/60;
   }
   .label {
     @apply mb-1.5 block text-[13px] font-semibold text-ink-700;
   }
   .btn {
-    @apply inline-flex items-center justify-center gap-2 rounded-xl px-4 py-2.5 text-sm font-semibold transition focus:outline-none focus-visible:ring-4 focus-visible:ring-hive-100 disabled:cursor-not-allowed disabled:opacity-50;
+    @apply inline-flex min-h-[40px] items-center justify-center gap-2 rounded-xl px-4 py-2.5 text-sm font-semibold transition focus:outline-none focus-visible:ring-4 focus-visible:ring-hive-200 disabled:cursor-not-allowed disabled:opacity-50;
   }
   .btn-primary {
-    @apply btn bg-hive-700 text-white shadow-sm hover:bg-hive-800;
+    @apply btn bg-gradient-to-b from-hive-600 to-hive-700 text-white shadow-glow hover:from-hive-700 hover:to-hive-800;
   }
   .btn-secondary {
-    @apply btn border border-ink-400/30 bg-white text-ink-900 hover:bg-hive-50;
+    @apply btn border border-ink-400/25 bg-white text-ink-900 shadow-card hover:border-ink-400/40 hover:bg-hive-50;
   }
   .btn-ghost {
-    @apply btn px-2.5 py-1.5 text-ink-700 hover:bg-hive-50;
+    @apply btn min-h-0 px-2.5 py-1.5 text-ink-700 hover:bg-hive-50 hover:text-hive-800;
   }
   .btn-danger {
-    @apply btn bg-red-600 text-white hover:bg-red-700;
+    @apply btn bg-red-600 text-white shadow-sm hover:bg-red-700;
   }
   .card {
     @apply rounded-2xl border border-ink-400/15 bg-white shadow-card;
   }
   .th {
-    @apply whitespace-nowrap border-b border-ink-400/15 bg-hive-50/60 px-4 py-3 text-left text-[12px] font-semibold uppercase tracking-wide text-ink-500;
+    @apply whitespace-nowrap border-b border-ink-400/15 bg-[#fafbf9] px-4 py-3 text-left text-[11.5px] font-bold uppercase tracking-[.06em] text-ink-500;
   }
   .td {
-    @apply border-b border-ink-400/10 px-4 py-3 align-top text-sm text-ink-900;
+    @apply border-b border-ink-400/10 px-4 py-3.5 align-top text-sm text-ink-900;
   }
   .mono {
     @apply font-mono text-[12.5px];
+  }
+  .eyebrow {
+    @apply text-[11px] font-bold uppercase tracking-[.14em];
   }
 }

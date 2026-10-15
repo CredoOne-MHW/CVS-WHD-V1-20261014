@@ -35,6 +35,7 @@ export const SA_MODULES: ModuleDef[] = [
   { key: "companies", label: "Company", group: "Main", path: "/sa/companies", icon: "Building2" },
   { key: "ai_agents", label: "AI Agents", group: "Main", path: "/sa/ai-agents", icon: "Bot" },
   { key: "plans", label: "Plan", group: "Main", path: "/sa/plans", icon: "Layers" },
+  { key: "knowledgebase", label: "Knowledgebase", group: "Main", path: "/sa/knowledgebase", icon: "BookOpenText" },
   { key: "roles", label: "Role Management", group: "Settings", path: "/sa/settings/roles", icon: "ShieldCheck" },
   { key: "activity_logs", label: "Activity Logs", group: "Settings", path: "/sa/settings/activity-logs", icon: "ScrollText" },
   { key: "wa_webhooks", label: "WhatsApp Webhook", group: "Settings", path: "/sa/settings/whatsapp", icon: "Webhook" },
