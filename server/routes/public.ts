@@ -4,6 +4,8 @@ import { h, HttpError } from "../lib/http";
 import { decrypt, hmacValid } from "../lib/crypto";
 import { processIntake, runEvent } from "../lib/intake";
 import { fireEvent } from "../lib/whatsapp";
+import { getObject } from "../lib/s3";
+import { requestHost, companyForHost, isPlatformHost, publicBranding, platformBranding } from "../lib/tenant";
 import { LOST_STATUS, WON_STATUS } from "../../shared/constants";
 
 const r = Router();
@@ -71,12 +73,38 @@ r.post("/intake/:key", h(async (req, res) => {
   res.status((result as any).ok === false ? 202 : 200).json(result);
 }));
 
+/* ───────────── White-label branding (login page, favicon, theme) ───────────── */
+
+/** Which login to show for this host: the platform (Super Admin) or a company's branded login. */
+r.get("/public/branding", h(async (req, res) => {
+  const host = requestHost(req);
+  const company = await companyForHost(host);
+  res.setHeader("Cache-Control", "public, max-age=60, stale-while-revalidate=300");
+  if (company) return res.json({ ...publicBranding(company), host });
+  if (!isPlatformHost(host)) return res.status(404).json({ error: "No workspace is set up for this address.", host });
+  res.json({ ...platformBranding(), host });
+}));
+
+/** Streams a company's logo / banner / favicon from the private S3 bucket. */
+r.get("/public/brand-asset/:companyId/:kind", h(async (req, res) => {
+  const kind = req.params.kind as "logo" | "banner" | "favicon";
+  if (!["logo", "banner", "favicon"].includes(kind)) throw new HttpError(404, "Not found");
+  const c = await Company.findOne({ _id: req.params.companyId, deletedAt: null }).select("branding").lean<any>();
+  const key = c?.branding?.[`${kind}Key`];
+  if (!key) throw new HttpError(404, "Not found");
+  const obj = await getObject(key);
+  res.setHeader("Content-Type", obj.contentType);
+  res.setHeader("Cache-Control", "public, max-age=86400, immutable"); // URL carries ?v=<updatedAt>
+  res.send(obj.body);
+}));
+
 /** Public info for the hosted QR / campaign form page. */
 r.get("/forms/:key", h(async (req, res) => {
   const c = await loadConnector(req.params.key);
   if (!["qr_campaign", "website_form"].includes(c.type)) throw new HttpError(404, "Not a form connector");
-  const company = await Company.findById(c.companyId).select("name").lean<any>();
-  res.json({ title: c.name, company: company?.name, campaign: c.defaultCampaign });
+  const company = await Company.findById(c.companyId).lean<any>();
+  const brand = company ? publicBranding(company) : null;
+  res.json({ title: c.name, company: brand?.shortName || company?.name, campaign: c.defaultCampaign, logoUrl: brand?.logoUrl, themeColor: brand?.themeColor, accentColor: brand?.accentColor });
 }));
 
 /* ───────────── Vercel Cron ───────────── */

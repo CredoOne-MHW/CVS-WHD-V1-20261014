@@ -38,6 +38,13 @@ export async function getObjectText(key: string) {
   return (await r.Body?.transformToString("utf-8")) || "";
 }
 
+/** Raw object for streaming through the API (keeps the bucket private). */
+export async function getObject(key: string) {
+  const r = await s3().send(new GetObjectCommand({ Bucket: bucket(), Key: key }));
+  const bytes = await r.Body?.transformToByteArray();
+  return { body: Buffer.from(bytes || []), contentType: r.ContentType || "application/octet-stream", etag: r.ETag };
+}
+
 export async function deleteObject(key: string) {
   await s3().send(new DeleteObjectCommand({ Bucket: bucket(), Key: key })).catch(() => undefined);
 }

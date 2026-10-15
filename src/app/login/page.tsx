@@ -1,14 +1,72 @@
 "use client";
-import { useState } from "react";
-import { Eye, EyeOff, LockKeyhole, Mail } from "lucide-react";
+import { useEffect, useState } from "react";
+import { Eye, EyeOff, LockKeyhole, Mail, Globe, MessageCircle, Megaphone, Search, PhoneCall, QrCode, Handshake, FileSpreadsheet, Braces, AlertTriangle } from "lucide-react";
 import { api } from "@/lib/api";
-import { Btn } from "@/components/ui";
+import { Btn, Spinner } from "@/components/ui";
+import { applyTheme, setFavicon } from "@shared/theme";
 
-const BRAND = process.env.NEXT_PUBLIC_BRAND_NAME || "Wellness Hive";
-const LOGO = process.env.NEXT_PUBLIC_BRAND_LOGO || "/wellness-hive-logo.jpeg";
+interface Brand {
+  kind: "platform" | "company";
+  name: string;
+  shortName: string;
+  tagline?: string;
+  headline: string;
+  subheadline: string;
+  footerText?: string;
+  themeColor: string;
+  accentColor: string;
+  logoUrl?: string;
+  bannerUrl?: string;
+  faviconUrl?: string;
+  loginLayout?: "split" | "banner" | "centered";
+  active?: boolean;
+  supportEmail?: string;
+  supportPhone?: string;
+}
 
-/** One login page for every account. The server decides Super Admin vs Company Admin from the credentials. */
+/**
+ * One /login for every address:
+ *  - platform URL (mhw.credovation.tech, *.vercel.app) → CredoOne Super Admin login
+ *  - <short>.<base> or the company's own domain → that company's branded login
+ */
 export default function Login() {
+  const [brand, setBrand] = useState<Brand | null>(null);
+  const [missing, setMissing] = useState("");
+
+  useEffect(() => {
+    fetch("/api/public/branding", { credentials: "include" })
+      .then(async (r) => {
+        const j = await r.json();
+        if (!r.ok) return setMissing(j.host || "this address");
+        applyTheme(j.themeColor, j.accentColor);
+        setFavicon(j.faviconUrl || j.logoUrl);
+        document.title = j.kind === "platform" ? `${j.name} · ${j.tagline}` : `Sign in · ${j.shortName}`;
+        setBrand(j);
+      })
+      .catch(() => setMissing("this address"));
+  }, []);
+
+  if (missing)
+    return (
+      <div className="grid min-h-screen place-items-center px-6">
+        <div className="card max-w-md p-8 text-center">
+          <AlertTriangle className="mx-auto h-8 w-8 text-honey-500" />
+          <h1 className="mt-3 text-xl font-extrabold">No workspace here yet</h1>
+          <p className="mt-2 text-sm text-ink-500">Nothing is set up for <b>{missing}</b>. If you just mapped this domain, DNS may still be propagating — try again in a few minutes.</p>
+        </div>
+      </div>
+    );
+  if (!brand)
+    return (
+      <div className="grid min-h-screen place-items-center text-ink-400">
+        <Spinner className="h-6 w-6" />
+      </div>
+    );
+  return brand.kind === "platform" ? <PlatformLogin b={brand} /> : <CompanyLogin b={brand} />;
+}
+
+/* ───────── shared form ───────── */
+function SignInForm({ subtitle, variant }: { subtitle: string; variant: "platform" | "company" }) {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [show, setShow] = useState(false);
@@ -29,56 +87,165 @@ export default function Login() {
   }
 
   return (
-    <div className="grid min-h-screen lg:grid-cols-[1.1fr_1fr]">
-      <section className="relative hidden overflow-hidden bg-hive-800 p-12 text-white lg:flex lg:flex-col lg:justify-between">
-        <svg className="absolute -right-24 -top-24 h-[520px] w-[520px] opacity-[.09]" viewBox="0 0 200 200" aria-hidden>
-          {[0, 1, 2, 3].flatMap((r) =>
-            [0, 1, 2, 3].map((c) => {
-              const x = c * 52 + (r % 2) * 26;
-              const y = r * 45;
-              return <polygon key={`${r}${c}`} points={`${x + 26},${y} ${x + 50},${y + 13} ${x + 50},${y + 39} ${x + 26},${y + 52} ${x + 2},${y + 39} ${x + 2},${y + 13}`} fill="none" stroke="#f0d75d" strokeWidth="2" />;
-            })
-          )}
-        </svg>
-        <div className="flex items-center gap-3">
-          <img src={LOGO} alt="" className="h-14 w-14 rounded-full bg-white object-cover" />
-          <span className="text-xl font-extrabold">{BRAND}</span>
+    <form onSubmit={submit} className="w-full">
+      <h2 className="text-[34px] font-extrabold tracking-tight text-ink-900">Sign in</h2>
+      <p className="mt-1.5 text-[15px] text-ink-500">{subtitle}</p>
+
+      <label className="mt-9 block">
+        <span className="label">Email</span>
+        <div className="relative">
+          {variant === "company" && <Mail className="pointer-events-none absolute left-4 top-1/2 h-4 w-4 -translate-y-1/2 text-ink-400" />}
+          <input className={`input h-[52px] rounded-2xl text-[15px] ${variant === "company" ? "pl-11" : ""}`} type="email" autoComplete="username" required value={email} onChange={(e) => setEmail(e.target.value)} placeholder={variant === "company" ? "you@company.com" : ""} />
         </div>
-        <div className="max-w-md">
-          <h1 className="text-4xl font-extrabold leading-tight">Every enquiry, captured. Every follow-up, on time.</h1>
-          <p className="mt-4 text-hive-100/80">Website, WhatsApp, Meta and Google ads, calls and walk-ins land in one pipeline — qualified, routed and tracked to conversion.</p>
+      </label>
+      <label className="mt-5 block">
+        <span className="label">Password</span>
+        <div className="relative">
+          {variant === "company" && <LockKeyhole className="pointer-events-none absolute left-4 top-1/2 h-4 w-4 -translate-y-1/2 text-ink-400" />}
+          <input className={`input h-[52px] rounded-2xl pr-16 text-[15px] ${variant === "company" ? "pl-11" : ""}`} type={show ? "text" : "password"} autoComplete="current-password" required value={password} onChange={(e) => setPassword(e.target.value)} />
+          <button type="button" onClick={() => setShow(!show)} className="absolute right-3 top-1/2 -translate-y-1/2 rounded-lg px-2 py-1 text-sm font-semibold text-ink-700 hover:bg-hive-50" aria-label={show ? "Hide password" : "Show password"}>
+            {variant === "platform" ? (show ? "Hide" : "Show") : show ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+          </button>
         </div>
-        <p className="text-sm text-hive-100/60">Diagnostic Centre · Polyclinic · Elder Care</p>
+      </label>
+      {err && <p className="mt-4 rounded-xl border border-red-100 bg-red-50 px-3.5 py-2.5 text-sm font-medium text-red-700">{err}</p>}
+      <Btn type="submit" loading={busy} className="mt-7 h-[54px] w-full rounded-2xl text-[15px]">
+        Sign in
+      </Btn>
+    </form>
+  );
+}
+
+/* ───────── Platform (Super Admin) — CredoOne style ───────── */
+const CHANNELS = [
+  { Icon: Globe, label: "Website", tint: "from-sky-400 to-blue-600" },
+  { Icon: MessageCircle, label: "WhatsApp", tint: "from-emerald-400 to-green-600" },
+  { Icon: Megaphone, label: "Meta lead ads", tint: "from-indigo-400 to-blue-700" },
+  { Icon: Search, label: "Google ads", tint: "from-amber-300 to-orange-500" },
+  { Icon: Mail, label: "Email", tint: "from-rose-400 to-red-600" },
+  { Icon: PhoneCall, label: "Calls / IVR", tint: "from-teal-400 to-cyan-600" },
+  { Icon: QrCode, label: "QR campaigns", tint: "from-slate-500 to-slate-800" },
+  { Icon: Handshake, label: "Partners", tint: "from-fuchsia-400 to-purple-600" },
+  { Icon: FileSpreadsheet, label: "Excel / CSV", tint: "from-lime-400 to-green-700" },
+  { Icon: Braces, label: "REST API", tint: "from-violet-400 to-indigo-700" },
+];
+
+function PlatformLogin({ b }: { b: Brand }) {
+  return (
+    <div className="grid min-h-screen bg-[#f3f4f8] lg:grid-cols-[1.05fr_1fr]">
+      <section className="relative hidden overflow-hidden px-10 py-12 text-white lg:flex lg:flex-col lg:items-center lg:justify-center" style={{ background: "radial-gradient(120% 90% at 50% 25%, #4a4fa3 0%, #2f3180 45%, #24236a 100%)" }}>
+        <div aria-hidden className="absolute inset-0 opacity-[.18]" style={{ backgroundImage: "radial-gradient(rgba(255,255,255,.35) 1px, transparent 1px)", backgroundSize: "22px 22px" }} />
+        <div className="relative grid h-[400px] w-[400px] place-items-center rounded-full border border-white/25">
+          <div className="absolute inset-[52px] rounded-full" style={{ background: "radial-gradient(circle, #ffffff 0%, #eef0ff 38%, rgba(196,190,255,.75) 62%, rgba(120,110,230,0) 76%)", filter: "blur(2px)" }} />
+          <img src={b.logoUrl} alt={b.name} className="relative w-[250px] drop-shadow-[0_6px_18px_rgba(40,30,120,.25)]" />
+        </div>
+        <h1 className="relative mt-10 text-center text-[44px] font-extrabold leading-tight tracking-tight">{b.headline}</h1>
+        <p className="relative mt-4 max-w-[560px] text-center text-[17px] leading-relaxed text-white/80">{b.subheadline}</p>
+        <p className="relative mt-2 text-sm text-white/65">Captures from {CHANNELS.length} channels</p>
+        <ul className="relative mt-6 grid grid-cols-5 gap-3 rounded-3xl border border-white/15 bg-white/[.06] p-4 backdrop-blur">
+          {CHANNELS.map(({ Icon, label, tint }) => (
+            <li key={label} title={label} className={`grid h-14 w-14 place-items-center rounded-2xl bg-gradient-to-br ${tint} shadow-lg shadow-black/20`}>
+              <Icon className="h-6 w-6 text-white" aria-label={label} />
+            </li>
+          ))}
+        </ul>
+        <p className="relative mt-8 text-sm text-white/55">{b.footerText}</p>
       </section>
 
-      <section className="flex items-center justify-center px-5 py-12">
-        <form onSubmit={submit} className="w-full max-w-sm">
-          <img src={LOGO} alt={BRAND} className="mx-auto mb-6 h-24 w-24 rounded-full lg:hidden" />
-          <h2 className="text-2xl font-extrabold text-ink-900">Sign in</h2>
-          <p className="mt-1 text-sm text-ink-500">Use the email and password from your administrator.</p>
+      <section className="flex items-center justify-center px-6 py-14">
+        <div className="w-full max-w-[460px]">
+          <div className="mb-12 flex items-center gap-3.5">
+            <img src={b.logoUrl} alt="" className="h-14 w-auto" />
+            <div>
+              <p className="text-[28px] font-extrabold leading-none tracking-tight text-hive-700">{b.name}</p>
+              <p className="mt-1.5 text-[11.5px] font-bold uppercase tracking-[.22em] text-ink-500">{b.tagline}</p>
+            </div>
+          </div>
+          <SignInForm subtitle="Use your company or admin login." variant="platform" />
+          <p className="mt-10 text-center text-xs text-ink-400 lg:hidden">{b.footerText}</p>
+        </div>
+      </section>
+    </div>
+  );
+}
 
-          <label className="mt-8 block">
-            <span className="label">Email</span>
-            <div className="relative">
-              <Mail className="pointer-events-none absolute left-3.5 top-1/2 h-4 w-4 -translate-y-1/2 text-ink-400" />
-              <input className="input pl-10" type="email" autoComplete="username" required value={email} onChange={(e) => setEmail(e.target.value)} placeholder="you@company.com" />
-            </div>
-          </label>
-          <label className="mt-4 block">
-            <span className="label">Password</span>
-            <div className="relative">
-              <LockKeyhole className="pointer-events-none absolute left-3.5 top-1/2 h-4 w-4 -translate-y-1/2 text-ink-400" />
-              <input className="input px-10" type={show ? "text" : "password"} autoComplete="current-password" required value={password} onChange={(e) => setPassword(e.target.value)} />
-              <button type="button" onClick={() => setShow(!show)} className="absolute right-3 top-1/2 -translate-y-1/2 text-ink-400" aria-label={show ? "Hide password" : "Show password"}>
-                {show ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
-              </button>
-            </div>
-          </label>
-          {err && <p className="mt-4 rounded-xl bg-red-50 px-3 py-2 text-sm font-medium text-red-700">{err}</p>}
-          <Btn type="submit" loading={busy} className="mt-6 w-full py-3">
-            Sign in
-          </Btn>
-        </form>
+/* ───────── Company — themed, white-label ───────── */
+function Hexes() {
+  const cells = [];
+  for (let r = 0; r < 5; r++)
+    for (let c = 0; c < 5; c++) {
+      const x = c * 104 + (r % 2) * 52;
+      const y = r * 90;
+      cells.push(<polygon key={`${r}-${c}`} points={`${x + 52},${y} ${x + 100},${y + 28} ${x + 100},${y + 84} ${x + 52},${y + 112} ${x + 4},${y + 84} ${x + 4},${y + 28}`} />);
+    }
+  return (
+    <svg aria-hidden viewBox="0 0 560 480" className="absolute -right-10 -top-16 h-[620px] w-[720px] fill-none stroke-honey-300 opacity-[.13]" strokeWidth="5">
+      {cells}
+    </svg>
+  );
+}
+
+function CompanyLogin({ b }: { b: Brand }) {
+  const layout = b.loginLayout || "split";
+  const brandBlock = (
+    <div className="flex items-center gap-4">
+      <span className="grid h-[72px] w-[72px] place-items-center overflow-hidden rounded-full bg-white p-1.5 shadow-lg shadow-black/20">
+        {b.logoUrl ? <img src={b.logoUrl} alt="" className="h-full w-full rounded-full object-contain" /> : <span className="text-xl font-extrabold text-hive-700">{b.shortName.slice(0, 2).toUpperCase()}</span>}
+      </span>
+      <span className="text-2xl font-extrabold tracking-tight">{b.shortName}</span>
+    </div>
+  );
+  const subtitle = "Use the email and password from your administrator.";
+  const help = (b.supportEmail || b.supportPhone) && (
+    <p className="mt-8 text-center text-sm text-ink-500">
+      Trouble signing in? {b.supportEmail && <a className="font-semibold text-hive-700" href={`mailto:${b.supportEmail}`}>{b.supportEmail}</a>}
+      {b.supportEmail && b.supportPhone && " · "}
+      {b.supportPhone && <a className="font-semibold text-hive-700" href={`tel:${b.supportPhone}`}>{b.supportPhone}</a>}
+    </p>
+  );
+
+  if (layout === "centered")
+    return (
+      <div className="relative grid min-h-screen place-items-center bg-hive-900 px-5 py-12">
+        {b.bannerUrl ? <img src={b.bannerUrl} alt="" className="absolute inset-0 h-full w-full object-cover" /> : <Hexes />}
+        <div className="absolute inset-0 bg-gradient-to-br from-hive-950/85 via-hive-900/70 to-hive-800/60" />
+        <div className="relative w-full max-w-[460px] rounded-[28px] bg-white/95 p-8 shadow-2xl backdrop-blur sm:p-10">
+          <div className="mb-8 text-hive-800 [&_span.text-2xl]:text-ink-900">{brandBlock}</div>
+          <SignInForm subtitle={subtitle} variant="company" />
+          {help}
+        </div>
+      </div>
+    );
+
+  return (
+    <div className="grid min-h-screen bg-[#f6f7f5] lg:grid-cols-[1.05fr_1fr]">
+      <section className="relative hidden overflow-hidden bg-hive-800 p-14 text-white lg:flex lg:flex-col lg:justify-between">
+        {b.bannerUrl && layout === "banner" ? (
+          <>
+            <img src={b.bannerUrl} alt="" className="absolute inset-0 h-full w-full object-cover" />
+            <div className="absolute inset-0 bg-gradient-to-t from-hive-950/90 via-hive-900/55 to-hive-900/30" />
+          </>
+        ) : (
+          <>
+            <Hexes />
+            {b.bannerUrl && <img src={b.bannerUrl} alt="" className="absolute bottom-0 right-0 h-[55%] w-[70%] rounded-tl-[48px] object-cover opacity-90 shadow-2xl" />}
+          </>
+        )}
+        <div className="relative">{brandBlock}</div>
+        <div className="relative max-w-[560px]">
+          <h1 className="text-[46px] font-extrabold leading-[1.1] tracking-tight">{b.headline}</h1>
+          <p className="mt-5 text-[17px] leading-relaxed text-white/80">{b.subheadline}</p>
+        </div>
+        <p className="relative text-[15px] text-white/70">{b.tagline || b.footerText}</p>
+      </section>
+
+      <section className="flex items-center justify-center px-6 py-14">
+        <div className="w-full max-w-[460px]">
+          <div className="mb-10 text-ink-900 lg:hidden">{brandBlock}</div>
+          <SignInForm subtitle={subtitle} variant="company" />
+          {help}
+          {b.footerText && <p className="mt-12 text-center text-xs text-ink-400">{b.footerText}</p>}
+        </div>
       </section>
     </div>
   );

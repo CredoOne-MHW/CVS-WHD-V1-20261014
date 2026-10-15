@@ -43,6 +43,36 @@ const CompanySchema = new Schema(
     status: { type: String, enum: ["active", "inactive"], default: "active", index: true },
     trialEndsAt: Date,
     deletedAt: Date,
+
+    /* White-label: <slug>.<APP_BASE_DOMAIN> and an optional own domain */
+    slug: { type: String, lowercase: true, trim: true, unique: true, sparse: true }, // "short name"
+    customDomain: { type: String, lowercase: true, trim: true, unique: true, sparse: true },
+    branding: {
+      shortName: String, // display short name, e.g. "Wellness Hive"
+      tagline: String, // e.g. "Diagnostic Centre · Polyclinic · Elder Care"
+      headline: String, // login hero headline
+      subheadline: String, // login hero paragraph
+      footerText: String,
+      themeColor: { type: String, default: "#2f5c24" },
+      accentColor: { type: String, default: "#d9b52a" },
+      logoKey: String,
+      bannerKey: String,
+      faviconKey: String,
+      loginLayout: { type: String, enum: ["split", "banner", "centered"], default: "split" },
+      supportEmail: String,
+      supportPhone: String,
+      updatedAt: Date,
+    },
+    domain: {
+      vercelAdded: Boolean,
+      verified: Boolean, // ownership verified on Vercel (or no challenge needed)
+      configured: Boolean, // DNS points to us and TLS can be issued
+      verification: { type: [{ type: { type: String }, domain: String, value: String, reason: String }], default: undefined },
+      recommendedIPv4: String,
+      recommendedCNAME: String,
+      lastCheckedAt: Date,
+      lastError: String,
+    },
   },
   ts
 );
