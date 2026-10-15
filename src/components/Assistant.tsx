@@ -5,6 +5,7 @@ import { X, Send, Lock, Sparkles, Settings2 } from "lucide-react";
 import { api } from "@/lib/api";
 import { toText } from "@shared/text";
 import { Spinner } from "./ui";
+import { ErrorBoundary } from "./ErrorBoundary";
 
 type Msg = { role: "user" | "assistant"; content: string };
 
@@ -27,6 +28,20 @@ function Md({ text: raw }: { text: any }) {
         );
       })}
     </div>
+  );
+}
+
+/** Inputs opt out of Grammarly / Microsoft Editor / password-manager overlays, which inject DOM next to them. */
+export const NO_EXTENSIONS = { "data-gramm": "false", "data-gramm_editor": "false", "data-enable-grammarly": "false", "data-lpignore": "true", "data-1p-ignore": "true", "data-form-type": "other", autoComplete: "off" } as const;
+
+/** Company logo, or a monogram when none is uploaded. Defined at module level so it is not re-created each render. */
+function BrandMark({ logoUrl, monogram, size }: { logoUrl?: string; monogram: string; size: string }) {
+  return logoUrl ? (
+    <img src={logoUrl} alt="" className={`${size} rounded-full bg-white object-contain p-0.5`} />
+  ) : (
+    <span className={`${size} grid place-items-center rounded-full bg-white text-[15px] font-extrabold tracking-tight text-hive-800`} aria-hidden>
+      {monogram ? <span>{monogram}</span> : <Sparkles className="h-1/2 w-1/2" />}
+    </span>
   );
 }
 
@@ -77,14 +92,6 @@ export function Assistant({ companyName }: { companyName?: string }) {
     .slice(0, 2)
     .map((w) => w[0]?.toUpperCase())
     .join("");
-  const Logo = ({ size }: { size: string }) =>
-    info.logoUrl ? (
-      <img src={info.logoUrl} alt="" className={`${size} rounded-full bg-white object-contain p-0.5`} />
-    ) : (
-      <span className={`${size} grid place-items-center rounded-full bg-white text-[15px] font-extrabold tracking-tight text-hive-800`} aria-hidden>
-        {monogram || <Sparkles className="h-1/2 w-1/2" />}
-      </span>
-    );
 
   return (
     <>
@@ -95,13 +102,13 @@ export function Assistant({ companyName }: { companyName?: string }) {
           className="group fixed bottom-5 right-5 z-40 grid h-16 w-16 place-items-center rounded-full bg-gradient-to-br from-hive-600 to-hive-900 shadow-glow ring-4 ring-white transition hover:scale-105 sm:bottom-7 sm:right-7"
         >
           <span aria-hidden className="absolute inset-0 animate-ping rounded-full bg-hive-500/25 [animation-duration:2.8s]" />
-          <Logo size="h-12 w-12" />
+          <BrandMark logoUrl={info.logoUrl} monogram={monogram} size="h-12 w-12" />
         </button>
       )}
       {open && (
         <section role="dialog" aria-label={info.name} className="fixed inset-x-3 bottom-3 z-50 flex h-[min(640px,calc(100dvh-24px))] flex-col overflow-hidden rounded-[26px] bg-white shadow-2xl ring-1 ring-black/5 sm:inset-x-auto sm:bottom-7 sm:right-7 sm:w-[420px]">
           <header className="flex items-center gap-3 bg-gradient-to-br from-hive-800 to-hive-950 px-4 py-3.5 text-white">
-            <Logo size="h-10 w-10" />
+            <BrandMark logoUrl={info.logoUrl} monogram={monogram} size="h-10 w-10" />
             <div className="min-w-0 flex-1">
               <p className="truncate font-bold">{info.name}</p>
               <p className="flex items-center gap-1 text-[11.5px] text-white/65">
@@ -112,7 +119,8 @@ export function Assistant({ companyName }: { companyName?: string }) {
               <X className="h-5 w-5" />
             </button>
           </header>
-          <div className="flex-1 space-y-3 overflow-y-auto bg-[#f7f8f6] p-4" aria-live="polite">
+          <ErrorBoundary where="assistant-messages" onReset={() => setMsgs([])}>
+          <div translate="no" className="notranslate flex-1 space-y-3 overflow-y-auto bg-[#f7f8f6] p-4" aria-live="polite">
             {!live && (
               <div className="rounded-2xl bg-white p-4 text-sm text-ink-700 shadow-card">
                 <p className="font-semibold text-ink-900">Your assistant isn’t switched on yet</p>
@@ -150,6 +158,7 @@ export function Assistant({ companyName }: { companyName?: string }) {
             )}
             <div ref={end} />
           </div>
+          </ErrorBoundary>
           {live && (
           <form
             className="flex items-end gap-2 border-t border-ink-400/10 p-3"
@@ -159,6 +168,7 @@ export function Assistant({ companyName }: { companyName?: string }) {
             }}
           >
             <textarea
+              {...NO_EXTENSIONS}
               className="input max-h-28 min-h-[44px] resize-none"
               rows={1}
               value={input}
