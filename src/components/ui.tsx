@@ -33,7 +33,7 @@ export function ToastProvider({ children }: { children: ReactNode }) {
 export function Modal({ open, onClose, title, children, footer, size = "lg" }: { open: boolean; onClose: () => void; title: ReactNode; children: ReactNode; footer?: ReactNode; size?: "sm" | "md" | "lg" | "xl" }) {
   useEffect(() => {
     if (!open) return;
-    const k = (e: KeyboardEvent) => e.key === "Escape" && onClose();
+    const k = (e: KeyboardEvent) => e.key === "Escape" && !e.defaultPrevented && onClose();
     window.addEventListener("keydown", k);
     document.body.style.overflow = "hidden";
     return () => {

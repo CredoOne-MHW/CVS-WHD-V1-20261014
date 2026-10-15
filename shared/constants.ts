@@ -29,6 +29,7 @@ export const COMPANY_MODULES: ModuleDef[] = [
   { key: "wa_webhooks", label: "WhatsApp Webhook", group: "Settings", path: "/app/settings/whatsapp", icon: "Webhook" },
   { key: "wa_logs", label: "WhatsApp Logs", group: "Settings", path: "/app/settings/whatsapp-logs", icon: "MessagesSquare" },
   { key: "ai_agents", label: "AI Agent", group: "Settings", path: "/app/settings/ai-agents", icon: "Bot" },
+  { key: "subscription", label: "Subscription", group: "Settings", path: "/app/settings/subscription", icon: "CreditCard" },
 ];
 
 export const SA_MODULES: ModuleDef[] = [
@@ -42,6 +43,7 @@ export const SA_MODULES: ModuleDef[] = [
   { key: "activity_logs", label: "Activity Logs", group: "Settings", path: "/sa/settings/activity-logs", icon: "ScrollText" },
   { key: "wa_webhooks", label: "WhatsApp Webhook", group: "Settings", path: "/sa/settings/whatsapp", icon: "Webhook" },
   { key: "wa_logs", label: "WhatsApp Logs", group: "Settings", path: "/sa/settings/whatsapp-logs", icon: "MessagesSquare" },
+  { key: "subscriptions", label: "Subscription Management", group: "Settings", path: "/sa/settings/subscriptions", icon: "CreditCard" },
 ];
 
 export const PLAN_TIERS = ["Trial", "Standard", "Pro", "Enterprise"] as const;
@@ -103,6 +105,9 @@ export const SA_EVENTS = [
   { key: "company_created", label: "Company created (welcome)" },
   { key: "company_deactivated", label: "Company deactivated" },
   { key: "credits_low", label: "AI credits exhausted (company)" },
+  { key: "subscription_reminder", label: "Subscription payment reminder (1 / 3 / 7 days prior)" },
+  { key: "subscription_overdue", label: "Subscription payment over due" },
+  { key: "subscription_expired", label: "Subscription expired (30 days over due)" },
 ];
 export const COMPANY_SYSTEM_EVENTS = [
   { key: "lead_reminder", label: "Lead reminder (Lead → Reminder)" },

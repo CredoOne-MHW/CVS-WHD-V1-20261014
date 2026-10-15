@@ -1,11 +1,26 @@
 {
   "framework": "nextjs",
-  "regions": ["bom1"],
+  "regions": [
+    "bom1"
+  ],
   "functions": {
-    "src/pages/api/[[...path]].ts": { "maxDuration": 60, "memory": 1024 }
+    "src/pages/api/[[...path]].ts": {
+      "maxDuration": 60,
+      "memory": 1024
+    }
   },
   "crons": [
-    { "path": "/api/cron/followups", "schedule": "30 2 * * *" },
-    { "path": "/api/cron/retry", "schedule": "*/15 * * * *" }
+    {
+      "path": "/api/cron/followups",
+      "schedule": "30 2 * * *"
+    },
+    {
+      "path": "/api/cron/retry",
+      "schedule": "*/15 * * * *"
+    },
+    {
+      "path": "/api/cron/billing",
+      "schedule": "30 20 * * *"
+    }
   ]
 }

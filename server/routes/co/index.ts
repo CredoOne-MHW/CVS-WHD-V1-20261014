@@ -5,7 +5,7 @@ import crypto from "crypto";
 import { z } from "zod";
 import mongoose, { Types } from "mongoose";
 import * as XLSX from "xlsx";
-import { Lead, Connector, IntakeEvent, Company, User, Webhook, Otp, AiAgent, AiAllocation, CompanyAgent, Role, Plan, AiProvider, AiUsage } from "../../models";
+import { Lead, Connector, IntakeEvent, Company, User, Webhook, Otp, AiAgent, AiAllocation, CompanyAgent, Role, Plan, AiProvider, AiUsage, Subscription, SubscriptionCycle, SubscriptionPlan } from "../../models";
 import { can, requireScope, tenant, invalidateAuth } from "../../middleware/auth";
 import { h, parse, notFound, badRequest, forbidden, paging, dateRange, escapeRegex, HttpError } from "../../lib/http";
 import { upsertLead, mapFields, runEvent } from "../../lib/intake";
@@ -14,6 +14,7 @@ import { parseSheet, leadTemplateBuffer, extractText, KB_EXTENSIONS } from "../.
 import { putObject, deleteObject, folderFor, companyFolder, relayoutCompany } from "../../lib/s3";
 import { encrypt, decrypt, randomKey, sha256, maskSecret } from "../../lib/crypto";
 import { chat, walletFor } from "../../lib/ai";
+import { renewAllocations, billingAlert, enrichCycles, refreshIfStale } from "../../lib/billing";
 import { webhookRoutes, waLogRoutes, activityRoutes, roleRoutes } from "../shared";
 import { reportRoutes } from "../reports";
 import { assistantChat, assistantInfo } from "../../lib/agentic";
@@ -436,12 +437,14 @@ r.get("/storage", can("ai_agents", "read"), h(async (req, res) => {
   res.json({ folder, logo: `${folder}/logo`, banner: `${folder}/banner`, brain: `${folder}/brain` });
 }));
 
-/** Every active model from Super Admin › AI Agents, with its charges and this company's credit wallet. */
+/** Models Super Admin allocated to this company (AI Agents › Allocation), with charges, credits and renewal date. */
 r.get("/ai-agents/models", can("ai_agents", "read"), h(async (req, res) => {
   const cid = new Types.ObjectId(req.auth!.companyId!);
-  const agents = await AiAgent.find({ active: true }).select("name llmVersion provider companyRate tokenWeights credits").sort({ name: 1 }).lean<any[]>();
+  await renewAllocations(new Date(), { companyId: cid }); // apply any renewal that is due before showing credits
+  const allocs = await AiAllocation.find({ companyId: cid, allocated: { $ne: false } }).lean<any[]>();
+  const agents = await AiAgent.find({ _id: { $in: allocs.map((x) => x.agentId) }, active: true }).select("name llmVersion provider companyRate tokenWeights credits").sort({ name: 1 }).lean<any[]>();
   const [wallets, providers, spend] = await Promise.all([
-    Promise.all(agents.map((a) => walletFor(cid, a))),
+    agents.map((a) => allocs.find((x) => String(x.agentId) === String(a._id))),
     AiProvider.find().select("key name").lean<any[]>(),
     AiUsage.aggregate([{ $match: { companyId: cid } }, { $group: { _id: "$agentId", billed: { $sum: "$billed" }, calls: { $sum: 1 } } }]),
   ]);
@@ -462,6 +465,8 @@ r.get("/ai-agents/models", can("ai_agents", "read"), h(async (req, res) => {
         remaining: +((w?.credits || 0) - (w?.used || 0)).toFixed(3),
         spent: +(s?.billed || 0).toFixed(2),
         calls: s?.calls || 0,
+        frequency: w?.frequency,
+        renewalDate: w?.renewalDate,
       };
     })
   );
@@ -505,7 +510,7 @@ async function ingest(companyId: string, files: Express.Multer.File[]) {
 
 r.post("/ai-agents", can("ai_agents", "create"), upload.array("files", 10), h(async (req, res) => {
   const b = parse(caBody, typeof req.body.data === "string" ? JSON.parse(req.body.data) : req.body);
-  if (b.agentId && !(await AiAgent.exists({ _id: b.agentId, active: true }))) throw badRequest("This AI model is no longer offered");
+  if (b.agentId && !(await AiAllocation.exists({ ...tenant(req), agentId: b.agentId, allocated: { $ne: false } }))) throw badRequest("This AI model is not allocated to your company");
   const knowledge = await ingest(req.auth!.companyId!, (req.files as Express.Multer.File[]) || []);
   const doc = await CompanyAgent.create({ ...b, ...tenant(req), knowledge });
   await claimAssistant(req.auth!.companyId!, doc._id, b.isAssistant);
@@ -519,7 +524,7 @@ r.put("/ai-agents/:id", can("ai_agents", "update"), upload.array("files", 10), h
   const doc = await CompanyAgent.findOne({ _id: req.params.id, ...tenant(req) });
   if (!doc) throw notFound();
   const { removeKeys, ...rest } = b;
-  if (rest.agentId && !(await AiAgent.exists({ _id: rest.agentId, active: true }))) throw badRequest("This AI model is no longer offered");
+  if (rest.agentId && !(await AiAllocation.exists({ ...tenant(req), agentId: rest.agentId, allocated: { $ne: false } }))) throw badRequest("This AI model is not allocated to your company");
   doc.set(rest);
   if (removeKeys?.length) {
     for (const k of doc.knowledge.filter((x: any) => removeKeys.includes(x.key))) {
@@ -613,6 +618,45 @@ r.post("/assistant/chat", h(async (req, res) => {
   res.locals.action = "Assistant question";
   res.locals.item = b.messages[b.messages.length - 1].content.slice(0, 80);
   res.json(await assistantChat(req.auth!, b.messages));
+}));
+
+/* ───────────── Settings › Subscription (read-only for the company) ───────────── */
+r.get("/subscription", can("subscription", "read"), h(async (req, res) => {
+  await refreshIfStale();
+  const cid = new Types.ObjectId(req.auth!.companyId!);
+  const sub = await Subscription.findOne({ companyId: cid, active: true }).sort({ createdAt: -1 }).lean<any>();
+  const now = new Date();
+  const [current, plan, allocs, unpaid] = await Promise.all([
+    sub ? SubscriptionCycle.findOne({ subscriptionId: sub._id, periodStart: { $lte: now } }).sort({ periodStart: -1 }).lean<any>() : null,
+    sub ? SubscriptionPlan.findById(sub.subscriptionPlanId).select("reminderDays notifyWebApp notifyWhatsApp").lean<any>() : null,
+    AiAllocation.find({ companyId: cid, allocated: { $ne: false } }).lean<any[]>(),
+    SubscriptionCycle.find({ companyId: cid, status: { $in: ["unpaid", "overdue", "expired"] } }).sort({ periodEnd: 1 }).limit(24).lean<any[]>(),
+  ]);
+  const models = await AiAgent.find({ _id: { $in: allocs.map((a) => a.agentId) } }).select("name llmVersion companyRate").lean<any[]>();
+  const [cur] = current ? await enrichCycles([current]) : [null];
+  const dues = await enrichCycles(unpaid);
+  res.json({
+    subscription: sub ? { planName: sub.planName, amount: sub.amount, frequency: sub.frequency, startDate: sub.startDate, discountType: sub.discountType, discountValue: sub.discountValue } : null,
+    reminders: plan ? { days: plan.reminderDays, webApp: plan.notifyWebApp, whatsApp: plan.notifyWhatsApp } : null,
+    current: cur,
+    outstanding: { count: dues.filter((d) => d.status !== "paid").length, amount: Math.round(dues.reduce((s, d) => s + (d.status === "paid" ? 0 : d.total), 0) * 100) / 100 },
+    aiAllocations: allocs.map((a) => {
+      const m = models.find((x) => String(x._id) === String(a.agentId));
+      return { model: m?.name, llmVersion: m?.llmVersion, rate: m?.companyRate, credits: a.credits, used: Math.round(a.used * 1000) / 1000, remaining: Math.round((a.credits - a.used) * 1000) / 1000, frequency: a.frequency, renewalDate: a.renewalDate };
+    }),
+  });
+}));
+
+r.get("/subscription/history", can("subscription", "read"), h(async (req, res) => {
+  const q: any = { companyId: new Types.ObjectId(req.auth!.companyId!) };
+  if (typeof req.query.status === "string" && ["paid", "unpaid", "overdue", "expired"].includes(req.query.status)) q.status = req.query.status;
+  const { page, limit, skip } = paging(req.query);
+  const [rows, total] = await Promise.all([SubscriptionCycle.find(q).sort({ periodStart: -1 }).skip(skip).limit(limit).select("-remindersSent -overdueNotifiedAt -expiredNotifiedAt -statusChangedBy").lean<any[]>(), SubscriptionCycle.countDocuments(q)]);
+  res.json({ items: await enrichCycles(rows), page, limit, total });
+}));
+
+r.get("/billing-alert", h(async (req, res) => {
+  res.json(await billingAlert(req.auth!.companyId!));
 }));
 
 r.use("/reports", reportRoutes("company"));

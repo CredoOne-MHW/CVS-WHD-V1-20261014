@@ -1,4 +1,5 @@
 import { toText, stripThinking, errorText } from "../../shared/text";
+import { renewAllocations } from "./billing";
 import { AiAllocation, AiUsage, AiProvider, Company, User } from "../models";
 import { decrypt } from "./crypto";
 import { getObjectText } from "./s3";
@@ -82,21 +83,23 @@ async function callProvider(agent: any, system: string, messages: Msg[], opts: {
 }
 
 /**
- * Every active Super Admin model is offered to every company. The company's credit wallet for a model is
- * opened automatically with that model's default credits the first time it is listed or used
- * (Super Admin can still top up / change it per company).
+ * The company's credit wallet for a model — only exists when Super Admin allocated the model
+ * (Super Admin › AI Agents › Allocation). Credits renew on the renewal date; if the daily job hasn't run yet,
+ * the renewal is applied here first so the company never waits for it.
  */
 export async function walletFor(companyId: any, agent: any) {
-  return AiAllocation.findOneAndUpdate(
-    { companyId, agentId: agent._id },
-    { $setOnInsert: { companyId, agentId: agent._id, credits: Number(agent.credits) || 0, used: 0 } },
-    { upsert: true, new: true }
-  );
+  const a = await AiAllocation.findOne({ companyId, agentId: agent._id, allocated: { $ne: false } });
+  if (a?.renewalDate && a.renewalDate <= new Date()) {
+    await renewAllocations(new Date(), { _id: a._id });
+    return AiAllocation.findById(a._id);
+  }
+  return a;
 }
 
 /** Credits left for a company on a model; throws 402 when exhausted (after alerting once). */
 async function ensureCredits(companyId: string, agent: any) {
   const alloc = await walletFor(companyId, agent);
+  if (!alloc) throw new HttpError(402, "This AI model is not allocated to your company. Ask your Super Admin to allocate it (AI Agents › Allocation).");
   if (alloc.credits - alloc.used <= 0) {
     await notifyExhausted(companyId, agent, alloc);
     throw new HttpError(402, "AI credits are exhausted. Your administrator has been notified on WhatsApp.");

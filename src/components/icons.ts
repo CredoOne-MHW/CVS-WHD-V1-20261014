@@ -25,6 +25,7 @@ import {
   PhoneCall,
   QrCode,
   Handshake,
+  CreditCard,
   type LucideIcon,
 } from "lucide-react";
 
@@ -52,5 +53,6 @@ export const ICONS: Record<string, LucideIcon> = {
   PhoneCall,
   QrCode,
   Handshake,
+  CreditCard,
 };
 export const icon = (name: string): LucideIcon => ICONS[name] || Circle;

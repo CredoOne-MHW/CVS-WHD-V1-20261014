@@ -7,6 +7,9 @@ import { can, requireScope, invalidateAuth } from "../../middleware/auth";
 import { h, parse, notFound, badRequest, paging, escapeRegex, HttpError } from "../../lib/http";
 import { encrypt } from "../../lib/crypto";
 import multer from "multer";
+import { nextRenewal, FREQ_KEYS } from "../../../shared/billing";
+import { renewAllocations } from "../../lib/billing";
+import subscriptionRoutes from "./subscriptions";
 import { putObject, deleteObject, folderFor, companyFolder, relayoutCompany, relayoutAll } from "../../lib/s3";
 import { baseDomain, baseSource, configuredBases, tenantUrls, clearTenantCache, publicBranding, platformBranding } from "../../lib/tenant";
 import { vercelSync, vercelVerify, vercelRemove, vercelConfigured, recordsFor, checkRecords, platformRecords, newVerifyToken, cnameTargetFor, VERIFY_LABEL, FALLBACK_A, FALLBACK_CNAME } from "../../lib/domains";
@@ -251,7 +254,12 @@ r.delete("/companies/:id", can("companies", "delete"), h(async (req, res) => {
 r.put("/companies/:id/ai", can("companies", "update"), h(async (req, res) => {
   const b = parse(z.array(z.object({ agentId: z.string(), credits: z.coerce.number().min(0) })), req.body);
   for (const a of b) {
-    await AiAllocation.updateOne({ companyId: req.params.id, agentId: a.agentId }, { $set: { credits: a.credits } }, { upsert: true });
+    const now = new Date();
+    await AiAllocation.updateOne(
+      { companyId: req.params.id, agentId: a.agentId },
+      { $set: { credits: a.credits, allocated: true }, $setOnInsert: { used: 0, startDate: now, frequency: "monthly", renewalDate: nextRenewal(now, "monthly", now), allocatedBy: req.auth!.email } },
+      { upsert: true }
+    );
     // topped up → re-arm the one-time "credits exhausted" WhatsApp alert
     await AiAllocation.updateOne({ companyId: req.params.id, agentId: a.agentId, $expr: { $gt: ["$credits", "$used"] } }, { $set: { exhaustedNotifiedAt: null } });
   }
@@ -276,7 +284,7 @@ const agentBody = z.object({
 
 r.get("/ai-agents", can("ai_agents", "read"), h(async (_req, res) => {
   const items = await AiAgent.find().sort({ createdAt: -1 }).select("-apiKeyEnc").lean();
-  const usage = await AiAllocation.aggregate([{ $group: { _id: "$agentId", allocated: { $sum: "$credits" }, used: { $sum: "$used" }, companies: { $sum: 1 } } }]);
+  const usage = await AiAllocation.aggregate([{ $match: { allocated: { $ne: false } } }, { $group: { _id: "$agentId", allocated: { $sum: "$credits" }, used: { $sum: "$used" }, companies: { $sum: 1 } } }]);
   const u = Object.fromEntries(usage.map((x: any) => [String(x._id), x]));
   res.json(items.map((a: any) => ({ ...a, allocated: u[String(a._id)]?.allocated || 0, used: u[String(a._id)]?.used || 0, companies: u[String(a._id)]?.companies || 0, margin: a.companyRate - a.actualRate })));
 }));
@@ -300,6 +308,88 @@ r.delete("/ai-agents/:id", can("ai_agents", "delete"), h(async (req, res) => {
   const d = await AiAgent.findByIdAndDelete(req.params.id);
   if (!d) throw notFound();
   res.locals.item = d.name;
+  res.json({ ok: true });
+}));
+
+/* ───────────── AI Agents › Allocation (which company gets which model, with renewal cycle) ───────────── */
+const allocBody = z.object({
+  companyIds: z.array(z.string().regex(/^[a-f0-9]{24}$/)).min(1).max(500),
+  agentIds: z.array(z.string().regex(/^[a-f0-9]{24}$/)).min(1).max(50),
+  startDate: z.coerce.date(),
+  frequency: z.enum(FREQ_KEYS),
+  credits: z.coerce.number().min(0).max(100_000_000).optional(), // per cycle; default = the model's credits
+});
+
+r.get("/ai-allocations", can("ai_agents", "read"), h(async (req, res) => {
+  await renewAllocations();
+  const q: any = { allocated: { $ne: false } };
+  if (typeof req.query.companyId === "string" && /^[a-f0-9]{24}$/.test(req.query.companyId)) q.companyId = req.query.companyId;
+  if (typeof req.query.agentId === "string" && /^[a-f0-9]{24}$/.test(req.query.agentId)) q.agentId = req.query.agentId;
+  const { page, limit, skip } = paging(req.query);
+  const [items, total] = await Promise.all([AiAllocation.find(q).sort({ createdAt: -1 }).skip(skip).limit(limit).lean<any[]>(), AiAllocation.countDocuments(q)]);
+  const [cos, ags] = await Promise.all([
+    Company.find({ _id: { $in: items.map((x) => x.companyId) } }).select("name code").lean<any[]>(),
+    AiAgent.find({ _id: { $in: items.map((x) => x.agentId) } }).select("name llmVersion companyRate active").lean<any[]>(),
+  ]);
+  const byId = (arr: any[], id: any) => arr.find((x) => String(x._id) === String(id));
+  res.json({
+    items: items.map((a) => ({ ...a, company: byId(cos, a.companyId), model: byId(ags, a.agentId), remaining: +((a.credits || 0) - (a.used || 0)).toFixed(3) })),
+    page,
+    limit,
+    total,
+  });
+}));
+
+r.post("/ai-allocations", can("ai_agents", "create"), h(async (req, res) => {
+  const b = parse(allocBody, req.body);
+  const [cos, ags] = await Promise.all([
+    Company.find({ _id: { $in: b.companyIds }, deletedAt: null }).select("_id").lean<any[]>(),
+    AiAgent.find({ _id: { $in: b.agentIds }, active: true }).select("_id credits").lean<any[]>(),
+  ]);
+  if (!cos.length || !ags.length) throw badRequest("Pick at least one active company and one active model");
+  const now = new Date();
+  const renewalDate = nextRenewal(b.startDate, b.frequency, now);
+  const ops = cos.flatMap((c) =>
+    ags.map((a) => ({
+      updateOne: {
+        filter: { companyId: c._id, agentId: a._id },
+        update: {
+          $set: { allocated: true, startDate: b.startDate, frequency: b.frequency, renewalDate, credits: b.credits ?? (Number(a.credits) || 0), allocatedBy: req.auth!.email, exhaustedNotifiedAt: null },
+          $setOnInsert: { used: 0 },
+        },
+        upsert: true,
+      },
+    }))
+  );
+  await AiAllocation.bulkWrite(ops, { ordered: false });
+  await invalidate("billing:");
+  res.locals.action = "Allocate AI model";
+  res.locals.item = `${ags.length} model(s) → ${cos.length} company(ies)`;
+  res.status(201).json({ allocated: ops.length, renewalDate });
+}));
+
+r.put("/ai-allocations/:id", can("ai_agents", "update"), h(async (req, res) => {
+  const b = parse(z.object({ credits: z.coerce.number().min(0).max(100_000_000).optional(), startDate: z.coerce.date().optional(), frequency: z.enum(FREQ_KEYS).optional(), resetUsed: z.boolean().optional() }), req.body);
+  const a = await AiAllocation.findOne({ _id: req.params.id, allocated: { $ne: false } });
+  if (!a) throw notFound();
+  if (b.credits != null) a.credits = b.credits;
+  if (b.startDate) a.startDate = b.startDate;
+  if (b.frequency) a.frequency = b.frequency;
+  if (b.startDate || b.frequency) a.renewalDate = nextRenewal(a.startDate || new Date(), a.frequency || "monthly");
+  if (b.resetUsed) a.used = 0;
+  if (a.credits > a.used) a.exhaustedNotifiedAt = null;
+  await a.save();
+  await invalidate("billing:");
+  res.locals.item = `AI allocation ${a._id}`;
+  res.json(a);
+}));
+
+r.delete("/ai-allocations/:id", can("ai_agents", "delete"), h(async (req, res) => {
+  // usage history stays; the model just disappears from the company's AI Agent screen
+  const a = await AiAllocation.findOneAndUpdate({ _id: req.params.id }, { $set: { allocated: false } });
+  if (!a) throw notFound();
+  await invalidate("billing:");
+  res.locals.item = `AI allocation ${a._id}`;
   res.json({ ok: true });
 }));
 
@@ -534,6 +624,7 @@ r.get("/knowledgebase/domains", can("knowledgebase", "read"), h(async (req, res)
   res.json(rows);
 }));
 
+r.use("/subscriptions", subscriptionRoutes);
 r.use("/reports", reportRoutes("super"));
 r.use("/roles", roleRoutes("super"));
 r.use("/activity-logs", activityRoutes("super"));

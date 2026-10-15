@@ -258,3 +258,41 @@ Newer Chrome (154+) returns a **Promise** from `Element.scrollIntoView()`. The T
 cleanup function → `TypeError: n is not a function` inside react-dom on the next message. Reproduced exactly (same chunk/offset) by giving the
 test browser Chrome-154 scroll behaviour; fixed by using block-bodied effects everywhere (5 places). `npm run build` now runs
 `scripts/check-effects.mjs` first and fails if any `useEffect`/`useLayoutEffect` uses an expression body.
+
+## 11. AI model allocation & Subscription Management (Oct 2026)
+
+### Super Admin › AI Agents › Allocation
+- Sub-tabs **Models | Allocation**. **Allocate** (top right): Company (multi-select, searchable), Models (multi-select, searchable),
+  Allocation start date, Renewal frequency (Weekly / Monthly / Quarterly / Half Yearly), **Renewal date** (auto-calculated),
+  optional credits per cycle (defaults to each model's credits). Every company × model pair is upserted in one bulk write.
+- The company's AI Agent screen shows **only allocated models**. On the renewal date used credits reset and the next date is set —
+  by the daily job, and lazily on first use so a company never waits for the job. Edit / remove per row (usage history is kept).
+- Existing wallets were migrated once (`meta.alloc_v3`) as monthly allocations, so nothing a company already uses disappears.
+
+### Super Admin › Settings › Subscription Management
+- **Plan**: Plan (from the Plan module), amount, frequency, reminder notification (1 / 3 / 7 days prior, multi-select),
+  notify via company web app and/or WhatsApp, WhatsApp webhook (pick one, or default to webhooks on the new events
+  `subscription_reminder`, `subscription_overdue`, `subscription_expired` — selectable when creating a WhatsApp webhook).
+- **Allocation**: Company (single, searchable), subscription plan, start date, discount (₹ flat or %). One active subscription per company;
+  billing cycles are created automatically (back-dated starts create the past cycles too).
+- **Status**: sub-tabs Active / Over Dues / Expired with counts; filters by expiry date range and company name. Columns: company, start,
+  expiry, total, system due, AI agent due (live "so far" while the cycle is open, snapshotted when it closes), discount, payment status
+  (Paid / Unpaid / Over Due / Expired — editable), actions **Usage** (AI spend by model + daily, allocations) and **Reminder** (pick webhook, edit message, send).
+- Rules: new cycles are Unpaid; past the expiry (due) date → **Over Due**; 30 days after → **Expired**. Total = system − discount + AI usage.
+
+### Daily job — 02:00 IST (`/api/cron/billing`, Vercel cron `30 20 * * *` UTC)
+Renews AI allocations, creates the next cycles, applies Over Due / Expired, sends 1/3/7-day reminders and Over Due / Expired WhatsApps —
+each exactly once per cycle (atomic claims; safe to re-run). Statuses also self-correct on read (at most every 5 min), so screens are right
+even before the job runs. Without `CRON_SECRET`, cron URLs only accept Vercel's scheduler on Vercel.
+
+### Company › Settings › Subscription
+**Current Plan** (plan, cycle progress, amount due with system / AI / discount breakdown, reminder settings, AI model credits & renewal
+dates) and **History** (every cycle with payment status, filterable). Always visible to the company (read-only), whatever the plan grid says.
+A top-middle **flash alert** shows when a payment is Over Due / Expired (red, pulsing) or due soon (amber, when the plan enables
+web-app reminders); one small cached request per page load + every 10 minutes.
+
+### Performance & security notes
+Indexes: cycles `{subscriptionId, periodStart}` (unique → idempotent), `{companyId, periodStart}`, `{status, periodEnd}`; AI usage
+`{companyId, createdAt}`, `{companyAgentId, createdAt}`; allocations `{renewalDate}`. Lists are paginated (25), lean and projected;
+dropdown data and counters are cached (30–60 s) and invalidated on every change. All inputs are zod-validated (ids, enums, bounded amounts,
+discount ≤ amount / ≤ 100 %), company routes are tenant-scoped, Super Admin routes need the `subscriptions` permission.
