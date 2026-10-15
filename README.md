@@ -1,4 +1,4 @@
-# Wellness Hive · Lead Management System
+# CredoOne · Lead Management System (white-label)
 
 Multi-tenant lead capture, qualification and conversion platform.
 **Next.js 14 (App Router) + TypeScript UI · Express API · MongoDB · AWS S3 · one Vercel deployment.**
@@ -154,3 +154,27 @@ Each webhook = endpoint + method + headers (encrypted) + payload template, bound
 4. **Deleting a company** is a soft delete: logins are removed, data is retained for audit.
 5. **Delete OTP** needs an active webhook on the *Delete OTP* event and a WhatsApp number on the admin's user (falls back to the company WhatsApp).
 6. The Super Admin "AI Agents" item under *Company* is implemented as per-company credit allocation (⋯ menu on each company row).
+
+---
+
+## 9. White label (per-company branding & domains)
+
+| Address | Shows |
+|---|---|
+| `https://mhw.credovation.tech` (APP_BASE_DOMAIN), any `*.vercel.app`, localhost | CredoOne platform login → Super Admin |
+| `https://<short-name>.mhw.credovation.tech` | That company's branded login → Company Admin |
+| `https://leads.theircompany.com` (company's own domain) | Same company login, on their domain |
+
+* **Super Admin → Company → Create → Branding & domain:** short name (sub-domain), own domain, logo, side banner, favicon, theme colour, accent colour, login layout (split / banner / centered), display name, tagline, headline, sub-headline, support email/phone, footer. Live preview in the form.
+* **Theme engine** (`shared/theme.ts`): one hex → 50–950 scale as CSS variables; Tailwind's `hive-*`/`honey-*` read them, so the company console (sidebar, buttons, charts, badges) and login all follow the company colour. Colours that fail 4.5:1 with white text are darkened automatically.
+* **Assets** are uploaded to S3 under `companies/<id>/branding/` and served via `/api/public/brand-asset/:id/:kind` (bucket stays private, cached 24 h, cache-busted on change).
+* **DNS records** appear automatically after saving (and via the 🌐 icon): CNAME for a sub-domain, A for a root domain, `_vercel` TXT when ownership must be proven, optional CAA. **Check DNS now** does live lookups through 1.1.1.1 / 8.8.8.8.
+* **Vercel API (optional):** with `VERCEL_API_TOKEN` + `VERCEL_PROJECT_ID` (+ `VERCEL_TEAM_ID`) the app adds the company's domain to the project, shows Vercel's project-specific CNAME / IP and TXT challenge, and triggers verification. Without it, add the domain in Vercel › Settings › Domains and the records fall back to `cname.vercel-dns.com` / `76.76.21.21`.
+* **Login isolation:** on a company address only that company's users can sign in; Super Admins sign in only on the platform address. Sessions are host-only cookies.
+* **Knowledgebase › White Label** has the full step-by-step guide (platform wildcard setup via NS delegation of `mhw` at `credovation.tech`, per-company records, provider tips, troubleshooting). **Company domains** tab lists every company's URLs and live status.
+
+### One-time setup for mhw.credovation.tech
+1. Vercel env: `APP_BASE_DOMAIN=mhw.credovation.tech` (+ optional Vercel API vars) → redeploy.
+2. Vercel › Settings › Domains: add `mhw.credovation.tech` and `*.mhw.credovation.tech` (or use the button in Knowledgebase).
+3. At credovation.tech's DNS provider: remove existing records for `mhw`, add `NS mhw → ns1.vercel-dns.com` and `NS mhw → ns2.vercel-dns.com` (wildcard certificates need Vercel DNS for that sub-zone).
+4. Open `https://mhw.credovation.tech/login` → CredoOne login.

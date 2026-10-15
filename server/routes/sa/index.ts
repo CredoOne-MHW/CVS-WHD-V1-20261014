@@ -5,6 +5,10 @@ import { Company, User, Plan, Lead, WaLog, AiAgent, AiAllocation, AiUsage, Conne
 import { can, requireScope } from "../../middleware/auth";
 import { h, parse, notFound, badRequest, paging, escapeRegex } from "../../lib/http";
 import { encrypt } from "../../lib/crypto";
+import multer from "multer";
+import { putObject, deleteObject } from "../../lib/s3";
+import { baseDomain, tenantUrls, clearTenantCache, publicBranding, platformBranding } from "../../lib/tenant";
+import { vercelSync, vercelVerify, vercelRemove, vercelConfigured, recordsFor, checkRecords, platformRecords, FALLBACK_A, FALLBACK_CNAME } from "../../lib/domains";
 import { fireEvent } from "../../lib/whatsapp";
 import { webhookRoutes, waLogRoutes, activityRoutes, roleRoutes } from "../shared";
 import { COMPANY_MODULES, PLAN_TIERS, ACTIONS, type PermMap } from "../../../shared/constants";
@@ -53,7 +57,58 @@ const companyBody = z.object({
   address: z.string().max(500).optional(),
   loginEmail: z.string().email().optional().or(z.literal("")),
   password: z.string().min(8, "Min 8 characters").optional(),
+  slug: z.string().toLowerCase().regex(/^[a-z0-9](?:[a-z0-9-]{0,30}[a-z0-9])?$/, "Short name: 2–32 lowercase letters, numbers or hyphens").optional(),
+  customDomain: z
+    .string()
+    .toLowerCase()
+    .transform((s) => s.trim().replace(/^https?:\/\//, "").replace(/\/.*$/, ""))
+    .refine((s) => s === "" || /^(?=.{4,253}$)([a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,}$/.test(s), "Enter a domain like leads.yourcompany.com")
+    .optional(),
+  branding: z
+    .object({
+      shortName: z.string().max(40).optional(),
+      tagline: z.string().max(120).optional(),
+      headline: z.string().max(140).optional(),
+      subheadline: z.string().max(400).optional(),
+      footerText: z.string().max(160).optional(),
+      themeColor: z.string().regex(/^#[0-9a-fA-F]{6}$/, "Theme color must be a hex like #2f5c24").optional(),
+      accentColor: z.string().regex(/^#[0-9a-fA-F]{6}$/).optional(),
+      loginLayout: z.enum(["split", "banner", "centered"]).optional(),
+      supportEmail: z.string().email().optional().or(z.literal("")),
+      supportPhone: z.string().max(20).optional(),
+    })
+    .optional(),
 });
+
+const RESERVED_SLUGS = new Set(["www", "app", "api", "admin", "sa", "login", "mail", "smtp", "static", "cdn", "assets", "docs", "help", "support", "status", "dev", "staging", "test"]);
+
+async function assertDomainFree(id: string | undefined, slug?: string, customDomain?: string) {
+  if (slug) {
+    if (RESERVED_SLUGS.has(slug)) throw badRequest(`"${slug}" is reserved. Pick another short name.`);
+    if (await Company.exists({ slug, _id: { $ne: id }, deletedAt: null })) throw badRequest(`Short name "${slug}" is already taken`);
+  }
+  if (customDomain) {
+    const base = baseDomain();
+    if (customDomain.endsWith(".vercel.app") || (base && (customDomain === base || customDomain.endsWith(`.${base}`)))) throw badRequest("Use the company's own domain here — the platform sub-domain is created automatically from the short name");
+    if (await Company.exists({ customDomain, _id: { $ne: id }, deletedAt: null })) throw badRequest("That domain is already mapped to another company");
+  }
+}
+
+/** Register the custom domain on Vercel (when the API is configured) and store challenges + recommendations. */
+async function syncDomain(companyId: any, domain?: string | null) {
+  if (!domain) return;
+  try {
+    const v = await vercelSync(domain);
+    const set: any = { "domain.lastCheckedAt": new Date() };
+    if (v && "error" in v) set["domain.lastError"] = v.error;
+    else if (v) Object.assign(set, { "domain.vercelAdded": true, "domain.verified": v.verified, "domain.configured": v.configured, "domain.verification": v.verification, "domain.recommendedIPv4": v.recommendedIPv4, "domain.recommendedCNAME": v.recommendedCNAME, "domain.lastError": null });
+    await Company.updateOne({ _id: companyId }, { $set: set });
+  } catch (e: any) {
+    await Company.updateOne({ _id: companyId }, { $set: { "domain.lastError": e?.message } });
+  }
+}
+
+const slugFrom = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 32);
 
 r.get("/companies", can("companies", "read"), h(async (req, res) => {
   const { page, limit, skip } = paging(req.query);
@@ -64,7 +119,7 @@ r.get("/companies", can("companies", "read"), h(async (req, res) => {
   const [items, total] = await Promise.all([Company.find(q).sort({ createdAt: -1 }).skip(skip).limit(limit).lean(), Company.countDocuments(q)]);
   const owners = await User.find({ companyId: { $in: items.map((c: any) => c._id) }, isOwner: true }).select("companyId email").lean();
   const loginBy = Object.fromEntries(owners.map((o: any) => [String(o.companyId), o.email]));
-  res.json({ items: items.map((c: any) => ({ ...c, loginEmail: loginBy[String(c._id)] })), total, page, limit });
+  res.json({ items: items.map((c: any) => ({ ...c, ...tenantUrls(c), loginEmail: loginBy[String(c._id)] })), total, page, limit });
 }));
 
 r.get("/companies/:id", can("companies", "read"), h(async (req, res) => {
@@ -76,33 +131,58 @@ r.get("/companies/:id", can("companies", "read"), h(async (req, res) => {
     Lead.countDocuments({ companyId: c._id, deletedAt: null }),
     Connector.countDocuments({ companyId: c._id }),
   ]);
-  res.json({ ...c, loginEmail: owner?.email, allocations, leadCount, connectors });
+  res.json({ ...c, ...tenantUrls(c), brandingPublic: publicBranding(c), loginEmail: owner?.email, allocations, leadCount, connectors });
 }));
 
 r.post("/companies", can("companies", "create"), h(async (req, res) => {
   const b = parse(companyBody.required({ password: true }), req.body);
   const loginEmail = (b.loginEmail || b.email).toLowerCase();
+  const slug = b.slug || slugFrom(b.code || b.name);
+  const customDomain = b.customDomain || undefined;
   if (!(await Plan.exists({ name: b.plan }))) throw badRequest("Unknown plan");
   if (await User.exists({ email: loginEmail })) throw badRequest("Login email is already used by another account");
-  const company = await Company.create({ ...b, code: b.code.toUpperCase(), loginEmail: undefined, password: undefined, trialEndsAt: b.plan === "Trial" ? new Date(Date.now() + 14 * 86400_000) : undefined });
+  await assertDomainFree(undefined, slug, customDomain);
+  const company = await Company.create({
+    ...b,
+    code: b.code.toUpperCase(),
+    slug,
+    customDomain,
+    branding: { shortName: b.name, ...(b.branding || {}), updatedAt: new Date() },
+    loginEmail: undefined,
+    password: undefined,
+    trialEndsAt: b.plan === "Trial" ? new Date(Date.now() + 14 * 86400_000) : undefined,
+  });
   try {
     await User.create({ scope: "company", companyId: company._id, name: b.contactPerson || b.name, email: loginEmail, phone: b.whatsapp || b.phone, passwordHash: await bcrypt.hash(b.password, 12), isOwner: true });
   } catch (e) {
     await Company.deleteOne({ _id: company._id });
     throw e;
   }
+  await syncDomain(company._id, customDomain);
+  clearTenantCache();
   res.locals.item = company.name;
-  if (b.whatsapp) fireEvent("super", undefined, "company_created", { phone: b.whatsapp, name: b.contactPerson, company: b.name, message: `Welcome to LeadHive, ${b.contactPerson || b.name}! Your ${b.plan} workspace is ready. Login: ${loginEmail}` }).catch(() => undefined);
-  res.status(201).json(company);
+  const urls = tenantUrls(company);
+  if (b.whatsapp) fireEvent("super", undefined, "company_created", { phone: b.whatsapp, name: b.contactPerson, company: b.name, message: `Welcome, ${b.contactPerson || b.name}! Your ${b.plan} workspace is ready.\nLogin: ${urls.customUrl || urls.platformUrl || ""}\nUser: ${loginEmail}` }).catch(() => undefined);
+  res.status(201).json({ ...company.toObject(), ...urls });
 }));
 
 r.put("/companies/:id", can("companies", "update"), h(async (req, res) => {
   const b = parse(companyBody.partial(), req.body);
   const c = await Company.findOne({ _id: req.params.id, deletedAt: null });
   if (!c) throw notFound();
-  const { loginEmail, password, ...rest } = b;
-  c.set({ ...rest, code: rest.code ? rest.code.toUpperCase() : c.code });
+  const { loginEmail, password, branding, ...rest } = b;
+  const oldDomain = c.customDomain;
+  const newDomain = rest.customDomain === undefined ? oldDomain : rest.customDomain || undefined;
+  await assertDomainFree(String(c._id), rest.slug, newDomain || undefined);
+  c.set({ ...rest, customDomain: newDomain, code: rest.code ? rest.code.toUpperCase() : c.code });
+  if (branding) c.set("branding", { ...(c.toObject().branding || {}), ...branding, updatedAt: new Date() });
+  if (newDomain !== oldDomain) c.set("domain", {});
   await c.save();
+  if (newDomain !== oldDomain) {
+    if (oldDomain) await vercelRemove(oldDomain);
+    await syncDomain(c._id, newDomain);
+  }
+  clearTenantCache();
   const owner = await User.findOne({ companyId: c._id, isOwner: true });
   if (owner) {
     if (loginEmail && loginEmail.toLowerCase() !== owner.email) {
@@ -142,8 +222,10 @@ r.post("/companies/:id/reminder", can("companies", "update"), h(async (req, res)
 }));
 
 r.delete("/companies/:id", can("companies", "delete"), h(async (req, res) => {
-  const c = await Company.findOneAndUpdate({ _id: req.params.id, deletedAt: null }, { deletedAt: new Date(), status: "inactive", code: `DEL-${Date.now()}` });
+  const c = await Company.findOneAndUpdate({ _id: req.params.id, deletedAt: null }, { deletedAt: new Date(), status: "inactive", code: `DEL-${Date.now()}`, $unset: { slug: 1, customDomain: 1 } });
   if (!c) throw notFound();
+  if (c.customDomain) await vercelRemove(c.customDomain);
+  clearTenantCache();
   await User.updateMany({ companyId: c._id }, { active: false, $inc: { tokenVersion: 1 }, $set: { email: undefined } }).catch(() => undefined);
   await User.deleteMany({ companyId: c._id }); // frees login emails; data stays (soft-deleted company) for audit
   res.locals.item = c.name;
@@ -245,6 +327,111 @@ r.delete("/plans/:id", can("plans", "delete"), h(async (req, res) => {
 
 r.get("/companies-lite", can("activity_logs", "read"), h(async (_req, res) => {
   res.json(await Company.find({ deletedAt: null }).select("name code").sort({ name: 1 }).lean());
+}));
+
+/* ───────────── Branding assets (logo / side banner / favicon) ───────────── */
+const imgUpload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 3 * 1024 * 1024 } });
+r.post("/companies/:id/brand-asset/:kind", can("companies", "update"), imgUpload.single("file"), h(async (req, res) => {
+  const kind = req.params.kind;
+  if (!["logo", "banner", "favicon"].includes(kind)) throw badRequest("kind must be logo, banner or favicon");
+  if (!req.file) throw badRequest("Attach an image");
+  if (!/^image\/(png|jpe?g|webp|svg\+xml|x-icon|vnd\.microsoft\.icon)$/.test(req.file.mimetype)) throw badRequest("Use PNG, JPG, WebP, SVG or ICO");
+  const c = await Company.findOne({ _id: req.params.id, deletedAt: null });
+  if (!c) throw notFound();
+  const old = c.branding?.[`${kind}Key`];
+  const { key } = await putObject(String(c._id), "branding", `${kind}-${req.file.originalname}`, req.file.buffer, req.file.mimetype);
+  c.set(`branding.${kind}Key`, key);
+  c.set("branding.updatedAt", new Date());
+  await c.save();
+  if (old) deleteObject(old);
+  clearTenantCache();
+  res.locals.action = `Upload ${kind}`;
+  res.locals.item = c.name;
+  res.json({ ok: true, branding: publicBranding(c.toObject()) });
+}));
+r.delete("/companies/:id/brand-asset/:kind", can("companies", "update"), h(async (req, res) => {
+  const c = await Company.findOne({ _id: req.params.id, deletedAt: null });
+  if (!c) throw notFound();
+  const old = c.branding?.[`${req.params.kind}Key`];
+  c.set(`branding.${req.params.kind}Key`, undefined);
+  c.set("branding.updatedAt", new Date());
+  await c.save();
+  if (old) deleteObject(old);
+  clearTenantCache();
+  res.json({ ok: true });
+}));
+
+/* ───────────── Domain & DNS for one company ───────────── */
+async function domainReport(c: any, live: boolean) {
+  const { zone, records } = recordsFor(c);
+  const checked = live ? await checkRecords(records) : records;
+  const required = checked.filter((x) => x.required);
+  return {
+    company: { _id: c._id, name: c.name, slug: c.slug, customDomain: c.customDomain },
+    ...tenantUrls(c),
+    baseDomain: baseDomain(),
+    zone,
+    records: checked,
+    vercel: { configured: vercelConfigured(), added: !!c.domain?.vercelAdded, verified: c.domain?.verified, configuredDns: c.domain?.configured, lastError: c.domain?.lastError, lastCheckedAt: c.domain?.lastCheckedAt },
+    ready: !!c.customDomain && required.length > 0 && required.every((x) => x.status === "ok") && (vercelConfigured() ? c.domain?.verified !== false : true),
+  };
+}
+
+r.get("/companies/:id/domain", can("companies", "read"), h(async (req, res) => {
+  const c = await Company.findOne({ _id: req.params.id, deletedAt: null }).lean<any>();
+  if (!c) throw notFound();
+  res.json(await domainReport(c, false));
+}));
+
+/** Re-sync with Vercel, ask Vercel to verify, and look up every record live. */
+r.post("/companies/:id/domain/check", can("companies", "update"), h(async (req, res) => {
+  let c = await Company.findOne({ _id: req.params.id, deletedAt: null }).lean<any>();
+  if (!c) throw notFound();
+  if (c.customDomain && vercelConfigured()) {
+    await syncDomain(c._id, c.customDomain);
+    const v = await vercelVerify(c.customDomain);
+    if (v?.ok) await Company.updateOne({ _id: c._id }, { $set: { "domain.verified": v.verified } });
+    c = await Company.findById(c._id).lean<any>();
+  }
+  res.locals.action = "DNS check";
+  res.locals.item = c.customDomain || c.slug;
+  res.json(await domainReport(c, true));
+}));
+
+/* ───────────── Knowledgebase ───────────── */
+r.get("/knowledgebase/config", can("knowledgebase", "read"), h(async (req, res) => {
+  res.json({
+    baseDomain: baseDomain(),
+    deploymentHost: process.env.VERCEL_PROJECT_PRODUCTION_URL || process.env.VERCEL_URL || req.headers.host,
+    vercelConfigured: vercelConfigured(),
+    fallbackA: FALLBACK_A,
+    fallbackCNAME: FALLBACK_CNAME,
+    platform: platformRecords(),
+    branding: platformBranding(),
+  });
+}));
+
+/** One-click: add <base> and *.<base> to the Vercel project. */
+r.post("/knowledgebase/platform-domains", can("knowledgebase", "update"), h(async (_req, res) => {
+  const base = baseDomain();
+  if (!base) throw badRequest("Set APP_BASE_DOMAIN first");
+  if (!vercelConfigured()) throw badRequest("Set VERCEL_API_TOKEN and VERCEL_PROJECT_ID to automate this, or add the domains in Vercel → Settings → Domains");
+  const out = [];
+  for (const d of [base, `*.${base}`]) out.push({ domain: d, result: await vercelSync(d) });
+  res.locals.action = "Add platform domains";
+  res.json(out);
+}));
+
+r.get("/knowledgebase/domains", can("knowledgebase", "read"), h(async (req, res) => {
+  const list = await Company.find({ deletedAt: null }).select("name code slug customDomain domain status branding.themeColor").sort({ name: 1 }).lean<any[]>();
+  const live = req.query.live === "1";
+  const rows = await Promise.all(
+    list.map(async (c) => {
+      const rep = live && c.customDomain ? await domainReport(c, true) : null;
+      return { _id: c._id, name: c.name, code: c.code, status: c.status, themeColor: c.branding?.themeColor, ...tenantUrls(c), customDomain: c.customDomain, verified: c.domain?.verified, configured: c.domain?.configured, ready: rep?.ready, lastError: c.domain?.lastError };
+    })
+  );
+  res.json(rows);
 }));
 
 r.use("/roles", roleRoutes("super"));

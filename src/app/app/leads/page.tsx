@@ -287,7 +287,7 @@ function LeadsInner() {
                   <span className="font-bold tabular-nums">{edit.score}</span>
                 </div>
                 {edit.consent?.whatsapp != null && (
-                  <p className="mt-3 flex items-center gap-1.5 text-xs text-ink-600">
+                  <p className="mt-3 flex items-center gap-1.5 text-xs text-ink-700">
                     <ShieldCheck className="h-3.5 w-3.5 text-hive-600" /> WhatsApp consent: {edit.consent.whatsapp ? "Yes" : "No"} · {fmtDate(edit.consent.capturedAt)}
                   </p>
                 )}

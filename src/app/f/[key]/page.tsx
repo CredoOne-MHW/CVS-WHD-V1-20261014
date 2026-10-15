@@ -3,6 +3,7 @@ import { useEffect, useState } from "react";
 import { useParams, useSearchParams } from "next/navigation";
 import { CheckCircle2 } from "lucide-react";
 import { Btn } from "@/components/ui";
+import { applyTheme } from "@shared/theme";
 
 /** Hosted mobile form for QR-code / campaign connectors. Posts to the connector's intake endpoint. */
 export default function CampaignForm() {
@@ -17,7 +18,10 @@ export default function CampaignForm() {
   useEffect(() => {
     fetch(`/api/forms/${key}`)
       .then((r) => (r.ok ? r.json() : Promise.reject()))
-      .then(setInfo)
+      .then((j) => {
+        applyTheme(j.themeColor, j.accentColor);
+        setInfo(j);
+      })
       .catch(() => setErr("This form is no longer available."));
   }, [key]);
 
@@ -39,7 +43,7 @@ export default function CampaignForm() {
   return (
     <div className="flex min-h-screen items-start justify-center bg-hive-50 px-4 py-10">
       <div className="card w-full max-w-md p-6 sm:p-8">
-        <img src={process.env.NEXT_PUBLIC_BRAND_LOGO || "/wellness-hive-logo.jpeg"} alt="" className="mx-auto h-20 w-20 rounded-full" />
+        {info?.logoUrl ? <img src={info.logoUrl} alt="" className="mx-auto h-20 w-20 rounded-full object-contain" /> : <div className="mx-auto h-20 w-20 rounded-full bg-hive-100" />}
         <h1 className="mt-4 text-center text-xl font-extrabold">{info?.company || "…"}</h1>
         <p className="text-center text-sm text-ink-500">{info?.campaign || info?.title}</p>
         {done ? (
@@ -55,7 +59,7 @@ export default function CampaignForm() {
             <input className="input" type="email" placeholder="Email (optional)" value={f.email} onChange={(e) => setF({ ...f, email: e.target.value })} />
             <textarea className="input min-h-[90px]" placeholder="What are you looking for? (test, package, consultation…)" value={f.message} onChange={(e) => setF({ ...f, message: e.target.value })} />
             <input className="hidden" tabIndex={-1} autoComplete="off" value={f._hp} onChange={(e) => setF({ ...f, _hp: e.target.value })} aria-hidden />
-            <label className="flex items-start gap-2 text-xs text-ink-600">
+            <label className="flex items-start gap-2 text-xs text-ink-700">
               <input type="checkbox" className="mt-0.5 h-4 w-4 accent-hive-700" checked={f.consent} onChange={(e) => setF({ ...f, consent: e.target.checked })} />I agree to be contacted on WhatsApp / phone about my enquiry.
             </label>
             {err && <p className="rounded-xl bg-red-50 px-3 py-2 text-sm text-red-700">{err}</p>}
