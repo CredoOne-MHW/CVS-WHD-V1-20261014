@@ -340,10 +340,18 @@ const AiAllocationSchema = new Schema(
     credits: { type: Number, default: 0 },
     used: { type: Number, default: 0 },
     exhaustedNotifiedAt: Date, // WhatsApp alert sent once per exhaustion; cleared when credits are topped up
+    // Allocation (Super Admin › AI Agents › Allocation). Only allocated models are visible to the company.
+    allocated: { type: Boolean, default: true },
+    startDate: Date,
+    frequency: { type: String, enum: ["weekly", "monthly", "quarterly", "half_yearly"], default: "monthly" },
+    renewalDate: Date, // credits reset to `credits` and `used` → 0 on this date, then it moves one period on
+    lastRenewedAt: Date,
+    allocatedBy: String,
   },
   ts
 );
 AiAllocationSchema.index({ companyId: 1, agentId: 1 }, { unique: true });
+AiAllocationSchema.index({ renewalDate: 1 });
 export const AiAllocation = m<any>("AiAllocation", AiAllocationSchema);
 
 /** Company-built agent on top of a platform agent. */
@@ -382,4 +390,72 @@ const AiUsageSchema = new Schema(
   },
   { timestamps: { createdAt: true, updatedAt: false } }
 );
+AiUsageSchema.index({ companyId: 1, createdAt: -1 }); // usage history + per-cycle AI billing
+AiUsageSchema.index({ companyAgentId: 1, createdAt: -1 });
 export const AiUsage = m<any>("AiUsage", AiUsageSchema);
+
+/* ───────────────────────── Subscriptions (Super Admin › Settings › Subscription Management) ───────────────────────── */
+
+/** Price list entry: a Plan (from the Plan module) sold at an amount per frequency, with reminder rules. */
+const SubscriptionPlanSchema = new Schema(
+  {
+    planName: { type: String, required: true }, // Plan.name
+    amount: { type: Number, required: true, min: 0 },
+    frequency: { type: String, enum: ["weekly", "monthly", "quarterly", "half_yearly"], required: true },
+    reminderDays: { type: [Number], default: [7, 3, 1] }, // days before the due date
+    notifyWebApp: { type: Boolean, default: true },
+    notifyWhatsApp: { type: Boolean, default: true },
+    webhookId: { type: ObjectId, default: null }, // Super Admin WhatsApp webhook used for reminders (falls back to event "subscription_reminder")
+    active: { type: Boolean, default: true },
+  },
+  ts
+);
+SubscriptionPlanSchema.index({ planName: 1, frequency: 1 });
+export const SubscriptionPlan = m<any>("SubscriptionPlan", SubscriptionPlanSchema);
+
+/** A company's subscription (one active per company). */
+const SubscriptionSchema = new Schema(
+  {
+    companyId: { type: ObjectId, required: true, index: true },
+    subscriptionPlanId: { type: ObjectId, required: true },
+    planName: String,
+    amount: Number, // per cycle, before discount
+    frequency: { type: String, enum: ["weekly", "monthly", "quarterly", "half_yearly"] },
+    discountType: { type: String, enum: ["flat", "percent"], default: "flat" },
+    discountValue: { type: Number, default: 0, min: 0 },
+    startDate: { type: Date, required: true },
+    active: { type: Boolean, default: true },
+    createdBy: String,
+  },
+  ts
+);
+SubscriptionSchema.index({ companyId: 1, active: 1 });
+export const Subscription = m<any>("Subscription", SubscriptionSchema);
+
+/** One billing cycle (what the Status tab and the company's History list). Due / expiry date = periodEnd. */
+const SubscriptionCycleSchema = new Schema(
+  {
+    companyId: { type: ObjectId, required: true },
+    subscriptionId: { type: ObjectId, required: true },
+    subscriptionPlanId: ObjectId,
+    planName: String,
+    frequency: String,
+    periodStart: { type: Date, required: true },
+    periodEnd: { type: Date, required: true },
+    systemAmount: { type: Number, default: 0 },
+    discount: { type: Number, default: 0 },
+    aiAmount: { type: Number, default: null }, // snapshot when the cycle closes; live while open
+    status: { type: String, enum: ["unpaid", "paid", "overdue", "expired"], default: "unpaid" },
+    statusChangedAt: Date,
+    statusChangedBy: String,
+    paidAt: Date,
+    remindersSent: { type: [Number], default: [] },
+    overdueNotifiedAt: Date,
+    expiredNotifiedAt: Date,
+  },
+  ts
+);
+SubscriptionCycleSchema.index({ subscriptionId: 1, periodStart: 1 }, { unique: true }); // idempotent cycle creation
+SubscriptionCycleSchema.index({ companyId: 1, periodStart: -1 });
+SubscriptionCycleSchema.index({ status: 1, periodEnd: 1 });
+export const SubscriptionCycle = m<any>("SubscriptionCycle", SubscriptionCycleSchema);

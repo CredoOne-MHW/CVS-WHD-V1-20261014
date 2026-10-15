@@ -6,6 +6,7 @@ import { processIntake, runEvent } from "../lib/intake";
 import { fireEvent } from "../lib/whatsapp";
 import { cached, rateLimit } from "../lib/cache";
 import { getObject } from "../lib/s3";
+import { runBillingJobs } from "../lib/billing";
 import { requestHost, resolveHost, baseDomain, publicBranding, platformBranding } from "../lib/tenant";
 import { LOST_STATUS, WON_STATUS } from "../../shared/constants";
 
@@ -103,7 +104,13 @@ r.get("/forms/:key", h(async (req, res) => {
 /* ───────────── Vercel Cron ───────────── */
 function cronAuth(req: any) {
   const s = process.env.CRON_SECRET;
-  if (s && req.headers.authorization !== `Bearer ${s}`) throw new HttpError(401, "Unauthorized cron");
+  if (s) {
+    if (req.headers.authorization !== `Bearer ${s}`) throw new HttpError(401, "Unauthorized cron");
+    return;
+  }
+  // No secret configured: only Vercel's scheduler (or local dev) may trigger jobs
+  const ua = String(req.headers["user-agent"] || "");
+  if (process.env.VERCEL && !ua.startsWith("vercel-cron/")) throw new HttpError(401, "Set CRON_SECRET to trigger cron jobs manually");
 }
 
 /** Every 15 min: retry failed intake deliveries whose backoff has elapsed. */
@@ -118,6 +125,12 @@ r.get("/cron/retry", h(async (req, res) => {
     if (r2.ok) ok++;
   }
   res.json({ retried: due.length, ok });
+}));
+
+/** Daily 02:00 IST: AI allocation renewals, subscription cycles, Unpaid → Over Due → Expired, 1/3/7-day reminders. */
+r.get("/cron/billing", h(async (req, res) => {
+  cronAuth(req);
+  res.json(await runBillingJobs());
 }));
 
 /** Daily 08:00 IST: follow-up digest per company (event: followup_digest). */

@@ -5,6 +5,7 @@ import { usePathname, useRouter } from "next/navigation";
 import { Menu, LogOut, ChevronRight, ChevronDown, ShieldAlert, Globe, X } from "lucide-react";
 import { icon } from "./icons";
 import { Assistant } from "./Assistant";
+import { BillingAlert } from "./BillingAlert";
 import { ErrorBoundary, InlineError as InlineErrorCard } from "./ErrorBoundary";
 import { installGlobalErrorHandlers } from "@/lib/clientErrors";
 import { api } from "@/lib/api";
@@ -253,6 +254,11 @@ export default function Shell({ scope, children }: { scope: "super" | "company";
         <main id="main" className="mx-auto max-w-[1480px] px-4 py-7 sm:px-6 lg:px-8 lg:py-8">
           {current ? children : <div className="card p-10 text-center text-ink-500">Your plan or role does not include this module.</div>}
         </main>
+        {scope === "company" && (
+          <ErrorBoundary where="billing-alert" fallback={() => null}>
+            <BillingAlert belowBanner={!!me.impersonatedBy} />
+          </ErrorBoundary>
+        )}
         {scope === "company" && (
           <ErrorBoundary
             where="assistant"

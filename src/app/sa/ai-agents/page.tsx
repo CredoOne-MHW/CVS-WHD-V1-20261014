@@ -4,6 +4,8 @@ import { Plus, Pencil, Trash2, RefreshCw } from "lucide-react";
 import { api, inr } from "@/lib/api";
 import { PageHeader, Btn, Modal, Field, Badge, Empty, Confirm, Spinner, useToast } from "@/components/ui";
 import { usePerm } from "@/components/Shell";
+import { Tabs } from "@/components/Logs";
+import { AllocationTab } from "@/components/AiAllocation";
 
 const BLANK = { name: "", llmVersion: "", provider: "openrouter", url: "", apiKey: "", tokenWeights: { input: 1, output: 3 }, actualRate: 0, companyRate: 0, credits: 100, active: true };
 const ADD = "__add__";
@@ -21,6 +23,8 @@ export default function AiAgents() {
   const [models, setModels] = useState<any[]>([]);
   const [loadingModels, setLoadingModels] = useState(false);
   const perm = usePerm("ai_agents");
+  const [tab, setTab] = useState<"models" | "allocation">("models");
+  const [allocOpen, setAllocOpen] = useState(false);
   const toast = useToast();
   const load = () => api("/sa/ai-agents").then(setList);
   const loadProviders = () => api("/sa/ai-providers").then(setProviders);
@@ -66,15 +70,25 @@ export default function AiAgents() {
     <>
       <PageHeader
         title="AI Agents"
-        subtitle="LLM models offered to companies, their rates and credit pools"
+        subtitle={tab === "models" ? "LLM models offered to companies, their rates and credit pools" : "Which companies can use which models, and when their credits renew"}
         actions={
-          perm.create && (
+          perm.create &&
+          (tab === "models" ? (
             <Btn onClick={() => (setModels([]), setForm({ ...BLANK, provider: providers[0]?.key || "openrouter" }))}>
               <Plus className="h-4 w-4" /> Create
             </Btn>
-          )
+          ) : (
+            <Btn onClick={() => setAllocOpen(true)}>
+              <Plus className="h-4 w-4" /> Allocate
+            </Btn>
+          ))
         }
       />
+      <Tabs value={tab} onChange={setTab} tabs={[{ key: "models", label: "Models" }, { key: "allocation", label: "Allocation" }]} />
+      {tab === "allocation" ? (
+        <AllocationTab models={list || []} open={allocOpen} setOpen={setAllocOpen} perm={perm} />
+      ) : (
+      <>
       <div className="card overflow-x-auto">
         <table className="w-full min-w-[1000px]">
           <thead>
@@ -126,9 +140,11 @@ export default function AiAgents() {
             <Spinner className="h-6 w-6" />
           </div>
         )}
-        {list && !list.length && <Empty title="No AI agents" hint="Add a model, then allocate credits to companies from the Company list." />}
+        {list && !list.length && <Empty title="No AI agents" hint="Add a model, then give companies access from the Allocation tab." />}
       </div>
       <p className="mt-3 text-xs text-ink-500">Rates are ₹ per 1,000 weighted tokens. Weighted tokens = input × input weight + output × output weight. One credit = 1,000 weighted tokens.</p>
+      </>
+      )}
 
       <Modal
         open={!!form}
