@@ -1,4 +1,5 @@
 import { Resolver } from "dns/promises";
+import { randomBytes } from "crypto";
 import { baseDomain } from "./tenant";
 
 /**
@@ -77,31 +78,52 @@ export async function vercelRemove(domain: string) {
 
 export interface DnsRecord {
   type: "A" | "CNAME" | "TXT" | "CAA" | "NS";
-  host: string; // relative to zone, as typed at the registrar
+  host: string; // relative to the zone, exactly as typed at the registrar
   fqdn: string;
   value: string;
   ttl: string;
   purpose: string;
   required: boolean;
+  unique?: boolean; // value is specific to this company
   status?: "ok" | "pending" | "conflict";
   found?: string[];
 }
 
-/** Records the company (or its IT team) must add at their DNS provider. */
+export const VERIFY_LABEL = "_credoone-verify";
+export const newVerifyToken = () => `credoone-verify=${randomBytes(16).toString("hex")}`;
+
+/** This company's own CNAME target: <slug>.<base> (served by the wildcard set up once in Part A). */
+export const cnameTargetFor = (c: { slug?: string }) => {
+  const base = baseDomain();
+  return c.slug && base ? `${c.slug}.${base}` : FALLBACK_CNAME;
+};
+
+/**
+ * Records for one company's own domain. Every company gets values nobody else has:
+ *  - CNAME → <slug>.<base>   (its own target; resolves through our wildcard to the app)
+ *  - TXT  _credoone-verify    (its own random token; proves the company controls the domain)
+ *  - TXT  _vercel             (only when the hosting platform asks for an ownership challenge)
+ * The Knowledgebase guide renders its example with this same function, so both always match.
+ */
 export function recordsFor(c: any): { zone?: string; records: DnsRecord[] } {
   const d = c.domain || {};
   const records: DnsRecord[] = [];
   if (!c.customDomain) return { records };
   const { zone, host, isApex } = splitDomain(c.customDomain);
+  const target = cnameTargetFor(c);
+  const token = d.verifyToken || "credoone-verify=<generated when the domain is saved>";
+  const at = (label: string) => (isApex ? label : `${label}.${host}`);
+
   if (isApex) {
-    records.push({ type: "A", host: "@", fqdn: c.customDomain, value: d.recommendedIPv4 || FALLBACK_A, ttl: "Auto / 3600", purpose: "Points the root domain to the app", required: true });
-    records.push({ type: "CNAME", host: "www", fqdn: `www.${c.customDomain}`, value: d.recommendedCNAME || FALLBACK_CNAME, ttl: "Auto / 3600", purpose: "Optional: www version (add www as a domain too)", required: false });
+    records.push({ type: "A", host: "@", fqdn: c.customDomain, value: d.recommendedIPv4 || FALLBACK_A, ttl: "Auto / 3600", purpose: `Points the root domain to the app. If your DNS supports ALIAS / ANAME / CNAME-flattening (Cloudflare, Route 53), point @ to ${target} instead.`, required: true });
+    records.push({ type: "CNAME", host: "www", fqdn: `www.${c.customDomain}`, value: target, ttl: "Auto / 3600", purpose: "Optional — www version of the address", required: false, unique: true });
   } else {
-    records.push({ type: "CNAME", host, fqdn: c.customDomain, value: d.recommendedCNAME || FALLBACK_CNAME, ttl: "Auto / 3600", purpose: "Points the login subdomain to the app", required: true });
+    records.push({ type: "CNAME", host, fqdn: c.customDomain, value: target, ttl: "Auto / 3600", purpose: `Points ${c.customDomain} to this company’s workspace`, required: true, unique: true });
   }
+  records.push({ type: "TXT", host: at(VERIFY_LABEL), fqdn: `${VERIFY_LABEL}.${c.customDomain}`, value: token, ttl: "Auto / 3600", purpose: "Proves the company controls this domain (unique to this company)", required: true, unique: true });
   for (const v of d.verification || []) {
     const rel = v.domain.endsWith(`.${zone}`) ? v.domain.slice(0, -(zone.length + 1)) : v.domain;
-    records.push({ type: (v.type || "TXT").toUpperCase(), host: rel, fqdn: v.domain, value: v.value, ttl: "Auto / 3600", purpose: "Proves ownership to the hosting platform", required: true } as DnsRecord);
+    records.push({ type: (v.type || "TXT").toUpperCase(), host: rel, fqdn: v.domain, value: v.value, ttl: "Auto / 3600", purpose: "Hosting ownership challenge (shown only when Vercel asks for it)", required: true, unique: true } as DnsRecord);
   }
   records.push({ type: "CAA", host: isApex ? "@" : host, fqdn: c.customDomain, value: '0 issue "letsencrypt.org"', ttl: "Auto / 3600", purpose: "Only if the domain already has CAA records — allows the free SSL certificate", required: false });
   return { zone, records };
@@ -123,7 +145,7 @@ export async function checkRecords(records: DnsRecord[]): Promise<DnsRecord[]> {
       try {
         if (rec.type === "CNAME") {
           const found = (await r.resolveCname(rec.fqdn).catch(() => [] as string[])).map(norm);
-          const ok = found.some((f) => f === norm(rec.value) || isVercelTarget(f));
+          const ok = found.some((f) => f === norm(rec.value) || isVercelTarget(f) || f.endsWith(`.${baseDomain()}`));
           if (!ok && !found.length) {
             const a = await r.resolve4(rec.fqdn).catch(() => [] as string[]);
             return { ...rec, found: a, status: a.length ? "conflict" : "pending" } as DnsRecord;
@@ -137,7 +159,7 @@ export async function checkRecords(records: DnsRecord[]): Promise<DnsRecord[]> {
         }
         if (rec.type === "TXT") {
           const found = (await r.resolveTxt(rec.fqdn).catch(() => [] as string[][])).map((x) => x.join(""));
-          return { ...rec, found, status: found.includes(rec.value) ? "ok" : "pending" } as DnsRecord;
+          return { ...rec, found, status: found.includes(rec.value) ? "ok" : found.length && rec.host.startsWith(VERIFY_LABEL) ? "conflict" : "pending" } as DnsRecord;
         }
         if (rec.type === "CAA") {
           const found = (await r.resolveCaa(rec.fqdn).catch(() => [] as any[])).map((x: any) => `${x.critical} ${x.issue ? "issue" : x.issuewild ? "issuewild" : "iodef"} "${x.issue || x.issuewild || x.iodef}"`);

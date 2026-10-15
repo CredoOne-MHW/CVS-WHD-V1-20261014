@@ -1,6 +1,6 @@
 import mongoose from "mongoose";
 import bcrypt from "bcryptjs";
-import { User, Plan } from "../models";
+import { User, Plan, AiProvider } from "../models";
 import { COMPANY_MODULES, PLAN_TIERS, fullPerm, noPerm, type PermMap } from "../../shared/constants";
 
 type Cache = { conn: typeof mongoose | null; promise: Promise<typeof mongoose> | null; bootstrapped: boolean };
@@ -16,7 +16,10 @@ export async function connectDB() {
     mongoose.set("strictQuery", true);
     cache.promise = mongoose.connect(uri, {
       dbName: process.env.MONGODB_DB || "leadhive",
-      maxPoolSize: 10,
+      maxPoolSize: Number(process.env.MONGODB_POOL_SIZE || 5), // small per instance: serverless scales out, not up
+      minPoolSize: 0,
+      maxIdleTimeMS: 30_000,
+      compressors: ["zlib"],
       serverSelectionTimeoutMS: 8000,
       bufferCommands: false,
     });
@@ -56,6 +59,18 @@ async function bootstrap() {
     );
   }
 
+  // Default LLM providers (Super Admin can remove any of them or add more from the dropdown)
+  const providers = [
+    { key: "openrouter", name: "OpenRouter (300+ models)", apiStyle: "openai", baseUrl: "https://openrouter.ai/api/v1", modelsUrl: "https://openrouter.ai/api/v1/models", extraHeaders: { "X-Title": "CredoOne LMS" } },
+    { key: "anthropic", name: "Anthropic", apiStyle: "anthropic", baseUrl: "https://api.anthropic.com" },
+    { key: "openai", name: "OpenAI", apiStyle: "openai", baseUrl: "https://api.openai.com/v1", modelsUrl: "https://api.openai.com/v1/models" },
+    { key: "google", name: "Google Gemini", apiStyle: "google", baseUrl: "https://generativelanguage.googleapis.com" },
+    { key: "groq", name: "Groq", apiStyle: "openai", baseUrl: "https://api.groq.com/openai/v1", modelsUrl: "https://api.groq.com/openai/v1/models" },
+    { key: "mistral", name: "Mistral", apiStyle: "openai", baseUrl: "https://api.mistral.ai/v1", modelsUrl: "https://api.mistral.ai/v1/models" },
+    { key: "deepseek", name: "DeepSeek", apiStyle: "openai", baseUrl: "https://api.deepseek.com/v1", modelsUrl: "https://api.deepseek.com/v1/models" },
+  ];
+  if (!(await AiProvider.estimatedDocumentCount())) await AiProvider.insertMany(providers).catch(() => undefined);
+
   const defaults: Record<string, string[]> = {
     Trial: ["dashboard", "leads", "integrations", "wa_webhooks", "wa_logs"],
     Standard: ["dashboard", "leads", "integrations", "activity_logs", "wa_webhooks", "wa_logs", "roles"],
@@ -66,5 +81,13 @@ async function bootstrap() {
     const permissions: PermMap = {};
     for (const mod of COMPANY_MODULES) permissions[mod.key] = defaults[tier].includes(mod.key) ? fullPerm() : noPerm();
     await Plan.updateOne({ name: tier }, { $setOnInsert: { name: tier, permissions } }, { upsert: true });
+  }
+  // Modules added after a plan was created: Pro/Enterprise get them, other plans start unticked.
+  for (const plan of await Plan.find().lean<any[]>()) {
+    const missing = COMPANY_MODULES.filter((m) => !plan.permissions?.[m.key]);
+    if (!missing.length) continue;
+    const set: any = {};
+    for (const m of missing) set[`permissions.${m.key}`] = ["Pro", "Enterprise"].includes(plan.name) ? fullPerm() : noPerm();
+    await Plan.updateOne({ _id: plan._id }, { $set: set });
   }
 }

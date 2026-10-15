@@ -3,6 +3,10 @@ import jwt from "jsonwebtoken";
 import { User, Company, Plan, Role } from "../models";
 import { COMPANY_MODULES, SA_MODULES, fullPerm, noPerm, type Action, type PermMap } from "../../shared/constants";
 import { HttpError, forbidden } from "../lib/http";
+import { cached, invalidate } from "../lib/cache";
+
+/** Call after changing users, companies, plans or roles. */
+export const invalidateAuth = () => invalidate("auth:");
 
 export const COOKIE = "lms_token";
 
@@ -67,11 +71,11 @@ function andPerms(a: PermMap, b: PermMap): PermMap {
 
 /** Effective company permissions = Plan grid ∧ (Role grid, when the user has a role). */
 export async function companyPerms(planName: string, roleId?: any): Promise<PermMap> {
-  const plan = await Plan.findOne({ name: planName }).lean<any>();
+  const plan = await cached(`auth:plan:${planName}`, 120, () => Plan.findOne({ name: planName }).lean<any>());
   const base: PermMap = {};
   for (const m of COMPANY_MODULES) base[m.key] = plan?.permissions?.[m.key] ?? noPerm();
   if (!roleId) return base;
-  const role = await Role.findById(roleId).lean<any>();
+  const role = await cached(`auth:role:${roleId}`, 120, () => Role.findById(roleId).lean<any>());
   return role ? andPerms(base, role.permissions || {}) : base;
 }
 
@@ -79,17 +83,18 @@ async function superPerms(roleId?: any): Promise<PermMap> {
   const all: PermMap = {};
   for (const m of SA_MODULES) all[m.key] = fullPerm();
   if (!roleId) return all;
-  const role = await Role.findById(roleId).lean<any>();
+  const role = await cached(`auth:role:${roleId}`, 120, () => Role.findById(roleId).lean<any>());
   return role ? andPerms(all, role.permissions || {}) : all;
 }
 
 export async function buildContext(p: TokenPayload): Promise<AuthCtx> {
-  const user = await User.findById(p.uid).lean<any>();
+  // Cached ≤30 s per instance/Redis: session revocation (password change, deactivate) also clears this cache.
+  const user = await cached(`auth:user:${p.uid}`, 30, () => User.findById(p.uid).select("-passwordHash").lean<any>());
   if (!user || !user.active || user.tokenVersion !== p.tv) throw new HttpError(401, "Session expired");
   if (user.scope === "super") {
     return { userId: String(user._id), scope: "super", name: user.name, email: user.email, isOwner: user.isOwner, perms: await superPerms(user.roleId) };
   }
-  const company = await Company.findById(user.companyId).lean<any>();
+  const company = await cached(`auth:company:${user.companyId}`, 30, () => Company.findById(user.companyId).select("name plan status deletedAt").lean<any>());
   if (!company || company.deletedAt) throw new HttpError(401, "Company not found");
   if (company.status !== "active" && !p.imp) throw new HttpError(403, "Company account is deactivated. Contact support.");
   return {

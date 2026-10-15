@@ -155,19 +155,27 @@ function WhiteLabel({ cfg }: { cfg: any }) {
           <p className="eyebrow text-hive-700">Part A · once for the platform</p>
           <h3 className="mt-1 text-xl font-extrabold tracking-tight">Point {base} and all its sub-domains at the app</h3>
           <ol className="mt-6">
-            <Step n="1" title="Set the environment variables in Vercel">
+            <Step n="1" title="Set the environment variables in Vercel — for each environment">
               <p>
-                Vercel → your project (<span className="font-mono text-[13px]">{dep}</span>) → <b>Settings › Environment Variables</b>, then redeploy:
+                Vercel → project → <b>Settings › Environment Variables</b>. Vercel stores a separate value per environment (<b>Production</b>, <b>Preview</b>, <b>Development</b>), so set the base domain for <i>each</i> deployment you use, then redeploy it:
               </p>
               <RecordTable
                 rows={[
-                  { type: "ENV", host: "APP_BASE_DOMAIN", value: base, note: "Required — the base for <short>.<base>" },
+                  { type: "ENV", host: "APP_BASE_DOMAIN", value: "mhw.credovation.tech", note: "Production environment" },
+                  { type: "ENV", host: "APP_BASE_DOMAIN", value: "dev-mhw.credovation.tech", note: "Preview / dev environment (or put both, comma-separated, in one value for all environments)" },
                   { type: "ENV", host: "VERCEL_API_TOKEN", value: "<token>", note: "Optional — Account Settings › Tokens. Lets this app add company domains for you" },
                   { type: "ENV", host: "VERCEL_PROJECT_ID", value: "prj_…", note: "Optional — Project › Settings › General" },
                   { type: "ENV", host: "VERCEL_TEAM_ID", value: "team_…", note: "Only if the project is under a team" },
                 ]}
               />
-              <p className="text-[13px]">Status here: base domain {cfg.baseDomain ? <Badge color="green">set</Badge> : <Badge color="red">missing</Badge>} · Vercel API {cfg.vercelConfigured ? <Badge color="green">connected</Badge> : <Badge>not connected (manual mode)</Badge>}</p>
+              <p className="text-[13px]">
+                This deployment ({cfg.vercelEnv}): base domain <span className="font-mono font-semibold">{cfg.baseDomain || "—"}</span>{" "}
+                {cfg.baseSource === "env" ? <Badge color="green">from APP_BASE_DOMAIN</Badge> : <Badge color="honey">auto-detected — set APP_BASE_DOMAIN for this environment</Badge>} · Vercel API{" "}
+                {cfg.vercelConfigured ? <Badge color="green">connected</Badge> : <Badge>not connected (manual mode)</Badge>}
+              </p>
+              <p className="text-[13px] text-ink-500">
+                Check any address at <span className="font-mono">https://&lt;address&gt;/api/health</span> — it shows which base domain and environment that deployment is using.
+              </p>
             </Step>
 
             <Step n="2" title={`Add ${base} and *.${base} to the Vercel project`}>
@@ -250,20 +258,18 @@ function WhiteLabel({ cfg }: { cfg: any }) {
             </Step>
             <Step n="3" title="Send the DNS records to the company’s IT person">
               <p>
-                After saving, the records appear automatically (also via the <Globe2 className="inline h-4 w-4" /> icon on the company row). Typical set for a sub-domain:
+                After saving, the records appear automatically (also via the <Globe2 className="inline h-4 w-4" /> icon on the company row). Every company gets its <b>own</b> values — its own CNAME target and its own verification token. Example for <span className="font-mono">leads.wellnesshive.in</span> (short name <span className="font-mono">wellnesshive</span>), generated exactly the way the company’s DNS panel generates it:
               </p>
-              <RecordTable
-                rows={[
-                  { type: "CNAME", host: "leads", value: cfg.fallbackCNAME, note: "Use the exact value shown for that company — with the Vercel API connected it is project-specific" },
-                  { type: "TXT", host: "_vercel", value: "vc-domain-verify=leads.wellnesshive.in,…", note: "Only when shown — proves ownership if the domain was used on another Vercel account" },
-                ]}
-              />
-              <p>For a root domain the main record is an <b>A</b> record on host <span className="font-mono">@</span> pointing to the IP shown (Vercel’s default is {cfg.fallbackA}).</p>
+              <RecordTable rows={cfg.example.records.map((r: any) => ({ type: r.type, host: r.host, value: r.value, note: `${r.required ? "" : "Optional — "}${r.purpose}` }))} />
+              <Callout>
+                <b>Why a company-specific CNAME?</b> <span className="font-mono">{cfg.example.cnameTarget}</span> resolves through the wildcard from Part A, so the company’s domain follows its own workspace. If Vercel ever asks for a <span className="font-mono">_vercel</span> TXT challenge it appears as an extra row in that company’s panel.
+              </Callout>
+              <p>For a root domain (no sub-domain) the main record is an <b>A</b> record on host <span className="font-mono">@</span> (Vercel’s default IP is {cfg.fallbackA}); if the DNS provider supports ALIAS / CNAME-flattening, point <span className="font-mono">@</span> to the company’s own target instead.</p>
             </Step>
             <Step n="4" title="Where to click at common DNS providers">
               <ul className="list-disc space-y-1.5 pl-5">
                 <li>
-                  <b>GoDaddy:</b> My Products › Domain › DNS › Add New Record. Type CNAME, Name <span className="font-mono">leads</span>, Value as shown, TTL 1 hour.
+                  <b>GoDaddy:</b> My Products › Domain › DNS › Add New Record. Type CNAME, Name <span className="font-mono">leads</span>, Value as shown (the company’s own target), TTL 1 hour.
                 </li>
                 <li>
                   <b>Hostinger:</b> Domains › DNS / Nameservers › Manage DNS records. Name <span className="font-mono">leads</span>, Target as shown.

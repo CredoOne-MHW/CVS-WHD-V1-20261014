@@ -25,11 +25,39 @@ export function publicUrl(key: string) {
   return `${base.replace(/\/$/, "")}/${key}`;
 }
 
-/** Keys are always tenant-prefixed: companies/<id>/<folder>/<rand>-<name> */
-export async function putObject(companyId: string, folder: string, fileName: string, body: Buffer | string, contentType = "application/octet-stream") {
+/** "Wellnesshive Diagnostica LLP" → "Wellnesshive-Diagnostica-LLP" (S3-safe, readable in the console). */
+export function companyFolder(name: string) {
+  return (
+    name
+      .normalize("NFKD")
+      .replace(/[^\w\s.-]/g, "")
+      .trim()
+      .replace(/\s+/g, "-")
+      .replace(/-+/g, "-")
+      .slice(0, 80) || "company"
+  );
+}
+
+/** Ensures the company has its fixed base folder (older companies get one on first upload). */
+export async function folderFor(company: any): Promise<string> {
+  if (company.s3Folder) return company.s3Folder;
+  const { Company } = await import("../models");
+  const base = companyFolder(company.name);
+  let folder = base;
+  for (let i = 2; await Company.exists({ s3Folder: folder, _id: { $ne: company._id } }); i++) folder = `${base}-${i}`;
+  await Company.updateOne({ _id: company._id }, { $set: { s3Folder: folder } });
+  company.s3Folder = folder;
+  return folder;
+}
+
+/**
+ * Layout:  <Company-Name>/logo/…   <Company-Name>/banner/…   <Company-Name>/brain/…   (knowledge base)
+ * Objects are encrypted at rest (SSE-S3) and the bucket stays private — files are served through the API.
+ */
+export async function putObject(prefix: string, fileName: string, body: Buffer | string, contentType = "application/octet-stream") {
   const safe = fileName.replace(/[^\w.\-]+/g, "_").slice(-120);
-  const key = `companies/${companyId}/${folder}/${Date.now()}-${randomKey(4)}-${safe}`;
-  await s3().send(new PutObjectCommand({ Bucket: bucket(), Key: key, Body: body, ContentType: contentType }));
+  const key = `${prefix.replace(/\/+$/, "")}/${Date.now()}-${randomKey(4)}-${safe}`;
+  await s3().send(new PutObjectCommand({ Bucket: bucket(), Key: key, Body: body, ContentType: contentType, ServerSideEncryption: "AES256", CacheControl: "private, max-age=31536000, immutable" }));
   return { key, url: publicUrl(key) };
 }
 
