@@ -29,31 +29,61 @@ async function loadConnector(key: string) {
 }
 
 /** Meta (Facebook / Instagram / WhatsApp Cloud) webhook verification handshake. */
-r.get("/intake/:key", h(async (req, res) => {
+const PUSH_PLATFORMS = ["indiamart", "justdial", "sulekha"];
+const ipOf = (req: any) => String(req.headers["x-forwarded-for"] || req.socket.remoteAddress || "").split(",")[0].trim();
+
+/** Strip auth/transport keys so they never land on the lead. */
+function cleanPayload(o: any) {
+  const p = { ...(o || {}) };
+  for (const k of ["key", "token", "_hp", "google_key"]) delete p[k];
+  return p;
+}
+
+async function receive(req: any, res: any, c: any, body: any) {
+  const idem = (req.headers["idempotency-key"] || req.headers["x-idempotency-key"]) as string | undefined;
+  const result: any = await processIntake(c, body, idem);
+  // Platforms that retry on non-200 (and may switch the integration off) always get 200 — our own retry queue
+  // (Deliveries tab, every 15 minutes) re-processes anything that failed.
+  if (["meta_leads", "whatsapp", "indiamart", "sulekha"].includes(c.type)) return res.status(200).json({ received: true });
+  if (c.type === "justdial") return res.status(200).type("text/plain").send("RECEIVED");
+  return res.status(result.ok === false ? 202 : 200).json(result);
+}
+
+/** GET: Meta verification handshake; JustDial / Sulekha push leads as query parameters on GET. */
+r.get(["/intake/:key", "/intake/:key/:token"], h(async (req, res) => {
   const c = await loadConnector(req.params.key);
   if (req.query["hub.mode"] === "subscribe") {
     const expected = c.verifyToken || decrypt(c.secretEnc);
     if (req.query["hub.verify_token"] === expected) return res.status(200).send(String(req.query["hub.challenge"] ?? ""));
     throw new HttpError(403, "Verify token mismatch");
   }
-  res.json({ ok: true, connector: c.name, type: c.type });
+  const secret = decrypt(c.secretEnc);
+  const authed = (req.params.token && req.params.token === secret) || req.query.key === secret;
+  const data = cleanPayload(req.query);
+  if (PUSH_PLATFORMS.includes(c.type) && Object.keys(data).length) {
+    if (!authed) throw new HttpError(401, "Invalid lead URL — copy it again from the connector");
+    if (!(await rateLimit(`intake:${req.params.key}|${ipOf(req)}`, 300, 60))) throw new HttpError(429, "Rate limit exceeded");
+    return receive(req, res, c, data);
+  }
+  res.json({ ok: true, connector: c.name, type: c.type, ready: true }); // connectivity check ("Test URL" in the platforms' panels)
 }));
 
 /**
  * Unified lead intake.
- * Auth (any one): `x-api-key` header · `x-signature: sha256=<hmac of raw body>` · `?key=` · google_key in body (Google Ads)
+ * Auth (any one): `x-api-key` header · `x-signature: sha256=<hmac of raw body>` · `?key=` · token path segment
+ * (/intake/<key>/<token> — used for IndiaMART, JustDial and Sulekha, which can't send headers) · google_key in body (Google Ads).
  * Browser forms (website_form / qr_campaign) may post without a key; they must pass the honeypot.
- * Idempotency: `Idempotency-Key` header, else provider id, else hash of the body.
+ * Idempotency: `Idempotency-Key` header, else the platform's lead id, else hash of the body.
  */
-r.post("/intake/:key", h(async (req, res) => {
-  const ip = String(req.headers["x-forwarded-for"] || req.socket.remoteAddress || "").split(",")[0].trim();
-  if (!(await rateLimit(`intake:${req.params.key}|${ip}`, 120, 60))) throw new HttpError(429, "Rate limit exceeded");
+r.post(["/intake/:key", "/intake/:key/:token"], h(async (req, res) => {
+  if (!(await rateLimit(`intake:${req.params.key}|${ipOf(req)}`, 300, 60))) throw new HttpError(429, "Rate limit exceeded");
   const c = await loadConnector(req.params.key);
   const secret = decrypt(c.secretEnc);
-  const body = req.body || {};
+  const body = { ...(req.body || {}), ...(PUSH_PLATFORMS.includes(c.type) && req.body && !Object.keys(req.body).length ? req.query : {}) };
   const isBrowserForm = ["website_form", "qr_campaign"].includes(c.type) && !!req.headers.origin;
 
   const authed =
+    (req.params.token && req.params.token === secret) ||
     (req.headers["x-api-key"] && req.headers["x-api-key"] === secret) ||
     req.query.key === secret ||
     (c.type === "google_ads" && body.google_key === secret) ||
@@ -61,18 +91,14 @@ r.post("/intake/:key", h(async (req, res) => {
     (c.type === "meta_leads" && body.object === "page") || // Meta posts after the verify handshake; lead data is re-fetched with the page token
     (c.type === "whatsapp" && body.object === "whatsapp_business_account");
 
-  if (!authed && !isBrowserForm) throw new HttpError(401, "Invalid connector key or signature");
+  if (!authed && !isBrowserForm) throw new HttpError(401, c.type === "google_ads" ? "Invalid key — paste the connector's key into the Google Ads lead form webhook" : "Invalid connector key or signature");
   if (isBrowserForm && (body._hp || body.website_url_hp)) return res.json({ ok: true }); // bot honeypot: pretend success
 
-  delete body._hp;
-  delete body.google_key;
-  const idem = (req.headers["idempotency-key"] || req.headers["x-idempotency-key"]) as string | undefined;
-  const result = await processIntake(c, body, idem);
-
-  // Meta & WhatsApp expect 200 quickly or they retry — failures are retried by our cron instead.
-  if (["meta_leads", "whatsapp"].includes(c.type)) return res.status(200).json({ received: true });
-  if (req.headers.accept?.includes("text/html") && isBrowserForm) return res.redirect(303, `/f/${c.key}?ok=1`);
-  res.status((result as any).ok === false ? 202 : 200).json(result);
+  if (req.headers.accept?.includes("text/html") && isBrowserForm) {
+    await processIntake(c, cleanPayload(body)); // classic HTML form post → back to the hosted thank-you page
+    return res.redirect(303, `/f/${c.key}?ok=1`);
+  }
+  return receive(req, res, c, cleanPayload(body));
 }));
 
 /* ───────────── AI endpoint for external systems ─────────────
@@ -174,10 +200,16 @@ r.get("/cron/retry", h(async (req, res) => {
   res.json({ retried, ok, moved });
 }));
 
-/** Daily 02:00 IST: pull connectors — Google Search keyword prospecting and MCP servers. */
+/** Daily 02:00 IST: MCP server connectors. */
 r.get("/cron/pull", h(async (req, res) => {
   cronAuth(req);
-  res.json(await runPullConnectors());
+  res.json(await runPullConnectors("daily"));
+}));
+
+/** Every 15 minutes: IndiaMART Pull API and TradeIndia My Inquiry API. */
+r.get("/cron/pull-frequent", h(async (req, res) => {
+  cronAuth(req);
+  res.json(await runPullConnectors("frequent"));
 }));
 
 /** Daily 02:00 IST: AI allocation renewals, subscription cycles, Unpaid → Over Due → Expired, 1/3/7-day reminders. */

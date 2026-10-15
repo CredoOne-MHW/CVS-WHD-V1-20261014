@@ -25,6 +25,10 @@
     {
       "path": "/api/cron/pull",
       "schedule": "30 20 * * *"
+    },
+    {
+      "path": "/api/cron/pull-frequent",
+      "schedule": "*/15 * * * *"
     }
   ]
 }

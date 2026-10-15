@@ -82,7 +82,7 @@ export interface ConnectorDef {
   label: string;
   description: string;
   icon: string;
-  inbound: "webhook" | "upload" | "manual" | "meta" | "google" | "pull";
+  inbound: "webhook" | "upload" | "manual" | "meta" | "google" | "pull" | "push" | "push_pull";
 }
 
 export const CONNECTOR_TYPES: ConnectorDef[] = [
@@ -92,12 +92,15 @@ export const CONNECTOR_TYPES: ConnectorDef[] = [
   { type: "rest_api", label: "REST API / Webhook", description: "Generic JSON endpoint. Create as many as you need.", icon: "Braces", inbound: "webhook" },
   { type: "whatsapp", label: "WhatsApp Business Platform", description: "Inbound messages from your WhatsApp Cloud API / BSP.", icon: "MessageCircle", inbound: "webhook" },
   { type: "meta_leads", label: "Facebook & Instagram Lead Forms", description: "Meta Lead Ads webhook (leadgen) with verify token.", icon: "Facebook", inbound: "meta" },
-  { type: "google_ads", label: "Google Ads Lead Forms", description: "Google lead form extension webhook with key.", icon: "Search", inbound: "google" },
+  { type: "google_ads", label: "Google Ads Lead Forms", description: "People who searched your keywords on Google and filled your lead form — delivered instantly.", icon: "Search", inbound: "google" },
   { type: "email", label: "Email Inquiries", description: "Inbound-parse webhook (SendGrid, Mailgun, Postmark).", icon: "Mail", inbound: "webhook" },
   { type: "telephony", label: "Telephone / Call Center", description: "Missed-call & IVR webhooks (Exotel, Knowlarity, Ozonetel…).", icon: "PhoneCall", inbound: "webhook" },
   { type: "qr_campaign", label: "QR Code & Campaign Form", description: "Hosted form per campaign with a printable QR code.", icon: "QrCode", inbound: "webhook" },
   { type: "partner", label: "Partner / Referral / Affiliate", description: "Per-partner keys so every lead is credited correctly.", icon: "Handshake", inbound: "webhook" },
-  { type: "google_search", label: "Google Search (keyword prospecting)", description: "Daily 2 AM search for your keywords; public results with a phone or email become leads.", icon: "SearchCheck", inbound: "pull" },
+  { type: "indiamart", label: "IndiaMART", description: "Buyer enquiries, buy-leads, PNS calls & WhatsApp enquiries — instant Push API + 15-minute Pull API.", icon: "Store", inbound: "push_pull" },
+  { type: "justdial", label: "JustDial", description: "Every JustDial enquiry pushed to your own lead URL in real time.", icon: "PhoneIncoming", inbound: "push" },
+  { type: "tradeindia", label: "TradeIndia", description: "Buyer inquiries pulled every 15 minutes from the My Inquiry API.", icon: "Building", inbound: "pull" },
+  { type: "sulekha", label: "Sulekha", description: "Service enquiries pushed by Sulekha to your own lead URL.", icon: "BadgeCheck", inbound: "push" },
   { type: "mcp", label: "MCP Server (Zapier, Make, HubSpot…)", description: "Pull leads daily from any MCP server tool — CRMs, sheets, forms.", icon: "Cable", inbound: "pull" },
 ];
 

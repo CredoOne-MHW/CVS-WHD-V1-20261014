@@ -297,13 +297,13 @@ Indexes: cycles `{subscriptionId, periodStart}` (unique → idempotent), `{compa
 dropdown data and counters are cached (30–60 s) and invalidated on every change. All inputs are zod-validated (ids, enums, bounded amounts,
 discount ≤ amount / ≤ 100 %), company routes are tenant-scoped, Super Admin routes need the `subscriptions` permission.
 
-## 12. One database per company, connector guides, Google Search, MCP, AI endpoints (Oct 2026)
+## 12. One database per company, connector guides, marketplaces & Google Ads, MCP, AI endpoints (Oct 2026)
 
 ### One MongoDB database per company
 - Creating a company creates a database named exactly as the **company code** (e.g. `WHD`) with all company collections and indexes.
   Codes must be valid database names (letters, numbers, `-`, `_`; ≤ 38 chars; not `admin`/`local`/`config`/the platform DB) and can
   never be reused — not even from a deleted company — so a new company can never inherit old data.
-- **Company database**: leads, connectors, intake events, prospects, OTPs, AI agents, AI usage, AI endpoints, company webhooks,
+- **Company database**: leads, connectors, intake events, OTPs, AI agents, AI usage, AI endpoints, company webhooks,
   WhatsApp logs, activity logs, roles, event types. **Platform (MONGODB_DB)**: users/logins, companies, plans, AI models, allocations,
   subscriptions, Super Admin webhooks/logs, and two key registries (connector key → company DB, endpoint key hash → company DB).
 - How it works: every request is bound to its company database right after authentication (`lib/context.ts`); company models resolve
@@ -323,10 +323,26 @@ discount ≤ amount / ≤ 100 %), company routes are tenant-scoped, Super Admin 
 - Every connector has a **Step-by-step setup guide** (Meta/Instagram Lead Ads, WhatsApp Cloud API/BSPs, REST, website forms incl.
   Elementor/CF7, Google Ads lead forms, inbound email, telephony, QR, partners, CSV, manual) with the connector's real URL, key and verify
   token filled in, plus an "via MCP" alternative where relevant.
-- **Google Search (keyword prospecting)** — daily 02:00 IST (`/api/cron/pull`) + Run now (6/hour). Providers: SerpAPI (Google results incl.
-  local listings with phones), Brave Search API, or Google Programmable Search (legacy; Google closed it to new customers and switches it
-  off on 1 Jan 2027). Public results are kept as prospects (deduped by URL); those showing a phone/email become leads (source
-  `google_search`, campaign = keyword). Google never reveals who searched — for actual searchers use Google Ads lead forms.
+- **Google Ads Lead Forms** (replaces the retired Google Search keyword connector, which could never reveal who searched — existing
+  Google Search connectors are switched off automatically). People who search your keywords, click your ad and submit its lead form are
+  delivered instantly by Google's lead form webhook to the connector URL, authenticated by the connector's key (`google_key`; wrong key →
+  401). Name/phone/email/city/address columns map to the lead, custom questions go to comments, `gclid`/ad group/creative/form IDs are
+  kept, Google's "Send test data" leads are marked TEST, and `lead_id` makes retries harmless. Google sends only the campaign ID — map
+  IDs to readable names in the connector's **Settings**. Older leads: download the CSV in Google Ads → Assets → Lead forms and use
+  Bulk import.
+- **IndiaMART** — *Push API* (real time: paste your Lead URL in Lead Manager → ⋮ → Import/Export Leads → Push API) **plus** *Pull API*
+  safety net every 15 minutes (`/api/cron/pull-frequent`; paste the Pull API key in Settings — optional). Rolling window with 5-minute
+  overlap in IST, ≤ 7 days, one call per 5 minutes (IndiaMART's limit; Run now is limited the same way), which also keeps the key from
+  expiring. Buyer enquiries, buy-leads, PNS calls and WhatsApp enquiries map to name/mobile/email/address/requirement; `UNIQUE_QUERY_ID`
+  means a lead that arrives by both Push and Pull is stored once.
+- **JustDial** — JustDial pushes each enquiry to your Lead URL (GET or POST; we reply `RECEIVED`). Ask your JustDial account manager to
+  enable "lead push API" with that URL. Prefix + name, mobile, email, category (as campaign), area/city/pincode; deduped by `leadid`.
+- **TradeIndia** — My Inquiry API, fetched every 15 minutes. Paste the API link from TradeIndia → Inquiries & Contacts → My Inquiry API
+  (User ID, Profile ID and Key are filled in automatically; key stored encrypted). Deduped by `rfi_id`.
+- **Sulekha** — Sulekha's team pushes enquiries to your Lead URL in their format (camelCase/snake_case both understood; anything else via
+  Field mapping). Deduped by lead ID.
+- Push-platform Lead URLs have the form `/api/intake/<key>/<token>` (the token is the connector secret, shown once; rotate to issue a
+  new URL). Every marketplace lead goes through the same duplicate merge, assignment, WhatsApp alerts and webhooks as other channels.
 - **MCP Server** connector — Streamable-HTTP MCP client (Zapier MCP, Make, HubSpot, Pipedream, Composio, your own): List tools → pick a
   tool + JSON arguments + items path → records are pulled daily as leads, idempotent by record id. Server URLs are SSRF-guarded (https,
   no private/internal addresses).

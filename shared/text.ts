@@ -18,3 +18,13 @@ export function errorText(body: any, status: number): string {
   const msg = typeof e === "string" ? e : toText(e?.message) || toText(e?.metadata?.raw) || (e ? JSON.stringify(e).slice(0, 200) : "");
   return `AI provider error ${status}${msg ? `: ${msg}` : ""}`.slice(0, 400);
 }
+
+/** Keywords typed one per line, comma-separated or quoted ("a", "b") → clean separate phrases (max 25). */
+export function splitKeywords(input: string | string[]): string[] {
+  const raw = Array.isArray(input) ? input.join("\n") : String(input || "");
+  const out = raw
+    .split(/[\n,;]+/)
+    .map((s) => s.replace(/^[\s"'“”‘’]+|[\s"'“”‘’]+$/g, "").replace(/\s+/g, " "))
+    .filter((s) => s.length >= 2);
+  return [...new Set(out)].slice(0, 25);
+}
