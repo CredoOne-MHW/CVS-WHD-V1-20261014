@@ -1,6 +1,7 @@
 "use client";
 import { useEffect, useRef, useState } from "react";
-import { X, Send, Lock, Sparkles } from "lucide-react";
+import Link from "next/link";
+import { X, Send, Lock, Sparkles, Settings2 } from "lucide-react";
 import { api } from "@/lib/api";
 import { Spinner } from "./ui";
 
@@ -29,9 +30,9 @@ function Md({ text }: { text: string }) {
 
 const STARTERS = ["How many new leads came in today?", "Which source converted best this month?", "Show follow-ups due tomorrow", "Summarise lost reasons this quarter"];
 
-/** Floating assistant (company console). Appears only when the company has picked an assistant agent. */
+/** Floating assistant (company console). Always visible; shows a set-up card until an assistant agent with an AI model exists. */
 export function Assistant({ companyName }: { companyName?: string }) {
-  const [info, setInfo] = useState<{ enabled: boolean; name?: string; logoUrl?: string } | null>(null);
+  const [info, setInfo] = useState<{ enabled: boolean; ready?: boolean; name?: string; logoUrl?: string; canSetup?: boolean } | null>(null);
   const [open, setOpen] = useState(false);
   const [msgs, setMsgs] = useState<Msg[]>([]);
   const [input, setInput] = useState("");
@@ -49,7 +50,8 @@ export function Assistant({ companyName }: { companyName?: string }) {
     return () => window.removeEventListener("keydown", k);
   }, []);
 
-  if (!info?.enabled) return null;
+  if (!info) return null;
+  const live = info.enabled && info.ready;
 
   async function send(text: string) {
     const next = [...msgs, { role: "user" as const, content: text }];
@@ -103,7 +105,22 @@ export function Assistant({ companyName }: { companyName?: string }) {
             </button>
           </header>
           <div className="flex-1 space-y-3 overflow-y-auto bg-[#f7f8f6] p-4" aria-live="polite">
-            {!msgs.length && (
+            {!live && (
+              <div className="rounded-2xl bg-white p-4 text-sm text-ink-700 shadow-card">
+                <p className="font-semibold text-ink-900">Your assistant isn’t switched on yet</p>
+                <p className="mt-1.5">
+                  {!info.enabled
+                    ? "Create an AI Agent, add your knowledge files and tick “Use as floating assistant”."
+                    : "The assistant agent exists but has no AI model yet. Your Super Admin allocates a model with credits; then pick it on the agent."}
+                </p>
+                {info.canSetup && (
+                  <Link href="/app/settings/ai-agents" onClick={() => setOpen(false)} className="btn-primary mt-3 inline-flex">
+                    <Settings2 className="h-4 w-4" /> Set up in Settings › AI Agent
+                  </Link>
+                )}
+              </div>
+            )}
+            {live && !msgs.length && (
               <div className="space-y-2 pt-2">
                 <p className="text-sm text-ink-500">Ask about your leads, follow-ups, sources or WhatsApp delivery.</p>
                 {STARTERS.map((s) => (
@@ -125,6 +142,7 @@ export function Assistant({ companyName }: { companyName?: string }) {
             )}
             <div ref={end} />
           </div>
+          {live && (
           <form
             className="flex items-end gap-2 border-t border-ink-400/10 p-3"
             onSubmit={(e) => {
@@ -149,6 +167,7 @@ export function Assistant({ companyName }: { companyName?: string }) {
               <Send className="h-4 w-4" />
             </button>
           </form>
+          )}
           {usage && <p className="px-4 pb-2 text-[11px] text-ink-400">{usage.remaining.toLocaleString("en-IN")} AI credits left</p>}
         </section>
       )}

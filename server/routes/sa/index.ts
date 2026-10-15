@@ -7,7 +7,7 @@ import { can, requireScope, invalidateAuth } from "../../middleware/auth";
 import { h, parse, notFound, badRequest, paging, escapeRegex, HttpError } from "../../lib/http";
 import { encrypt } from "../../lib/crypto";
 import multer from "multer";
-import { putObject, deleteObject, folderFor, companyFolder } from "../../lib/s3";
+import { putObject, deleteObject, folderFor, companyFolder, relayoutCompany, relayoutAll } from "../../lib/s3";
 import { baseDomain, baseSource, configuredBases, tenantUrls, clearTenantCache, publicBranding, platformBranding } from "../../lib/tenant";
 import { vercelSync, vercelVerify, vercelRemove, vercelConfigured, recordsFor, checkRecords, platformRecords, newVerifyToken, cnameTargetFor, VERIFY_LABEL, FALLBACK_A, FALLBACK_CNAME } from "../../lib/domains";
 import { fireEvent } from "../../lib/whatsapp";
@@ -110,7 +110,7 @@ async function syncDomain(companyId: any, domain?: string | null) {
   }
 }
 
-/** S3 base folder = company name ("Wellnesshive Diagnostica LLP" → "Wellnesshive-Diagnostica-LLP"), unique across companies. */
+/** S3 base folder = the company name as typed ("WELLNESSHIVE DIAGNOSTICA LLP"), unique across companies. */
 async function uniqueFolder(name: string) {
   const base = companyFolder(name);
   let folder = base;
@@ -422,10 +422,18 @@ r.post("/companies/:id/brand-asset/:kind", can("companies", "update"), imgUpload
   c.set("branding.updatedAt", new Date());
   await c.save();
   if (old) deleteObject(old);
+  await relayoutCompany(c._id).catch(() => undefined); // bring any older files into <Company Name>/logo|banner|brain
   clearTenantCache();
   res.locals.action = `Upload ${kind}`;
   res.locals.item = c.name;
   res.json({ ok: true, branding: publicBranding(c.toObject()) });
+}));
+/** Re-organise S3 files into <Company Name>/logo · /banner · /brain (one company, or all with id "all"). */
+r.post("/companies/:id/s3-relayout", can("companies", "update"), h(async (req, res) => {
+  const out = req.params.id === "all" ? await relayoutAll() : await relayoutCompany(req.params.id);
+  clearTenantCache();
+  res.locals.action = "Re-organise S3 folders";
+  res.json(out);
 }));
 r.delete("/companies/:id/brand-asset/:kind", can("companies", "update"), h(async (req, res) => {
   const c = await Company.findOne({ _id: req.params.id, deletedAt: null });
