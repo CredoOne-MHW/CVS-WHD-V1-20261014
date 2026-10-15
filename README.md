@@ -296,3 +296,44 @@ Indexes: cycles `{subscriptionId, periodStart}` (unique → idempotent), `{compa
 `{companyId, createdAt}`, `{companyAgentId, createdAt}`; allocations `{renewalDate}`. Lists are paginated (25), lean and projected;
 dropdown data and counters are cached (30–60 s) and invalidated on every change. All inputs are zod-validated (ids, enums, bounded amounts,
 discount ≤ amount / ≤ 100 %), company routes are tenant-scoped, Super Admin routes need the `subscriptions` permission.
+
+## 12. One database per company, connector guides, Google Search, MCP, AI endpoints (Oct 2026)
+
+### One MongoDB database per company
+- Creating a company creates a database named exactly as the **company code** (e.g. `WHD`) with all company collections and indexes.
+  Codes must be valid database names (letters, numbers, `-`, `_`; ≤ 38 chars; not `admin`/`local`/`config`/the platform DB) and can
+  never be reused — not even from a deleted company — so a new company can never inherit old data.
+- **Company database**: leads, connectors, intake events, prospects, OTPs, AI agents, AI usage, AI endpoints, company webhooks,
+  WhatsApp logs, activity logs, roles, event types. **Platform (MONGODB_DB)**: users/logins, companies, plans, AI models, allocations,
+  subscriptions, Super Admin webhooks/logs, and two key registries (connector key → company DB, endpoint key hash → company DB).
+- How it works: every request is bound to its company database right after authentication (`lib/context.ts`); company models resolve
+  to that database on each call (`tm()` in `models/index.ts`). One connection pool serves all databases (`useDb` + `useCache`) — no extra
+  connections, no extra latency. Super Admin views that span companies (dashboard, reports, activity logs) fan out over company databases
+  with bounded concurrency and are cached.
+- Existing companies are moved automatically (background on deploy + on first use; copy → verify → delete; resumable) and a 15-minute
+  sweep moves any record written to the old location during the switch. Manual trigger: `POST /api/sa/companies/migrate-databases`.
+- **MongoDB Atlas**: the database user needs the built-in role *readWriteAnyDatabase*. Free/shared tiers cap databases and collections
+  (≈13 collections per company) — use a dedicated cluster (M10+) for many companies.
+
+### AI reads only its own company database
+- Each AI allocation stores `dbName` = the company's own database (shown read-only in Allocate). The server refuses any other value and,
+  at run time, refuses to run if the allocation's database differs from the company's (`withAgentDb`).
+
+### Company › Integration
+- Every connector has a **Step-by-step setup guide** (Meta/Instagram Lead Ads, WhatsApp Cloud API/BSPs, REST, website forms incl.
+  Elementor/CF7, Google Ads lead forms, inbound email, telephony, QR, partners, CSV, manual) with the connector's real URL, key and verify
+  token filled in, plus an "via MCP" alternative where relevant.
+- **Google Search (keyword prospecting)** — daily 02:00 IST (`/api/cron/pull`) + Run now (6/hour). Providers: SerpAPI (Google results incl.
+  local listings with phones), Brave Search API, or Google Programmable Search (legacy; Google closed it to new customers and switches it
+  off on 1 Jan 2027). Public results are kept as prospects (deduped by URL); those showing a phone/email become leads (source
+  `google_search`, campaign = keyword). Google never reveals who searched — for actual searchers use Google Ads lead forms.
+- **MCP Server** connector — Streamable-HTTP MCP client (Zapier MCP, Make, HubSpot, Pipedream, Composio, your own): List tools → pick a
+  tool + JSON arguments + items path → records are pulled daily as leads, idempotent by record id. Server URLs are SSRF-guarded (https,
+  no private/internal addresses).
+
+### Company › AI Agent › Models | Endpoint
+- **Endpoint**: an HTTPS endpoint for external systems — `POST /api/ai/v1/chat` with `Authorization: Bearer ep_live_…` and
+  `{ "question", "history"? }` → `{ "answer", "usage" }`. Answer with an existing AI agent, or a new endpoint on an allocated model with
+  instructions. Data access: *Knowledge only*, *Knowledge + company totals* (default — aggregates only, never names/phones/emails), or
+  *Full read-only data* (internal systems). Keys are stored as SHA-256 and shown once (rotate anytime); optional website allow-list
+  (CORS, enforced server-side); per-endpoint rate limit; calls and credits counted; Test console and copy-paste integration guide.

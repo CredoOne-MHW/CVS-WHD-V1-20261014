@@ -1,5 +1,7 @@
 import type { Request, Response, NextFunction } from "express";
 import { ActivityLog } from "../models";
+import { currentDb, runInDb } from "../lib/context";
+import { dbOf } from "../lib/tenantdb";
 
 const REDACT = /pass(word)?|secret|token|otp|apikey|api_key|authorization/i;
 
@@ -22,11 +24,12 @@ const VERB: Record<string, string> = { POST: "Create", PUT: "Update", PATCH: "Up
  * with: Time · User · Action · Module · Item · Response · Error status · Payload.
  */
 export function activityLogger(req: Request, res: Response, next: NextFunction) {
+  const db = currentDb(); // "finish" fires outside the request's async context — capture the company database now
   res.on("finish", () => {
     const a = req.auth;
     if (!a) return;
     if (req.method === "GET" && !res.locals.logRead) return;
-    ActivityLog.create({
+    runInDb(a.scope === "company" ? db : null, () => ActivityLog.create({
       scope: a.scope,
       companyId: a.companyId,
       userId: a.userId,
@@ -39,12 +42,18 @@ export function activityLogger(req: Request, res: Response, next: NextFunction) 
       error: res.statusCode >= 400 ? res.locals.error || "error" : undefined,
       payload: redact({ body: req.body, query: req.query }),
       ip: (req.headers["x-forwarded-for"] as string)?.split(",")[0] || req.socket.remoteAddress,
-    }).catch((e) => console.error("activity log failed", e));
+    })).catch((e) => console.error("activity log failed", e));
   });
   next();
 }
 
 /** For events that happen outside a request (login, cron, intake). */
-export function logActivity(entry: Record<string, any>) {
-  return ActivityLog.create({ ...entry, payload: redact(entry.payload) }).catch(() => undefined);
+export async function logActivity(entry: Record<string, any>) {
+  try {
+    // company entries go to that company's database, platform entries to the main one
+    const db = entry.scope === "company" && entry.companyId ? await dbOf(entry.companyId) : null;
+    return await runInDb(db, () => ActivityLog.create({ ...entry, payload: redact(entry.payload) }));
+  } catch {
+    return undefined;
+  }
 }

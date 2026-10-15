@@ -3,6 +3,8 @@ import { AiAllocation, AiUsage, Company, Subscription, SubscriptionCycle, Subscr
 import { addPeriod, nextRenewal, discountOf, effectiveStatus, EXPIRE_AFTER_DAYS, DAY } from "../../shared/billing";
 import { cached, invalidate, rateLimit } from "./cache";
 import { dispatch, fireEvent } from "./whatsapp";
+import { runInMain } from "./context";
+import { inCompanyDb } from "./tenantdb";
 
 const oid = (v: any) => (v instanceof Types.ObjectId ? v : new Types.ObjectId(String(v)));
 const round2 = (n: number) => Math.round((n || 0) * 100) / 100;
@@ -31,7 +33,7 @@ export async function renewAllocations(now = new Date(), filter: Record<string, 
 
 /** Live AI spend (₹, company rate) of a company in [start, end). */
 export async function aiAmountFor(companyId: any, start: Date, end: Date) {
-  const r = await AiUsage.aggregate([{ $match: { companyId: oid(companyId), createdAt: { $gte: new Date(start), $lt: new Date(end) } } }, { $group: { _id: null, billed: { $sum: "$billed" } } }]);
+  const r = await inCompanyDb(companyId, () => AiUsage.aggregate([{ $match: { companyId: oid(companyId), createdAt: { $gte: new Date(start), $lt: new Date(end) } } }, { $group: { _id: null, billed: { $sum: "$billed" } } }]));
   return round2(r[0]?.billed || 0);
 }
 
@@ -82,9 +84,9 @@ export async function notifyCycle(cycle: any, event: "subscription_reminder" | "
         : `Hi ${c.contactPerson || c.name}, your ${cycle.planName} subscription has expired (payment due ${due} not received). Please contact us to renew.`);
   const ctx = { phone, name: c.contactPerson, company: c.name, message, params: { plan: cycle.planName, amount: total, due_date: due, status: cycle.status } };
   if (opts.webhookId) {
-    const hook = await Webhook.findOne({ _id: opts.webhookId, scope: "super", active: true }).lean();
+    const hook = await runInMain(() => Webhook.findOne({ _id: opts.webhookId, scope: "super", active: true }).lean());
     if (hook) {
-      const results = await dispatch(hook, ctx as any, { scope: "super", trigger: opts.trigger || "auto", triggeredBy: opts.by } as any);
+      const results = await runInMain(() => dispatch(hook, ctx as any, { scope: "super", trigger: opts.trigger || "auto", triggeredBy: opts.by } as any));
       return { sent: results.filter((r: any) => r.ok).length, results };
     }
   }

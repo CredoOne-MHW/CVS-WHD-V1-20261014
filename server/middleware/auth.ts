@@ -3,6 +3,8 @@ import jwt from "jsonwebtoken";
 import { User, Company, Plan, Role } from "../models";
 import { COMPANY_MODULES, SA_MODULES, fullPerm, noPerm, type Action, type PermMap } from "../../shared/constants";
 import { HttpError, forbidden } from "../lib/http";
+import { setTenantDb } from "../lib/context";
+import { dbOf, migrateCompany } from "../lib/tenantdb";
 import { cached, invalidate } from "../lib/cache";
 
 /** Call after changing users, companies, plans or roles. */
@@ -99,6 +101,13 @@ export async function buildContext(p: TokenPayload): Promise<AuthCtx> {
   const company = await cached(`auth:company:${user.companyId}`, 30, () => Company.findById(user.companyId).select("name plan status deletedAt").lean<any>());
   if (!company || company.deletedAt) throw new HttpError(401, "Company not found");
   if (company.status !== "active" && !p.imp) throw new HttpError(403, "Company account is deactivated. Contact support.");
+  // Bind this request to the company's own database (its data is moved there on first use if it predates per-company databases)
+  let db = await dbOf(company._id);
+  if (!db) {
+    await migrateCompany(String(company._id));
+    db = await dbOf(company._id);
+  }
+  setTenantDb(db);
   return {
     userId: String(user._id),
     scope: "company",

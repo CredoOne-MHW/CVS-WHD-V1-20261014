@@ -1,18 +1,26 @@
 import { Router } from "express";
-import { Connector, IntakeEvent, Company, Lead, Webhook } from "../models";
+import { Connector, IntakeEvent, Company, Lead, Webhook, ConnectorKey, EndpointKey, AiEndpoint } from "../models";
+import { endpointChat } from "../lib/agentic";
 import { h, HttpError } from "../lib/http";
-import { decrypt, hmacValid } from "../lib/crypto";
+import { decrypt, hmacValid, sha256 } from "../lib/crypto";
 import { processIntake, runEvent } from "../lib/intake";
 import { fireEvent } from "../lib/whatsapp";
 import { cached, rateLimit } from "../lib/cache";
 import { getObject } from "../lib/s3";
 import { runBillingJobs } from "../lib/billing";
+import { setTenantDb } from "../lib/context";
+import { forEachCompanyDb, inCompanyDb, sweepStragglers } from "../lib/tenantdb";
+import { runPullConnectors } from "../lib/pull";
 import { requestHost, resolveHost, baseDomain, publicBranding, platformBranding } from "../lib/tenant";
 import { LOST_STATUS, WON_STATUS } from "../../shared/constants";
 
 const r = Router();
 
+/** Public key → company database (registry in the main database) → connector in that company's database. */
 async function loadConnector(key: string) {
+  if (!/^[A-Za-z0-9_-]{6,80}$/.test(key)) throw new HttpError(404, "Unknown or inactive connector");
+  const reg = await cached(`conn:reg:${key}`, 60, () => ConnectorKey.findOne({ key }).lean<any>());
+  if (reg) setTenantDb(reg.db);
   const c = await cached(`conn:${key}`, 60, () => Connector.findOne({ key, active: true }).lean<any>());
   if (!c) throw new HttpError(404, "Unknown or inactive connector");
   const company = await cached(`conn:co:${c.companyId}`, 60, () => Company.findOne({ _id: c.companyId, status: "active", deletedAt: null }).select("_id").lean());
@@ -67,6 +75,40 @@ r.post("/intake/:key", h(async (req, res) => {
   res.status((result as any).ok === false ? 202 : 200).json(result);
 }));
 
+/* ───────────── AI endpoint for external systems ─────────────
+ * POST /api/ai/v1/chat   Authorization: Bearer ep_live_…   { "question": "…", "history": [{role, content}] }
+ * → { "answer": "…", "usage": { credits, remaining } }
+ * The key decides the company and its database; the endpoint's AI model may read only that database.
+ */
+r.post("/ai/v1/chat", h(async (req, res) => {
+  const origin = req.headers.origin as string | undefined;
+  const raw = String(req.headers.authorization || "").replace(/^Bearer\s+/i, "") || String(req.headers["x-api-key"] || "");
+  if (!/^ep_live_[A-Za-z0-9_-]{20,80}$/.test(raw)) throw new HttpError(401, "Missing or invalid API key");
+  const reg = await cached(`ep:key:${sha256(raw)}`, 60, () => EndpointKey.findOne({ keyHash: sha256(raw) }).lean<any>());
+  if (!reg) throw new HttpError(401, "Missing or invalid API key");
+  setTenantDb(reg.db);
+  const ep = await cached(`ep:${reg.endpointId}`, 30, () => AiEndpoint.findOne({ _id: reg.endpointId, active: true }).lean<any>());
+  if (!ep) throw new HttpError(403, "This endpoint is switched off");
+  if (origin) {
+    if (!(ep.allowedOrigins || []).includes(origin)) throw new HttpError(403, "This website is not allowed to call the endpoint");
+    res.setHeader("Access-Control-Allow-Origin", origin);
+    res.setHeader("Vary", "Origin");
+  }
+  if (!(await rateLimit(`ep:rl:${ep._id}`, ep.rateLimitPerMin || 60, 60))) throw new HttpError(429, "Rate limit reached — slow down");
+  const company = await cached(`ep:co:${reg.companyId}`, 120, () => Company.findOne({ _id: reg.companyId, status: "active", deletedAt: null }).select("name").lean<any>());
+  if (!company) throw new HttpError(403, "Company inactive");
+  const b = req.body || {};
+  const question = typeof b.question === "string" ? b.question.trim().slice(0, 4000) : "";
+  if (!question) throw new HttpError(400, 'Send JSON like {"question": "…"}');
+  const history = (Array.isArray(b.history) ? b.history : [])
+    .filter((m: any) => m && ["user", "assistant"].includes(m.role) && typeof m.content === "string")
+    .slice(-10)
+    .map((m: any) => ({ role: m.role, content: m.content.slice(0, 4000) }));
+  const out: any = await endpointChat(ep, company, [...history, { role: "user", content: question }]);
+  await AiEndpoint.updateOne({ _id: ep._id }, { $inc: { "stats.calls": 1, "stats.credits": out.usage?.credits || 0 }, $set: { "stats.lastAt": new Date() } });
+  res.json({ answer: out.text, usage: out.usage ? { credits: out.usage.credits, remaining: out.usage.remaining } : undefined });
+}));
+
 /* ───────────── White-label branding (login page, favicon, theme) ───────────── */
 
 /** Which login to show for this host: the platform (Super Admin) or a company's branded login. */
@@ -116,15 +158,26 @@ function cronAuth(req: any) {
 /** Every 15 min: retry failed intake deliveries whose backoff has elapsed. */
 r.get("/cron/retry", h(async (req, res) => {
   cronAuth(req);
-  const due = await IntakeEvent.find({ status: "failed", nextAttemptAt: { $lte: new Date() } }).limit(50).lean<any[]>();
+  let retried = 0;
   let ok = 0;
-  for (const ev of due) {
-    const c = await Connector.findById(ev.connectorId).lean();
-    if (!c) continue;
-    const r2: any = await runEvent(c, ev._id, ev.payload);
-    if (r2.ok) ok++;
-  }
-  res.json({ retried: due.length, ok });
+  await forEachCompanyDb(async () => {
+    const due = await IntakeEvent.find({ status: "failed", nextAttemptAt: { $lte: new Date() } }).limit(50).lean<any[]>();
+    for (const ev of due) {
+      const c = await Connector.findById(ev.connectorId).lean();
+      if (!c) continue;
+      retried++;
+      const r2: any = await runEvent(c, ev._id, ev.payload);
+      if (r2.ok) ok++;
+    }
+  });
+  const moved = await sweepStragglers().catch(() => 0);
+  res.json({ retried, ok, moved });
+}));
+
+/** Daily 02:00 IST: pull connectors — Google Search keyword prospecting and MCP servers. */
+r.get("/cron/pull", h(async (req, res) => {
+  cronAuth(req);
+  res.json(await runPullConnectors());
 }));
 
 /** Daily 02:00 IST: AI allocation renewals, subscription cycles, Unpaid → Over Due → Expired, 1/3/7-day reminders. */
@@ -136,18 +189,20 @@ r.get("/cron/billing", h(async (req, res) => {
 /** Daily 08:00 IST: follow-up digest per company (event: followup_digest). */
 r.get("/cron/followups", h(async (req, res) => {
   cronAuth(req);
-  const hooks = await Webhook.find({ scope: "company", event: "followup_digest", active: true }).select("companyId").lean<any[]>();
-  const companyIds = [...new Set(hooks.map((x) => String(x.companyId)))];
+  const per = await forEachCompanyDb(async (co) => ((await Webhook.exists({ scope: "company", companyId: co._id, event: "followup_digest", active: true })) ? String(co._id) : null));
+  const companyIds = per.map((x) => x.value).filter(Boolean) as string[];
   let sent = 0;
   for (const cid of companyIds) {
+    await inCompanyDb(cid, async () => {
     const company = await Company.findOne({ _id: cid, status: "active", deletedAt: null }).lean<any>();
-    if (!company?.whatsapp) continue;
+    if (!company?.whatsapp) return;
     const due = await Lead.find({ companyId: cid, deletedAt: null, status: { $nin: [LOST_STATUS, WON_STATUS] }, $or: [{ status: "Follow-ups needed" }, { nextFollowUpAt: { $lte: new Date(Date.now() + 86400_000) } }] }).limit(40).select("name phone status").lean<any[]>();
     const fresh = await Lead.countDocuments({ companyId: cid, deletedAt: null, status: "New" });
-    if (!due.length && !fresh) continue;
+    if (!due.length && !fresh) return;
     const message = [`Good morning! ${company.name} lead digest:`, `• ${fresh} new lead(s) not yet contacted`, `• ${due.length} follow-up(s) due today`, "", ...due.map((l, i) => `${i + 1}. ${l.name || "—"} (${l.phone || ""}) – ${l.status}`)].join("\n");
     const r2 = await fireEvent("company", cid, "followup_digest", { phone: company.whatsapp, name: company.contactPerson, company: company.name, message, params: { new: fresh, due: due.length } }, "cron");
     sent += r2.sent;
+    });
   }
   res.json({ companies: companyIds.length, sent });
 }));

@@ -1,4 +1,6 @@
 import { Webhook, WaLog } from "../models";
+import { runInDb } from "./context";
+import { dbOf } from "./tenantdb";
 import { decrypt } from "./crypto";
 import { normalizePhone } from "../../shared/constants";
 import { buildPayloads, type SendContext } from "../../shared/templating";
@@ -76,6 +78,11 @@ export async function dispatch(hook: any, ctx: SendContext, opts: DispatchOpts) 
 
 /** Fire every active webhook bound to an event (system events like lead_created). */
 export async function fireEvent(scope: "super" | "company", companyId: string | undefined, event: string, ctx: SendContext, trigger: DispatchOpts["trigger"] = "auto", triggeredBy?: string) {
+  // platform webhooks/logs live in the main database, company ones in the company's database
+  const db = scope === "company" && companyId ? await dbOf(companyId) : null;
+  return runInDb(db, () => fireEventHere(scope, companyId, event, ctx, trigger, triggeredBy));
+}
+async function fireEventHere(scope: "super" | "company", companyId: string | undefined, event: string, ctx: SendContext, trigger: DispatchOpts["trigger"], triggeredBy?: string) {
   const hooks = await Webhook.find({ scope, ...(companyId ? { companyId } : {}), event, active: true }).lean();
   if (!hooks.length) return { sent: 0, results: [], reason: `No active webhook for event "${event}"` };
   const results = [];

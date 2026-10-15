@@ -118,6 +118,24 @@ async function bootstrap() {
     await invalidate("auth:").catch(() => undefined);
   }
 
+  // One-time: allocations record the database their AI may read (the company's own)
+  if (!(await meta.findOne({ _id: "alloc_db_v1" }))) {
+    const { Company } = await import("../models");
+    for (const c of await Company.find({}).select("dbName code").lean<any[]>()) await AiAllocation.updateMany({ companyId: c._id, dbName: null }, { $set: { dbName: c.dbName || c.code } });
+    await meta.updateOne({ _id: "alloc_db_v1" }, { $set: { at: new Date() } }, { upsert: true });
+  }
+
+  // Companies created before per-company databases: their data is moved in the background (and on first use)
+  if (!(await meta.findOne({ _id: "tenantdb_v1" }))) {
+    import("./tenantdb")
+      .then(({ migrateAll }) => migrateAll())
+      .then(async (r) => {
+        if (r.every((x) => x.ok)) await meta.updateOne({ _id: "tenantdb_v1" }, { $set: { at: new Date() } }, { upsert: true });
+        else console.warn("company database move:", r);
+      })
+      .catch((e) => console.warn("company database move:", e?.message));
+  }
+
   // One-time (v2): move existing logos/banners/knowledge files into <Company Name>/logo · /banner · /brain.
   // Runs in the background so the first request isn't delayed; idempotent if an instance stops midway.
   if (process.env.S3_BUCKET && !(await meta.findOne({ _id: "s3_layout_v2" }))) {

@@ -63,6 +63,16 @@ export function createApp() {
   });
 
   /** Website / landing-page forms post to intake from other domains: open CORS, never with cookies. Answered before any DB work. */
+  // AI endpoint: preflight is answered here; the per-endpoint origin allow-list is enforced on the real request
+  app.options("/api/ai/v1/chat", (req, res) => {
+    res.setHeader("Access-Control-Allow-Origin", String(req.headers.origin || "*"));
+    res.setHeader("Vary", "Origin");
+    res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
+    res.setHeader("Access-Control-Allow-Headers", "Authorization, Content-Type, X-Api-Key");
+    res.setHeader("Access-Control-Max-Age", "600");
+    res.status(204).end();
+  });
+
   app.use(["/api/intake", "/api/forms"], (req, res, next) => {
     res.setHeader("Access-Control-Allow-Origin", "*");
     res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");

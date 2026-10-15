@@ -82,7 +82,7 @@ export interface ConnectorDef {
   label: string;
   description: string;
   icon: string;
-  inbound: "webhook" | "upload" | "manual" | "meta" | "google";
+  inbound: "webhook" | "upload" | "manual" | "meta" | "google" | "pull";
 }
 
 export const CONNECTOR_TYPES: ConnectorDef[] = [
@@ -97,6 +97,8 @@ export const CONNECTOR_TYPES: ConnectorDef[] = [
   { type: "telephony", label: "Telephone / Call Center", description: "Missed-call & IVR webhooks (Exotel, Knowlarity, Ozonetel…).", icon: "PhoneCall", inbound: "webhook" },
   { type: "qr_campaign", label: "QR Code & Campaign Form", description: "Hosted form per campaign with a printable QR code.", icon: "QrCode", inbound: "webhook" },
   { type: "partner", label: "Partner / Referral / Affiliate", description: "Per-partner keys so every lead is credited correctly.", icon: "Handshake", inbound: "webhook" },
+  { type: "google_search", label: "Google Search (keyword prospecting)", description: "Daily 2 AM search for your keywords; public results with a phone or email become leads.", icon: "SearchCheck", inbound: "pull" },
+  { type: "mcp", label: "MCP Server (Zapier, Make, HubSpot…)", description: "Pull leads daily from any MCP server tool — CRMs, sheets, forms.", icon: "Cable", inbound: "pull" },
 ];
 
 /** Built-in WhatsApp webhook events. Companies can add their own types. */

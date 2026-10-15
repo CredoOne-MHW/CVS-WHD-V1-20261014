@@ -110,6 +110,8 @@ export async function relayoutCompany(companyId: any) {
     }
   }
   if (moved) await c.save();
+  const { inCompanyDb } = await import("./tenantdb");
+  await inCompanyDb(c._id, async () => {
   for (const ca of await CompanyAgent.find({ companyId: c._id })) {
     let dirty = false;
     for (const k of ca.knowledge || []) {
@@ -132,6 +134,7 @@ export async function relayoutCompany(companyId: any) {
       await ca.save();
     }
   }
+  });
   return { folder, moved };
 }
 

@@ -49,7 +49,8 @@ export function WaLogs({ base }: { base: "/sa" | "/co" }) {
   async function resend(id: string) {
     setBusy(id);
     try {
-      const r = await api(`${base}/wa-logs/${id}/resend`, { method: "POST" });
+      const row = data?.items.find((x: any) => x._id === id);
+      const r = await api(`${base}/wa-logs/${id}/resend${row?.companyId ? `?companyId=${row.companyId}` : ""}`, { method: "POST" });
       toast(r.result === "success" ? "ok" : "err", r.result === "success" ? "Resent" : r.detail);
       fetchPage();
     } catch (e: any) {
@@ -105,7 +106,7 @@ export function WaLogs({ base }: { base: "/sa" | "/co" }) {
                   {l.detail}
                 </td>
                 <td className="td whitespace-nowrap">
-                  <button className="btn-ghost" onClick={async () => setView(await api(`${base}/wa-logs/${l._id}`))}>
+                  <button className="btn-ghost" onClick={async () => setView(await api(`${base}/wa-logs/${l._id}${l.companyId ? `?companyId=${l.companyId}` : ""}`))}>
                     <FileJson className="h-4 w-4" /> Payload
                   </button>
                   {perm.update && (
