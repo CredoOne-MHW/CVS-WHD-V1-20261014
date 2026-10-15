@@ -3,12 +3,14 @@ import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { X, Send, Lock, Sparkles, Settings2 } from "lucide-react";
 import { api } from "@/lib/api";
+import { toText } from "@shared/text";
 import { Spinner } from "./ui";
 
 type Msg = { role: "user" | "assistant"; content: string };
 
 /** Tiny, safe markdown: **bold**, bullet lines, line breaks. No HTML injection. */
-function Md({ text }: { text: string }) {
+function Md({ text: raw }: { text: any }) {
+  const text = toText(raw);
   return (
     <div className="space-y-1.5">
       {text.split(/\n+/).map((line, i) => {
@@ -60,8 +62,8 @@ export function Assistant({ companyName }: { companyName?: string }) {
     setBusy(true);
     try {
       const r = await api("/co/assistant/chat", { body: { messages: next } });
-      setMsgs([...next, { role: "assistant", content: r.text }]);
-      setUsage(r.usage);
+      setMsgs([...next, { role: "assistant", content: toText(r?.text) || "(empty reply)" }]);
+      setUsage(r?.usage || null);
     } catch (e: any) {
       setMsgs([...next, { role: "assistant", content: `⚠️ ${e.message}` }]);
     } finally {
@@ -69,12 +71,18 @@ export function Assistant({ companyName }: { companyName?: string }) {
     }
   }
 
+  const monogram = (companyName || "")
+    .split(/\s+/)
+    .filter(Boolean)
+    .slice(0, 2)
+    .map((w) => w[0]?.toUpperCase())
+    .join("");
   const Logo = ({ size }: { size: string }) =>
     info.logoUrl ? (
       <img src={info.logoUrl} alt="" className={`${size} rounded-full bg-white object-contain p-0.5`} />
     ) : (
-      <span className={`${size} grid place-items-center rounded-full bg-white text-hive-700`}>
-        <Sparkles className="h-1/2 w-1/2" />
+      <span className={`${size} grid place-items-center rounded-full bg-white text-[15px] font-extrabold tracking-tight text-hive-800`} aria-hidden>
+        {monogram || <Sparkles className="h-1/2 w-1/2" />}
       </span>
     );
 
@@ -168,7 +176,7 @@ export function Assistant({ companyName }: { companyName?: string }) {
             </button>
           </form>
           )}
-          {usage && <p className="px-4 pb-2 text-[11px] text-ink-400">{usage.remaining.toLocaleString("en-IN")} AI credits left</p>}
+          {usage?.remaining != null && <p className="px-4 pb-2 text-[11px] text-ink-400">{Number(usage.remaining).toLocaleString("en-IN")} AI credits left</p>}
         </section>
       )}
     </>

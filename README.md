@@ -235,3 +235,9 @@ Per-address title, description, canonical, Open Graph and JSON-LD (Organization 
 - Every **active** model in Super Admin › AI Agents is offered to every company automatically. The company's credit wallet for a model opens with that model's **Credits (default)** the first time it's listed or used; Super Admin can still top up per company (Company › ⋯ › AI Agents & credits). Deactivate a model to withdraw it.
 - Create / Edit AI agent: picking a model shows its charges — ₹ per credit, token weights, an estimated cost of a typical reply, and credits left.
 - AI Agent list › Action › **Usage**: credits left, cost incurred, credits used, calls, tokens, a 30-day trend, a breakdown by use (agent chat / floating assistant / agentic report) and the full call history (`GET /api/co/ai-agents/:id/usage`).
+
+### 10.3 Fixes (Oct 2026)
+- Floating assistant: readiness now checks the agent's model correctly (it was reporting "no AI model yet" even when one was set).
+- Test chat / assistant: replies from reasoning models (e.g. Kimi K2.5 via OpenRouter) that come back as an array of parts or with empty content no longer crash the page; text is normalised server- and client-side (`shared/text.ts`), and min output tokens raised to 1,500.
+- Error boundaries for `/app` and `/sa` so a screen error shows "Try again" instead of a blank page.
+- Browser-tab icon: company favicon → logo → a monogram in the theme colour (never the generic globe), on login and inside the console. The assistant button uses the same monogram when no logo is uploaded.

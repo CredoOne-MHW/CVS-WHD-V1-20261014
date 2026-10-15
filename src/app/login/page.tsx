@@ -40,7 +40,7 @@ export default function Login() {
         if (r.status === 404) return setProblem({ kind: "missing", host: j.host || window.location.host, base: j.baseDomain });
         if (!r.ok) return setProblem({ kind: "down", host: window.location.host });
         applyTheme(j.themeColor, j.accentColor);
-        setFavicon(j.faviconUrl || j.logoUrl);
+        setFavicon(j.faviconUrl || j.logoUrl, { name: j.shortName || j.name, color: j.themeColor });
         document.title = j.kind === "platform" ? `${j.name} · ${j.tagline}` : `Sign in · ${j.shortName}`;
         setBrand(j);
       })
