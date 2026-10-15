@@ -9,6 +9,7 @@ import { encrypt } from "../../lib/crypto";
 import multer from "multer";
 import { nextRenewal, FREQ_KEYS } from "../../../shared/billing";
 import { renewAllocations } from "../../lib/billing";
+import { dbNameFromCode, validateDbName, provisionDb, inCompanyDb, forEachCompanyDb, migrateAll, dbOf } from "../../lib/tenantdb";
 import subscriptionRoutes from "./subscriptions";
 import { putObject, deleteObject, folderFor, companyFolder, relayoutCompany, relayoutAll } from "../../lib/s3";
 import { baseDomain, baseSource, configuredBases, tenantUrls, clearTenantCache, publicBranding, platformBranding } from "../../lib/tenant";
@@ -22,31 +23,57 @@ const r = Router();
 r.use(requireScope("super"));
 
 /* ───────────── Dashboard ───────────── */
+/** Platform dashboard. Company data lives in one database per company, so per-company figures are gathered
+ *  in parallel (bounded) and the whole result is cached for 2 minutes. */
 r.get("/dashboard", can("dashboard", "read"), h(async (_req, res) => {
-  const since = new Date(Date.now() - 30 * 86400_000);
-  const [byPlan, byStatus, leads30, totalLeads, wa, credits, recent, trend] = await Promise.all([
-    Company.aggregate([{ $match: { deletedAt: null } }, { $group: { _id: "$plan", n: { $sum: 1 } } }]),
-    Company.aggregate([{ $match: { deletedAt: null } }, { $group: { _id: "$status", n: { $sum: 1 } } }]),
-    Lead.countDocuments({ createdAt: { $gte: since }, deletedAt: null }),
-    Lead.estimatedDocumentCount(),
-    WaLog.aggregate([{ $match: { createdAt: { $gte: since } } }, { $group: { _id: "$result", n: { $sum: 1 } } }]),
-    AiUsage.aggregate([{ $match: { createdAt: { $gte: since } } }, { $group: { _id: null, credits: { $sum: "$credits" }, cost: { $sum: "$cost" }, billed: { $sum: "$billed" } } }]),
-    Company.find({ deletedAt: null }).sort({ createdAt: -1 }).limit(6).select("name code plan status createdAt").lean(),
-    Lead.aggregate([
-      { $match: { createdAt: { $gte: since }, deletedAt: null } },
-      { $group: { _id: { $dateToString: { format: "%Y-%m-%d", date: "$createdAt", timezone: "Asia/Kolkata" } }, n: { $sum: 1 } } },
-      { $sort: { _id: 1 } },
-    ]),
-  ]);
-  const topCompanies = await Lead.aggregate([
-    { $match: { createdAt: { $gte: since }, deletedAt: null } },
-    { $group: { _id: "$companyId", leads: { $sum: 1 }, won: { $sum: { $cond: [{ $eq: ["$status", "Converted / Service Initiated"] }, 1, 0] } } } },
-    { $sort: { leads: -1 } },
-    { $limit: 5 },
-    { $lookup: { from: "companies", localField: "_id", foreignField: "_id", as: "c" } },
-    { $project: { leads: 1, won: 1, name: { $first: "$c.name" } } },
-  ]);
-  res.json({ byPlan, byStatus, leads30, totalLeads, wa, ai: credits[0] || { credits: 0, cost: 0, billed: 0 }, recent, trend, topCompanies });
+  res.json(
+    await cached("sa:dashboard", 120, async () => {
+      const since = new Date(Date.now() - 30 * 86400_000);
+      const [byPlan, byStatus, recent, waMain] = await Promise.all([
+        Company.aggregate([{ $match: { deletedAt: null } }, { $group: { _id: "$plan", n: { $sum: 1 } } }]),
+        Company.aggregate([{ $match: { deletedAt: null } }, { $group: { _id: "$status", n: { $sum: 1 } } }]),
+        Company.find({ deletedAt: null }).sort({ createdAt: -1 }).limit(6).select("name code plan status createdAt").lean(),
+        WaLog.aggregate([{ $match: { createdAt: { $gte: since } } }, { $group: { _id: "$result", n: { $sum: 1 } } }]),
+      ]);
+      const per = await forEachCompanyDb(async (co) => {
+        const m = { companyId: co._id, createdAt: { $gte: since } };
+        const [leads30, total, won, trend, wa, ai] = await Promise.all([
+          Lead.countDocuments({ ...m, deletedAt: null }),
+          Lead.countDocuments({ companyId: co._id, deletedAt: null }),
+          Lead.countDocuments({ ...m, deletedAt: null, status: "Converted / Service Initiated" }),
+          Lead.aggregate([{ $match: { ...m, deletedAt: null } }, { $group: { _id: { $dateToString: { format: "%Y-%m-%d", date: "$createdAt", timezone: "Asia/Kolkata" } }, n: { $sum: 1 } } }]).catch(() => []),
+          WaLog.aggregate([{ $match: m }, { $group: { _id: "$result", n: { $sum: 1 } } }]).catch(() => []),
+          AiUsage.aggregate([{ $match: m }, { $group: { _id: null, credits: { $sum: "$credits" }, cost: { $sum: "$cost" }, billed: { $sum: "$billed" } } }]).catch(() => []),
+        ]);
+        return { leads30, total, won, trend, wa, ai: ai[0] };
+      });
+      const sumBy = (rows: any[]) => Object.entries(rows.reduce((a: any, r: any) => ((a[r._id] = (a[r._id] || 0) + r.n), a), {})).map(([_id, n]) => ({ _id, n }));
+      const trend = sumBy(per.flatMap((p) => p.value.trend)).sort((a: any, b: any) => (a._id < b._id ? -1 : 1));
+      const ai = per.reduce((a, p) => ({ credits: a.credits + (p.value.ai?.credits || 0), cost: a.cost + (p.value.ai?.cost || 0), billed: a.billed + (p.value.ai?.billed || 0) }), { credits: 0, cost: 0, billed: 0 });
+      const topCompanies = per
+        .map((p) => ({ _id: p.company._id, name: p.company.name, leads: p.value.leads30, won: p.value.won }))
+        .filter((x) => x.leads)
+        .sort((a, b) => b.leads - a.leads)
+        .slice(0, 5);
+      return {
+        byPlan,
+        byStatus,
+        leads30: per.reduce((a, p) => a + p.value.leads30, 0),
+        totalLeads: per.reduce((a, p) => a + p.value.total, 0),
+        wa: sumBy([...waMain, ...per.flatMap((p) => p.value.wa)]),
+        ai,
+        recent,
+        trend,
+        topCompanies,
+      };
+    })
+  );
+}));
+
+/** Move companies created before per-company databases into their own database (also happens automatically on first use). */
+r.post("/companies/migrate-databases", can("companies", "update"), h(async (_req, res) => {
+  res.locals.action = "Move to company databases";
+  res.json({ results: await migrateAll() });
 }));
 
 /* ───────────── Companies ───────────── */
@@ -141,8 +168,8 @@ r.get("/companies/:id", can("companies", "read"), h(async (req, res) => {
   const [owner, allocations, leadCount, connectors] = await Promise.all([
     User.findOne({ companyId: c._id, isOwner: true }).select("email name").lean<any>(),
     AiAllocation.find({ companyId: c._id }).lean(),
-    Lead.countDocuments({ companyId: c._id, deletedAt: null }),
-    Connector.countDocuments({ companyId: c._id }),
+    inCompanyDb(c._id, () => Lead.countDocuments({ companyId: c._id, deletedAt: null })),
+    inCompanyDb(c._id, () => Connector.countDocuments({ companyId: c._id })),
   ]);
   res.json({ ...c, ...tenantUrls(c), brandingPublic: publicBranding(c), loginEmail: owner?.email, allocations, leadCount, connectors });
 }));
@@ -155,9 +182,21 @@ r.post("/companies", can("companies", "create"), h(async (req, res) => {
   if (!(await Plan.exists({ name: b.plan }))) throw badRequest("Unknown plan");
   if (await User.exists({ email: loginEmail })) throw badRequest("Login email is already used by another account");
   await assertDomainFree(undefined, slug, customDomain);
+  // The company code becomes the company's own database; it must be valid and never reused (not even from a deleted company)
+  const dbName = dbNameFromCode(b.code.toUpperCase());
+  const bad = validateDbName(dbName);
+  if (bad) throw badRequest(bad);
+  if (await Company.exists({ $or: [{ code: dbName }, { dbName }] })) throw badRequest(`Company code ${dbName} is already used (or was used by a deleted company) — its database exists. Pick another code.`);
+  try {
+    await provisionDb(dbName);
+  } catch (e: any) {
+    throw new HttpError(500, `Could not create database "${dbName}": ${e?.message}. On MongoDB Atlas the database user needs "readWriteAnyDatabase", and free/shared clusters cap the number of databases.`);
+  }
   const company = await Company.create({
     ...b,
     code: b.code.toUpperCase(),
+    dbName,
+    dbReadyAt: new Date(),
     slug,
     customDomain,
     s3Folder: await uniqueFolder(b.name),
@@ -189,6 +228,7 @@ r.put("/companies/:id", can("companies", "update"), h(async (req, res) => {
   const oldDomain = c.customDomain;
   const newDomain = rest.customDomain === undefined ? oldDomain : rest.customDomain || undefined;
   await assertDomainFree(String(c._id), rest.slug, newDomain || undefined);
+  // the database name is fixed at creation; changing the code later only renames the label
   c.set({ ...rest, customDomain: newDomain, code: rest.code ? rest.code.toUpperCase() : c.code });
   if (branding) c.set("branding", { ...(c.toObject().branding || {}), ...branding, updatedAt: new Date() });
   if (newDomain !== oldDomain) c.set("domain", newDomain ? { verifyToken: newVerifyToken() } : {});
@@ -253,11 +293,14 @@ r.delete("/companies/:id", can("companies", "delete"), h(async (req, res) => {
 /** AI credit allocation for a company (Company → AI Agents). */
 r.put("/companies/:id/ai", can("companies", "update"), h(async (req, res) => {
   const b = parse(z.array(z.object({ agentId: z.string(), credits: z.coerce.number().min(0) })), req.body);
+  const co = await Company.findById(req.params.id).select("dbName code").lean<any>();
+  if (!co) throw notFound();
+  const dbName = co.dbName || dbNameFromCode(co.code);
   for (const a of b) {
     const now = new Date();
     await AiAllocation.updateOne(
       { companyId: req.params.id, agentId: a.agentId },
-      { $set: { credits: a.credits, allocated: true }, $setOnInsert: { used: 0, startDate: now, frequency: "monthly", renewalDate: nextRenewal(now, "monthly", now), allocatedBy: req.auth!.email } },
+      { $set: { credits: a.credits, allocated: true, dbName }, $setOnInsert: { used: 0, startDate: now, frequency: "monthly", renewalDate: nextRenewal(now, "monthly", now), allocatedBy: req.auth!.email } },
       { upsert: true }
     );
     // topped up → re-arm the one-time "credits exhausted" WhatsApp alert
@@ -318,6 +361,7 @@ const allocBody = z.object({
   startDate: z.coerce.date(),
   frequency: z.enum(FREQ_KEYS),
   credits: z.coerce.number().min(0).max(100_000_000).optional(), // per cycle; default = the model's credits
+  dbNames: z.record(z.string()).optional(), // companyId → database shown in the pop-up (must be the company's own)
 });
 
 r.get("/ai-allocations", can("ai_agents", "read"), h(async (req, res) => {
@@ -328,12 +372,12 @@ r.get("/ai-allocations", can("ai_agents", "read"), h(async (req, res) => {
   const { page, limit, skip } = paging(req.query);
   const [items, total] = await Promise.all([AiAllocation.find(q).sort({ createdAt: -1 }).skip(skip).limit(limit).lean<any[]>(), AiAllocation.countDocuments(q)]);
   const [cos, ags] = await Promise.all([
-    Company.find({ _id: { $in: items.map((x) => x.companyId) } }).select("name code").lean<any[]>(),
+    Company.find({ _id: { $in: items.map((x) => x.companyId) } }).select("name code dbName").lean<any[]>(),
     AiAgent.find({ _id: { $in: items.map((x) => x.agentId) } }).select("name llmVersion companyRate active").lean<any[]>(),
   ]);
   const byId = (arr: any[], id: any) => arr.find((x) => String(x._id) === String(id));
   res.json({
-    items: items.map((a) => ({ ...a, company: byId(cos, a.companyId), model: byId(ags, a.agentId), remaining: +((a.credits || 0) - (a.used || 0)).toFixed(3) })),
+    items: items.map((a) => ({ ...a, dbName: a.dbName || byId(cos, a.companyId)?.dbName || byId(cos, a.companyId)?.code, company: byId(cos, a.companyId), model: byId(ags, a.agentId), remaining: +((a.credits || 0) - (a.used || 0)).toFixed(3) })),
     page,
     limit,
     total,
@@ -343,10 +387,13 @@ r.get("/ai-allocations", can("ai_agents", "read"), h(async (req, res) => {
 r.post("/ai-allocations", can("ai_agents", "create"), h(async (req, res) => {
   const b = parse(allocBody, req.body);
   const [cos, ags] = await Promise.all([
-    Company.find({ _id: { $in: b.companyIds }, deletedAt: null }).select("_id").lean<any[]>(),
+    Company.find({ _id: { $in: b.companyIds }, deletedAt: null }).select("_id dbName dbReadyAt code").lean<any[]>(),
     AiAgent.find({ _id: { $in: b.agentIds }, active: true }).select("_id credits").lean<any[]>(),
   ]);
   if (!cos.length || !ags.length) throw badRequest("Pick at least one active company and one active model");
+  // each company's AI reads only that company's own database
+  const dbFor = new Map(cos.map((c) => [String(c._id), c.dbName || dbNameFromCode(c.code)]));
+  if (b.dbNames) for (const [cid, db] of Object.entries(b.dbNames)) if (dbFor.has(cid) && dbFor.get(cid) !== db) throw badRequest("An AI model can only read its own company's database");
   const now = new Date();
   const renewalDate = nextRenewal(b.startDate, b.frequency, now);
   const ops = cos.flatMap((c) =>
@@ -354,7 +401,7 @@ r.post("/ai-allocations", can("ai_agents", "create"), h(async (req, res) => {
       updateOne: {
         filter: { companyId: c._id, agentId: a._id },
         update: {
-          $set: { allocated: true, startDate: b.startDate, frequency: b.frequency, renewalDate, credits: b.credits ?? (Number(a.credits) || 0), allocatedBy: req.auth!.email, exhaustedNotifiedAt: null },
+          $set: { allocated: true, startDate: b.startDate, frequency: b.frequency, renewalDate, credits: b.credits ?? (Number(a.credits) || 0), allocatedBy: req.auth!.email, exhaustedNotifiedAt: null, dbName: dbFor.get(String(c._id)) },
           $setOnInsert: { used: 0 },
         },
         upsert: true,

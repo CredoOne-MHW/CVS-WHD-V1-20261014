@@ -46,7 +46,7 @@ export function BillingAlert({ belowBanner }: { belowBanner?: boolean }) {
         : `Subscription payment of ${inr(a.amount)} is due ${a.daysLeft <= 0 ? "today" : `in ${a.daysLeft} day${a.daysLeft === 1 ? "" : "s"}`} (${fmt(a.dueDate)}).`;
 
   return (
-    <div className={`pointer-events-none fixed inset-x-0 z-[70] flex justify-center px-3 ${belowBanner ? "top-14" : "top-3"}`} role={late ? "alert" : "status"}>
+    <div className={`pointer-events-none fixed inset-x-0 z-[45] flex justify-center px-3 ${belowBanner ? "top-14" : "top-3"}`} role={late ? "alert" : "status"}>
       <div
         className={`pointer-events-auto flex max-w-[680px] items-center gap-3 rounded-2xl px-4 py-2.5 text-sm font-semibold shadow-xl ring-1 ${
           late ? "animate-[billflash_1.6s_ease-in-out_infinite] bg-red-600 text-white ring-red-700" : "bg-amber-50 text-amber-900 ring-amber-200"

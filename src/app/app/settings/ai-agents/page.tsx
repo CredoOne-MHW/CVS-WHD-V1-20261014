@@ -2,6 +2,8 @@
 import { useEffect, useRef, useState } from "react";
 import { Plus, Pencil, Trash2, Upload, FileText, X, MessageSquare, Send, BarChart3 } from "lucide-react";
 import { ModelCharges, UsageModal } from "@/components/AiUsage";
+import { EndpointsTab } from "@/components/AiEndpoints";
+import { Tabs } from "@/components/Logs";
 import { toText } from "@shared/text";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { NO_EXTENSIONS } from "@/components/Assistant";
@@ -20,6 +22,8 @@ export default function CompanyAiAgents() {
   const [del, setDel] = useState<any>(null);
   const [chat, setChat] = useState<any>(null);
   const [usage, setUsage] = useState<any>(null);
+  const [tab, setTab] = useState<"models" | "endpoint">("models");
+  const [epOpen, setEpOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const perm = usePerm("ai_agents");
   const toast = useToast();
@@ -62,15 +66,20 @@ export default function CompanyAiAgents() {
     <>
       <PageHeader
         title="AI Agent"
-        subtitle="Build assistants on the AI models offered by your platform, grounded in your own price lists, FAQs and SOPs."
+        subtitle={tab === "models" ? "Build assistants on the AI models allocated to you, grounded in your own price lists, FAQs and SOPs." : "Let your website chatbot, WhatsApp bot or other systems ask your AI agent questions over HTTPS."}
         actions={
           perm.create && (
-            <Btn onClick={() => openForm()}>
+            <Btn onClick={() => (tab === "models" ? openForm() : setEpOpen(true))}>
               <Plus className="h-4 w-4" /> Create
             </Btn>
           )
         }
       />
+      <Tabs value={tab} onChange={setTab} tabs={[{ key: "models", label: "Models" }, { key: "endpoint", label: "Endpoint" }]} />
+      {tab === "endpoint" ? (
+        <EndpointsTab agents={list || []} models={models} perm={perm} open={epOpen} setOpen={setEpOpen} />
+      ) : (
+        <>
       {list && !models.length && (
         <div className="mb-5 rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
           <b>No AI models are offered yet.</b> You can create agents and upload knowledge files now; chat and the floating Assistant start working as soon as
@@ -151,6 +160,8 @@ export default function CompanyAiAgents() {
         {list && !list.length && <Empty title="No agents yet" hint={models.length ? "Create an agent — e.g. a package recommender that answers from your test price list." : "No AI models have been allocated to your company yet. Contact your administrator."} />}
       </div>
 
+        </>
+      )}
       <Modal
         open={!!form}
         onClose={() => setForm(null)}

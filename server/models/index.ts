@@ -1,4 +1,5 @@
-import { Schema, model, models, type Model } from "mongoose";
+import mongoose, { Schema, model, models, type Model } from "mongoose";
+import { currentDb } from "../lib/context";
 
 const { ObjectId, Mixed } = Schema.Types;
 const ts = { timestamps: true };
@@ -6,6 +7,45 @@ const ts = { timestamps: true };
 // Models are typed loosely on purpose: mongoose schema inference is very slow to typecheck.
 function m<T = any>(name: string, schema: Schema): Model<T> {
   return (models[name] as Model<T>) || (model(name, schema) as unknown as Model<T>);
+}
+
+/**
+ * Company-owned data lives in the company's own database (named after its company code).
+ * A tenant model resolves, on every call, to the database bound to the current request
+ * (see lib/context.ts) — or to the main database when none is bound. One connection pool serves all
+ * databases (useDb + useCache), so this adds no connections and no latency.
+ */
+export const TENANT_MODELS: { name: string; schema: Schema }[] = [];
+const tenantCache = new Map<string, Model<any>>();
+export function tenantModelFor<T = any>(name: string, db: string | null): Model<T> {
+  const base = m<T>(name, TENANT_MODELS.find((x) => x.name === name)!.schema);
+  if (!db) return base;
+  const k = `${db}\u0000${name}`;
+  let M = tenantCache.get(k);
+  if (!M) {
+    const conn = mongoose.connection.useDb(db, { useCache: true });
+    // indexes are created once when the database is provisioned — not on every cold start
+    if ((conn as any).get?.("autoIndex") !== false) (conn as any).set?.("autoIndex", false);
+    M = (conn.models[name] as Model<any>) || conn.model(name, base.schema);
+    tenantCache.set(k, M);
+  }
+  return M as Model<T>;
+}
+function tm<T = any>(name: string, schema: Schema): Model<T> {
+  TENANT_MODELS.push({ name, schema });
+  m(name, schema); // main-database model (Super Admin records + legacy data)
+  const resolve = () => tenantModelFor<T>(name, currentDb());
+  return new Proxy(function () {} as any, {
+    get(_t, prop) {
+      const M: any = resolve();
+      const v = M[prop];
+      return typeof v === "function" ? v.bind(M) : v;
+    },
+    construct(_t, args) {
+      const M: any = resolve();
+      return new M(...args);
+    },
+  }) as Model<T>;
 }
 
 /* ───────────────────────── Identity ───────────────────────── */
@@ -48,6 +88,8 @@ const CompanySchema = new Schema(
     slug: { type: String, lowercase: true, trim: true, unique: true, sparse: true }, // "short name"
     customDomain: { type: String, lowercase: true, trim: true, unique: true, sparse: true },
     s3Folder: String, // "<Company-Name>" — fixed at creation; logo/, banner/, brain/ live under it
+    dbName: String, // the company's own MongoDB database (= company code at creation; never changes)
+    dbReadyAt: Date, // set once the database exists and the company's data lives there
     branding: {
       shortName: String, // display short name, e.g. "Wellness Hive"
       tagline: String, // e.g. "Diagnostic Centre · Polyclinic · Elder Care"
@@ -107,7 +149,7 @@ const RoleSchema = new Schema(
   },
   ts
 );
-export const Role = m<any>("Role", RoleSchema);
+export const Role = tm<any>("Role", RoleSchema);
 
 /* ───────────────────────── Leads ───────────────────────── */
 
@@ -164,7 +206,7 @@ const LeadSchema = new Schema(
 LeadSchema.index({ companyId: 1, createdAt: -1 });
 LeadSchema.index({ companyId: 1, status: 1, updatedAt: -1 });
 LeadSchema.index({ name: "text", email: "text", phone: "text", whatsapp: "text", comments: "text" });
-export const Lead = m<any>("Lead", LeadSchema);
+export const Lead = tm<any>("Lead", LeadSchema);
 
 /* ───────────────────────── Integrations ───────────────────────── */
 
@@ -180,12 +222,16 @@ const ConnectorSchema = new Schema(
     defaultCampaign: String,
     defaultMedium: String,
     fieldMap: { type: Mixed, default: {} }, // { name: "full_name", phone: "data.mobile" }
+    config: { type: Mixed, default: {} }, // non-secret settings (Google Search keywords, MCP server URL / tool …)
+    configSecretEnc: String, // encrypted JSON of secrets (search API key, MCP bearer token …)
+    lastRunAt: Date, // pull connectors (Google Search, MCP): last scheduled / manual run
+    lastRun: Mixed, // { ok, found, created, duplicates, error }
     active: { type: Boolean, default: true },
     stats: { received: { type: Number, default: 0 }, created: { type: Number, default: 0 }, duplicates: { type: Number, default: 0 }, failed: { type: Number, default: 0 }, lastAt: Date },
   },
   ts
 );
-export const Connector = m<any>("Connector", ConnectorSchema);
+export const Connector = tm<any>("Connector", ConnectorSchema);
 
 /** Every inbound delivery. Unique (connectorId, idemKey) gives idempotency; failed rows are retried by cron. */
 const IntakeEventSchema = new Schema(
@@ -204,7 +250,7 @@ const IntakeEventSchema = new Schema(
 );
 IntakeEventSchema.index({ connectorId: 1, idemKey: 1 }, { unique: true });
 IntakeEventSchema.index({ createdAt: 1 }, { expireAfterSeconds: 60 * 60 * 24 * 90 });
-export const IntakeEvent = m<any>("IntakeEvent", IntakeEventSchema);
+export const IntakeEvent = tm<any>("IntakeEvent", IntakeEventSchema);
 
 /* ───────────────────────── WhatsApp ───────────────────────── */
 
@@ -227,7 +273,7 @@ const WebhookSchema = new Schema(
   },
   ts
 );
-export const Webhook = m<any>("Webhook", WebhookSchema);
+export const Webhook = tm<any>("Webhook", WebhookSchema);
 
 const EventTypeSchema = new Schema(
   {
@@ -239,7 +285,7 @@ const EventTypeSchema = new Schema(
   ts
 );
 EventTypeSchema.index({ companyId: 1, key: 1 }, { unique: true });
-export const EventType = m<any>("EventType", EventTypeSchema);
+export const EventType = tm<any>("EventType", EventTypeSchema);
 
 const WaLogSchema = new Schema(
   {
@@ -262,7 +308,7 @@ const WaLogSchema = new Schema(
   { timestamps: { createdAt: true, updatedAt: false } }
 );
 WaLogSchema.index({ scope: 1, companyId: 1, createdAt: -1 });
-export const WaLog = m<any>("WaLog", WaLogSchema);
+export const WaLog = tm<any>("WaLog", WaLogSchema);
 
 const OtpSchema = new Schema({
   userId: ObjectId,
@@ -272,7 +318,7 @@ const OtpSchema = new Schema({
   attempts: { type: Number, default: 0 },
   expiresAt: { type: Date, index: { expires: 0 } },
 });
-export const Otp = m<any>("Otp", OtpSchema);
+export const Otp = tm<any>("Otp", OtpSchema);
 
 /* ───────────────────────── Activity ───────────────────────── */
 
@@ -295,7 +341,7 @@ const ActivityLogSchema = new Schema(
 );
 ActivityLogSchema.index({ scope: 1, companyId: 1, createdAt: -1 });
 ActivityLogSchema.index({ createdAt: 1 }, { expireAfterSeconds: 60 * 60 * 24 * 365 });
-export const ActivityLog = m<any>("ActivityLog", ActivityLogSchema);
+export const ActivityLog = tm<any>("ActivityLog", ActivityLogSchema);
 
 /* ───────────────────────── AI ───────────────────────── */
 
@@ -347,6 +393,7 @@ const AiAllocationSchema = new Schema(
     renewalDate: Date, // credits reset to `credits` and `used` → 0 on this date, then it moves one period on
     lastRenewedAt: Date,
     allocatedBy: String,
+    dbName: String, // the only database the AI agent may read for this company (always the company's own)
   },
   ts
 );
@@ -372,7 +419,7 @@ const CompanyAgentSchema = new Schema(
   },
   ts
 );
-export const CompanyAgent = m<any>("CompanyAgent", CompanyAgentSchema);
+export const CompanyAgent = tm<any>("CompanyAgent", CompanyAgentSchema);
 
 const AiUsageSchema = new Schema(
   {
@@ -392,7 +439,7 @@ const AiUsageSchema = new Schema(
 );
 AiUsageSchema.index({ companyId: 1, createdAt: -1 }); // usage history + per-cycle AI billing
 AiUsageSchema.index({ companyAgentId: 1, createdAt: -1 });
-export const AiUsage = m<any>("AiUsage", AiUsageSchema);
+export const AiUsage = tm<any>("AiUsage", AiUsageSchema);
 
 /* ───────────────────────── Subscriptions (Super Admin › Settings › Subscription Management) ───────────────────────── */
 
@@ -459,3 +506,73 @@ SubscriptionCycleSchema.index({ subscriptionId: 1, periodStart: 1 }, { unique: t
 SubscriptionCycleSchema.index({ companyId: 1, periodStart: -1 });
 SubscriptionCycleSchema.index({ status: 1, periodEnd: 1 });
 export const SubscriptionCycle = m<any>("SubscriptionCycle", SubscriptionCycleSchema);
+
+/* ───────────────────────── Platform registries (main database) ───────────────────────── */
+
+/** Public connector key → company database (intake URLs carry only the key). */
+const ConnectorKeySchema = new Schema(
+  {
+    key: { type: String, required: true, unique: true },
+    companyId: { type: ObjectId, required: true, index: true },
+    db: { type: String, required: true },
+    type: String,
+    active: { type: Boolean, default: true },
+  },
+  ts
+);
+ConnectorKeySchema.index({ type: 1, active: 1 });
+export const ConnectorKey = m<any>("ConnectorKey", ConnectorKeySchema);
+
+/** AI endpoint API key (sha256) → company database + endpoint. The plain key is shown once. */
+const EndpointKeySchema = new Schema(
+  {
+    keyHash: { type: String, required: true, unique: true },
+    companyId: { type: ObjectId, required: true, index: true },
+    db: { type: String, required: true },
+    endpointId: { type: ObjectId, required: true, index: true },
+  },
+  ts
+);
+export const EndpointKey = m<any>("EndpointKey", EndpointKeySchema);
+
+/* ───────────────────────── AI endpoints (company database) ───────────────────────── */
+
+/** Company Admin › AI Agent › Endpoint: an HTTPS endpoint external systems call with a user question. */
+const AiEndpointSchema = new Schema(
+  {
+    companyId: { type: ObjectId, required: true, index: true },
+    name: { type: String, required: true },
+    mode: { type: String, enum: ["agent", "model"], default: "agent" }, // reuse an AI Agent, or a model + instructions
+    companyAgentId: { type: ObjectId, default: null },
+    agentId: { type: ObjectId, default: null }, // platform model (mode = model)
+    instructions: String,
+    dataAccess: { type: String, enum: ["none", "aggregate", "full"], default: "aggregate" }, // read-only access to the company database
+    keyPrefix: String, // first characters of the key, for display
+    allowedOrigins: { type: [String], default: [] }, // browser CORS allow-list ([] = server-to-server only)
+    rateLimitPerMin: { type: Number, default: 60 },
+    active: { type: Boolean, default: true },
+    stats: { calls: { type: Number, default: 0 }, credits: { type: Number, default: 0 }, lastAt: Date },
+  },
+  ts
+);
+export const AiEndpoint = tm<any>("AiEndpoint", AiEndpointSchema);
+
+/** Google Search connector: every public result found for the keywords (deduped by URL). Results with a phone/email become leads. */
+const ProspectSchema = new Schema(
+  {
+    companyId: { type: ObjectId, required: true, index: true },
+    connectorId: { type: ObjectId, required: true },
+    keyword: String,
+    title: String,
+    url: { type: String, required: true },
+    snippet: String,
+    phones: { type: [String], default: [] },
+    emails: { type: [String], default: [] },
+    leadId: { type: ObjectId, default: null },
+    status: { type: String, enum: ["new", "lead", "dismissed"], default: "new" },
+  },
+  ts
+);
+ProspectSchema.index({ connectorId: 1, url: 1 }, { unique: true });
+ProspectSchema.index({ companyId: 1, createdAt: -1 });
+export const Prospect = tm<any>("Prospect", ProspectSchema);

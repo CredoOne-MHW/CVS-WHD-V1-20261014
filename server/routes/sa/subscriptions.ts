@@ -6,6 +6,7 @@ import { can } from "../../middleware/auth";
 import { h, parse, notFound, badRequest, paging, escapeRegex } from "../../lib/http";
 import { cached, invalidate } from "../../lib/cache";
 import { FREQ_KEYS, freqLabel, discountOf, DAY, EXPIRE_AFTER_DAYS } from "../../../shared/billing";
+import { inCompanyDb } from "../../lib/tenantdb";
 import { ensureCycles, enrichCycles, notifyCycle, refreshIfStale, refreshStatuses, aiAmountFor } from "../../lib/billing";
 
 /** Super Admin › Settings › Subscription Management. Every route needs the `subscriptions` permission. */
@@ -19,7 +20,7 @@ r.get("/meta", can("subscriptions", "read"), h(async (_req, res) => {
     await cached("billing:meta", 60, async () => {
       const [plans, companies, webhooks] = await Promise.all([
         Plan.find().select("name").sort({ name: 1 }).lean<any[]>(),
-        Company.find({ deletedAt: null }).select("name code plan").sort({ name: 1 }).lean<any[]>(),
+        Company.find({ deletedAt: null }).select("name code plan dbName").sort({ name: 1 }).lean<any[]>(),
         Webhook.find({ scope: "super", active: true }).select("name event").sort({ name: 1 }).lean<any[]>(),
       ]);
       return { plans: plans.map((p) => p.name), companies, webhooks };
@@ -229,8 +230,8 @@ r.get("/cycles/:id/usage", can("subscriptions", "read"), h(async (req, res) => {
   const end = new Date(Math.min(Date.now(), new Date(cy.periodEnd).getTime()));
   const match = { companyId: new Types.ObjectId(String(cy.companyId)), createdAt: { $gte: new Date(cy.periodStart), $lt: end } };
   const [byModel, daily, allocs, company] = await Promise.all([
-    AiUsage.aggregate([{ $match: match }, { $group: { _id: "$agentId", calls: { $sum: 1 }, credits: { $sum: "$credits" }, billed: { $sum: "$billed" }, inTok: { $sum: "$inputTokens" }, outTok: { $sum: "$outputTokens" } } }, { $sort: { billed: -1 } }]),
-    AiUsage.aggregate([{ $match: match }, { $group: { _id: { $dateToString: { format: "%Y-%m-%d", date: "$createdAt", timezone: "Asia/Kolkata" } }, billed: { $sum: "$billed" }, credits: { $sum: "$credits" } } }, { $sort: { _id: 1 } }]).catch(() => []), // chart is optional
+    inCompanyDb(cy.companyId, () => AiUsage.aggregate([{ $match: match }, { $group: { _id: "$agentId", calls: { $sum: 1 }, credits: { $sum: "$credits" }, billed: { $sum: "$billed" }, inTok: { $sum: "$inputTokens" }, outTok: { $sum: "$outputTokens" } } }, { $sort: { billed: -1 } }])),
+    inCompanyDb(cy.companyId, () => AiUsage.aggregate([{ $match: match }, { $group: { _id: { $dateToString: { format: "%Y-%m-%d", date: "$createdAt", timezone: "Asia/Kolkata" } }, billed: { $sum: "$billed" }, credits: { $sum: "$credits" } } }, { $sort: { _id: 1 } }]).catch(() => [])), // chart is optional
     AiAllocation.find({ companyId: cy.companyId, allocated: { $ne: false } }).lean<any[]>(),
     Company.findById(cy.companyId).select("name code").lean<any>(),
   ]);

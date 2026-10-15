@@ -1,3 +1,5 @@
+import { runInDb, runInMain } from "./context";
+import { dbOf, forEachCompanyDb } from "./tenantdb";
 import mongoose from "mongoose";
 import * as XLSX from "xlsx";
 import { z } from "zod";
@@ -232,6 +234,11 @@ export async function runReport(a: AuthCtx, raw: unknown, opts: { maxRows?: numb
   const pipeline: any[] = [{ $match: match }];
   const max = Math.min(spec.limit || 500, opts.maxRows || 5000);
   let columns: { key: string; label: string; type: FType }[];
+  // kept for merging results across company databases
+  let groupKeys: string[] = [];
+  const metricOps: { key: string; op: string }[] = [];
+  let sortKey = "";
+  let sortDir: 1 | -1 = -1;
 
   if (spec.groupBy?.length || spec.metrics?.length) {
     // ── grouped
@@ -259,39 +266,59 @@ export async function runReport(a: AuthCtx, raw: unknown, opts: { maxRows?: numb
     for (const m of metrics) {
       if (m.op === "count") {
         acc.count = { $sum: 1 };
+        metricOps.push({ key: "count", op: "count" });
         columns.push({ key: "count", label: "Count", type: "number" });
       } else {
         const f = field(m.field || "");
         if (f.type !== "number") throw new HttpError(400, `${m.op} needs a number field`);
         const key = `${m.op}_${f.key}`;
         acc[key] = { [`$${m.op}`]: `$${f.key}` };
+        metricOps.push({ key, op: m.op });
         columns.push({ key, label: `${m.op.toUpperCase()} ${f.label}`, type: "number" });
       }
     }
+    acc._n = { $sum: 1 }; // rows per group — lets averages be merged across databases
     pipeline.push({ $group: { _id: groupId, ...acc } });
     const proj: any = { _id: 0 };
     for (const k of Object.keys(groupId)) proj[k] = `$_id.${k}`;
     for (const k of Object.keys(acc)) proj[k] = 1;
     pipeline.push({ $project: proj });
-    const sortKey = spec.sort?.field && columns.some((c) => c.key === spec.sort!.field) ? spec.sort.field : Object.keys(groupId).find((k) => k.includes("_")) || "count";
-    pipeline.push({ $sort: { [sortKey]: spec.sort?.dir === "asc" || (!spec.sort && sortKey.includes("_")) ? 1 : -1 } });
+    groupKeys = Object.keys(groupId);
+    sortKey = spec.sort?.field && columns.some((c) => c.key === spec.sort!.field) ? spec.sort.field : Object.keys(groupId).find((k) => k.includes("_")) || "count";
+    sortDir = spec.sort?.dir === "asc" || (!spec.sort && sortKey.includes("_")) ? 1 : -1;
+    pipeline.push({ $sort: { [sortKey]: sortDir } });
     pipeline.push({ $limit: max });
   } else {
     // ── row listing
     const cols = (spec.columns?.length ? spec.columns : ds.fields.slice(0, 8).map((f) => f.key)).filter((k) => (k === "company" ? allowCompany : true));
     columns = cols.map((k) => (k === "company" ? { key: "company", label: "Company", type: "string" as FType } : (({ key, label, type }) => ({ key, label, type }))(field(k))));
-    const s = spec.sort && fieldMap.has(spec.sort.field) ? { [spec.sort.field]: spec.sort.dir === "asc" ? 1 : -1 } : { [ds.dateField]: -1 };
+    const s: any = spec.sort && fieldMap.has(spec.sort.field) ? { [spec.sort.field]: spec.sort.dir === "asc" ? 1 : -1 } : { [ds.dateField]: -1 };
+    [sortKey, sortDir] = Object.entries(s)[0] as any;
     pipeline.push({ $sort: s }, { $limit: max });
     const proj: any = { _id: 0 };
     for (const c of cols) proj[c === "company" ? "companyId" : c] = 1;
     pipeline.push({ $project: proj });
   }
 
-  const rows: any[] = await ds.model.aggregate(pipeline).option({ maxTimeMS: 20_000, allowDiskUse: false });
+  const agg = (pl: any[]) => ds.model.aggregate(pl).option({ maxTimeMS: 20_000, allowDiskUse: false });
+  let rows: any[];
+  if (a.scope === "super" && ds.key !== "companies") {
+    // company data lives in each company's own database
+    if (match.companyId) rows = await runInDb(await dbOf(match.companyId), () => agg(pipeline));
+    else {
+      const per = await forEachCompanyDb(() => agg(pipeline), { concurrency: 6 });
+      let all = per.flatMap((p) => p.value);
+      if (ds.key === "wa_logs" || ds.key === "activity") all = all.concat(await runInMain(() => agg(pipeline))); // Super Admin's own logs
+      rows = groupKeys.length ? mergeGroups(all, groupKeys, metricOps) : all;
+      rows.sort((x, y) => (x[sortKey] > y[sortKey] ? sortDir : x[sortKey] < y[sortKey] ? -sortDir : 0));
+      rows = rows.slice(0, max);
+    }
+  } else rows = await agg(pipeline);
+  for (const r of rows) delete r._n;
 
   // company names for Super Admin reports
   if (allowCompany && columns.some((c) => c.key === "company")) {
-    const ids = [...new Set(rows.map((r) => String(r.company ?? r.companyId)).filter(Boolean))];
+    const ids = [...new Set(rows.map((r) => String(r.company ?? r.companyId)).filter((x) => mongoose.isValidObjectId(x)))];
     const cs = await Company.find({ _id: { $in: ids } }).select("name").lean<any[]>();
     const names = Object.fromEntries(cs.map((c) => [String(c._id), c.name]));
     for (const r of rows) {
@@ -300,6 +327,28 @@ export async function runReport(a: AuthCtx, raw: unknown, opts: { maxRows?: numb
     }
   }
   return { title: spec.title || ds.label, dataset: ds.key, columns, rows, truncated: rows.length >= max, spec };
+}
+
+/** Combine grouped rows coming from several databases (count/sum add up, min/max compare, avg is weighted by rows). */
+export function mergeGroups(rows: any[], keys: string[], metrics: { key: string; op: string }[]) {
+  const out = new Map<string, any>();
+  for (const r of rows) {
+    const k = JSON.stringify(keys.map((x) => (r[x] instanceof Date ? r[x].toISOString() : r[x])));
+    const cur = out.get(k);
+    if (!cur) {
+      out.set(k, { ...r });
+      continue;
+    }
+    for (const m of metrics) {
+      const a = cur[m.key], b = r[m.key];
+      if (m.op === "count" || m.op === "sum") cur[m.key] = (a || 0) + (b || 0);
+      else if (m.op === "min") cur[m.key] = a == null ? b : b == null ? a : Math.min(a, b);
+      else if (m.op === "max") cur[m.key] = a == null ? b : b == null ? a : Math.max(a, b);
+      else if (m.op === "avg") cur[m.key] = ((a || 0) * (cur._n || 0) + (b || 0) * (r._n || 0)) / Math.max(1, (cur._n || 0) + (r._n || 0));
+    }
+    cur._n = (cur._n || 0) + (r._n || 0);
+  }
+  return [...out.values()];
 }
 
 /** Excel / CSV of a report (same spec, up to 50k rows). */

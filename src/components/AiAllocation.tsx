@@ -1,6 +1,6 @@
 "use client";
 import { useEffect, useMemo, useState } from "react";
-import { Pencil, Trash2, CalendarClock, RefreshCw } from "lucide-react";
+import { Pencil, Trash2, CalendarClock, RefreshCw, Database, Lock } from "lucide-react";
 import { api, qs } from "@/lib/api";
 import { Modal, Field, Btn, Badge, Empty, Spinner, Pager, Confirm, useToast } from "./ui";
 import { SearchSelect } from "./Select";
@@ -40,7 +40,7 @@ export function AllocationTab({ models, open, setOpen, perm }: { models: any[]; 
         <table className="w-full min-w-[980px]">
           <thead>
             <tr>
-              {["Company", "Model", "Credits / cycle", "Used", "Left", "Start date", "Renewal", "Renewal date", ""].map((h) => (
+              {["Company", "Model", "Database", "Credits / cycle", "Used", "Left", "Start date", "Renewal", "Renewal date", ""].map((h) => (
                 <th key={h} className="th">
                   {h}
                 </th>
@@ -57,6 +57,11 @@ export function AllocationTab({ models, open, setOpen, perm }: { models: any[]; 
                   </td>
                   <td className="td">
                     {a.model?.name || "Removed"} <span className="mono block text-xs text-ink-400">{a.model?.llmVersion}</span>
+                  </td>
+                  <td className="td">
+                    <span className="mono inline-flex items-center gap-1 rounded-lg bg-ink-400/10 px-2 py-0.5 text-xs font-semibold">
+                      <Database className="h-3 w-3" /> {a.dbName || "—"}
+                    </span>
                   </td>
                   <td className="td tabular-nums">{Number(a.credits).toLocaleString("en-IN")}</td>
                   <td className="td tabular-nums">{Number(a.used).toFixed(2)}</td>
@@ -105,7 +110,7 @@ export function AllocationTab({ models, open, setOpen, perm }: { models: any[]; 
         )}
       </div>
 
-      <AllocateModal open={open} onClose={() => setOpen(false)} coOpts={coOpts} modelOpts={modelOpts} models={models} onDone={() => (setPage(1), load())} />
+      <AllocateModal open={open} onClose={() => setOpen(false)} coOpts={coOpts} modelOpts={modelOpts} models={models} companies={companies} onDone={() => (setPage(1), load())} />
 
       <Modal
         open={!!edit}
@@ -177,7 +182,7 @@ export function AllocationTab({ models, open, setOpen, perm }: { models: any[]; 
   );
 }
 
-function AllocateModal({ open, onClose, coOpts, modelOpts, models, onDone }: { open: boolean; onClose: () => void; coOpts: any[]; modelOpts: any[]; models: any[]; onDone: () => void }) {
+function AllocateModal({ open, onClose, coOpts, modelOpts, models, companies, onDone }: { open: boolean; onClose: () => void; coOpts: any[]; modelOpts: any[]; models: any[]; companies: any[]; onDone: () => void }) {
   const blank = { companyIds: [] as string[], agentIds: [] as string[], startDate: today(), frequency: "monthly", credits: "" };
   const [f, setF] = useState(blank);
   const [busy, setBusy] = useState(false);
@@ -186,12 +191,17 @@ function AllocateModal({ open, onClose, coOpts, modelOpts, models, onDone }: { o
     if (open) setF(blank);
   }, [open]);
   const renewal = f.startDate ? nextRenewal(f.startDate, f.frequency) : null;
+  const dbOf = (id: string) => {
+    const c = companies.find((x) => x._id === id);
+    return c?.dbName || c?.code || "";
+  };
   const defaults = models.filter((m) => f.agentIds.includes(m._id));
 
   async function save() {
     setBusy(true);
     try {
-      const r = await api("/sa/ai-allocations", { body: { ...f, credits: f.credits === "" ? undefined : Number(f.credits) } });
+      const dbNames = Object.fromEntries(f.companyIds.map((id) => [id, dbOf(id)]));
+      const r = await api("/sa/ai-allocations", { body: { ...f, dbNames, credits: f.credits === "" ? undefined : Number(f.credits) } });
       toast("ok", `Allocated · ${r.allocated} pairing(s)`);
       onClose();
       onDone();
@@ -223,6 +233,25 @@ function AllocateModal({ open, onClose, coOpts, modelOpts, models, onDone }: { o
         <Field label="Company" required className="sm:col-span-2">
           <SearchSelect multiple options={coOpts} value={f.companyIds} onChange={(v) => setF({ ...f, companyIds: v })} placeholder="Search and select companies…" />
         </Field>
+        {f.companyIds.length > 0 && (
+          <div className="sm:col-span-2">
+            <p className="label flex items-center gap-1.5">
+              Database the AI will read <Lock className="h-3 w-3 text-ink-400" />
+            </p>
+            <div className="divide-y divide-ink-400/10 rounded-xl border border-ink-400/15">
+              {f.companyIds.slice(0, 8).map((id) => (
+                <div key={id} className="flex items-center justify-between gap-3 px-3 py-2 text-sm">
+                  <span className="truncate">{coOpts.find((o) => o.value === id)?.label}</span>
+                  <span className="mono inline-flex shrink-0 items-center gap-1 rounded-lg bg-hive-50 px-2 py-0.5 text-xs font-semibold text-hive-800">
+                    <Database className="h-3 w-3" /> {dbOf(id)}
+                  </span>
+                </div>
+              ))}
+              {f.companyIds.length > 8 && <p className="px-3 py-2 text-xs text-ink-400">+ {f.companyIds.length - 8} more — each reads only its own database</p>}
+            </div>
+            <p className="mt-1 text-xs text-ink-500">Each company’s AI agent learns from and answers from its own database only. It is fixed for safety and can’t point at another company.</p>
+          </div>
+        )}
         <Field label="Models" required className="sm:col-span-2">
           <SearchSelect multiple options={modelOpts} value={f.agentIds} onChange={(v) => setF({ ...f, agentIds: v })} placeholder="Search and select models…" />
         </Field>
