@@ -139,3 +139,12 @@ body {
     animation: none;
   }
 }
+
+/* Subscription over-due flash (top-middle alert in the company console) */
+@keyframes billflash {
+  0%, 100% { box-shadow: 0 10px 30px -8px rgba(220, 38, 38, .55); transform: translateY(0); }
+  50% { box-shadow: 0 10px 40px -4px rgba(220, 38, 38, .9); transform: translateY(1px); }
+}
+@media (prefers-reduced-motion: reduce) {
+  [class*="billflash"] { animation: none !important; }
+}

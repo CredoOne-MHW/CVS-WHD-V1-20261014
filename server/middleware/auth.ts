@@ -74,6 +74,8 @@ export async function companyPerms(planName: string, roleId?: any): Promise<Perm
   const plan = await cached(`auth:plan:${planName}`, 120, () => Plan.findOne({ name: planName }).lean<any>());
   const base: PermMap = {};
   for (const m of COMPANY_MODULES) base[m.key] = plan?.permissions?.[m.key] ?? noPerm();
+  // Billing is read-only for companies and always visible, whatever the plan grid says (roles can still hide it).
+  base.subscription = { create: false, read: true, update: false, delete: false };
   if (!roleId) return base;
   const role = await cached(`auth:role:${roleId}`, 120, () => Role.findById(roleId).lean<any>());
   return role ? andPerms(base, role.permissions || {}) : base;

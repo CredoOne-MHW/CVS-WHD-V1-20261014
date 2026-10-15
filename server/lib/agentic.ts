@@ -1,4 +1,4 @@
-import { AiAgent, CompanyAgent } from "../models";
+import { AiAgent, AiAllocation, CompanyAgent } from "../models";
 import { toText } from "../../shared/text";
 import { complete, knowledge, agentSystem, parseJson, type Msg } from "./ai";
 import { runReport, schemaForPrompt, specSchema } from "./reports";
@@ -102,6 +102,6 @@ Prefer one well-aimed query. Never invent numbers.`
 
 export async function assistantInfo(companyId: string) {
   const ca = await CompanyAgent.findOne({ companyId, active: true, isAssistant: true }).select("name purpose agentId").lean<any>();
-  const model = ca?.agentId ? await AiAgent.exists({ _id: ca.agentId, active: true }) : null;
+  const model = ca?.agentId && (await AiAgent.exists({ _id: ca.agentId, active: true })) ? await AiAllocation.exists({ companyId, agentId: ca.agentId, allocated: { $ne: false } }) : null;
   return ca ? { enabled: true, ready: !!model, name: ca.name, purpose: ca.purpose } : { enabled: false, ready: false };
 }

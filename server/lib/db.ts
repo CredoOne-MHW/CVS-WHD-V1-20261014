@@ -1,6 +1,6 @@
 import mongoose from "mongoose";
 import bcrypt from "bcryptjs";
-import { User, Plan, AiProvider } from "../models";
+import { User, Plan, AiProvider, AiAllocation } from "../models";
 import { invalidate } from "./cache";
 import { COMPANY_MODULES, PLAN_TIERS, fullPerm, noPerm, type PermMap } from "../../shared/constants";
 
@@ -103,6 +103,20 @@ async function bootstrap() {
     changed = true;
   }
   if (changed) await invalidate("auth:").catch(() => undefined);
+
+  // One-time (v3): AI allocations get a cycle (start / monthly renewal) so the Allocation tab can manage them;
+  // the new read-only "Subscription" module is ticked on every plan.
+  if (!(await meta.findOne({ _id: "alloc_v3" }))) {
+    const { nextRenewal } = await import("../../shared/billing");
+    const now = new Date();
+    for (const a of await AiAllocation.find({ startDate: null }).select("createdAt").lean<any[]>()) {
+      const start = a.createdAt || now;
+      await AiAllocation.updateOne({ _id: a._id }, { $set: { allocated: true, startDate: start, frequency: "monthly", renewalDate: nextRenewal(start, "monthly", now) } });
+    }
+    await Plan.updateMany({}, { $set: { "permissions.subscription": { create: false, read: true, update: false, delete: false } } });
+    await meta.updateOne({ _id: "alloc_v3" }, { $set: { at: now } }, { upsert: true });
+    await invalidate("auth:").catch(() => undefined);
+  }
 
   // One-time (v2): move existing logos/banners/knowledge files into <Company Name>/logo · /banner · /brain.
   // Runs in the background so the first request isn't delayed; idempotent if an instance stops midway.
