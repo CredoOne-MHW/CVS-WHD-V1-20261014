@@ -226,6 +226,7 @@ const ConnectorSchema = new Schema(
     configSecretEnc: String, // encrypted JSON of secrets (search API key, MCP bearer token …)
     lastRunAt: Date, // pull connectors (Google Search, MCP): last scheduled / manual run
     lastRun: Mixed, // { ok, found, created, duplicates, error }
+    pullCursor: Date, // IndiaMART / TradeIndia: end of the last successfully pulled window
     active: { type: Boolean, default: true },
     stats: { received: { type: Number, default: 0 }, created: { type: Number, default: 0 }, duplicates: { type: Number, default: 0 }, failed: { type: Number, default: 0 }, lastAt: Date },
   },
@@ -556,23 +557,3 @@ const AiEndpointSchema = new Schema(
   ts
 );
 export const AiEndpoint = tm<any>("AiEndpoint", AiEndpointSchema);
-
-/** Google Search connector: every public result found for the keywords (deduped by URL). Results with a phone/email become leads. */
-const ProspectSchema = new Schema(
-  {
-    companyId: { type: ObjectId, required: true, index: true },
-    connectorId: { type: ObjectId, required: true },
-    keyword: String,
-    title: String,
-    url: { type: String, required: true },
-    snippet: String,
-    phones: { type: [String], default: [] },
-    emails: { type: [String], default: [] },
-    leadId: { type: ObjectId, default: null },
-    status: { type: String, enum: ["new", "lead", "dismissed"], default: "new" },
-  },
-  ts
-);
-ProspectSchema.index({ connectorId: 1, url: 1 }, { unique: true });
-ProspectSchema.index({ companyId: 1, createdAt: -1 });
-export const Prospect = tm<any>("Prospect", ProspectSchema);
