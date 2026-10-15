@@ -279,7 +279,10 @@ export default function CompanyAiAgents() {
 function ChatTester({ state, setState, onUsage, credits }: { state: any; setState: (s: any) => void; onUsage: () => void; credits: any }) {
   const end = useRef<HTMLDivElement>(null);
   const toast = useToast();
-  useEffect(() => end.current?.scrollIntoView({ behavior: "smooth" }), [state?.messages?.length]);
+  // Block body on purpose: newer Chrome returns a Promise from scrollIntoView, and React would call it as the cleanup.
+  useEffect(() => {
+    end.current?.scrollIntoView({ behavior: "smooth", block: "end" });
+  }, [state?.messages?.length]);
   if (!state) return null;
   async function send() {
     const messages = [...state.messages, { role: "user", content: state.input }];
