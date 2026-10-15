@@ -251,3 +251,10 @@ Verified end-to-end (production build, real CSP, FerretDB as Mongo, a mock OpenR
 - **Stale deployments**: a tab left open across a deploy that fails to load code ("ChunkLoadError") reloads itself once.
 - **CSRF check** compares Origin by hostname (port-safe).
 - **Browser extensions**: chat inputs opt out of Grammarly/Editor/password-manager overlays; chat areas are `translate="no"`; a small DOM guard in the root layout tolerates nodes moved by extensions.
+
+### 10.5 Root cause of the AI chat crash ("n is not a function")
+Newer Chrome (154+) returns a **Promise** from `Element.scrollIntoView()`. The Test chat and the floating assistant auto-scrolled with
+`useEffect(() => end.current?.scrollIntoView(...))` — an expression body, so the effect *returned* that Promise and React later called it as the
+cleanup function → `TypeError: n is not a function` inside react-dom on the next message. Reproduced exactly (same chunk/offset) by giving the
+test browser Chrome-154 scroll behaviour; fixed by using block-bodied effects everywhere (5 places). `npm run build` now runs
+`scripts/check-effects.mjs` first and fails if any `useEffect`/`useLayoutEffect` uses an expression body.

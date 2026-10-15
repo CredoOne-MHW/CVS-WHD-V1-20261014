@@ -60,7 +60,10 @@ export function Assistant({ companyName }: { companyName?: string }) {
   useEffect(() => {
     api("/co/assistant").then(setInfo).catch(() => setInfo({ enabled: false }));
   }, []);
-  useEffect(() => end.current?.scrollIntoView({ behavior: "smooth" }), [msgs.length, busy]);
+  // Block body on purpose: newer Chrome returns a Promise from scrollIntoView, and React would call it as the cleanup.
+  useEffect(() => {
+    end.current?.scrollIntoView({ behavior: "smooth", block: "end" });
+  }, [msgs.length, busy]);
   useEffect(() => {
     const k = (e: KeyboardEvent) => e.key === "Escape" && setOpen(false);
     window.addEventListener("keydown", k);

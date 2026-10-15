@@ -142,7 +142,9 @@ export function WebhookCard({ hook, base, eventLabel, testPhone, onChanged }: { 
   const [del, setDel] = useState(false);
   const perm = usePerm("wa_webhooks");
   const toast = useToast();
-  useEffect(() => setF(hook), [hook]);
+  useEffect(() => {
+    setF(hook);
+  }, [hook]);
   const dirty = JSON.stringify(f) !== JSON.stringify(hook);
   const set = (k: keyof Hook, v: any) => setF((p) => ({ ...p, [k]: v }));
 

@@ -359,7 +359,9 @@ function Domains() {
     setRows(null);
     api(`/sa/knowledgebase/domains${l ? "?live=1" : ""}`).then(setRows);
   };
-  useEffect(() => load(false), []);
+  useEffect(() => {
+    load(false);
+  }, []);
   return (
     <div className="card overflow-hidden">
       <div className="flex flex-wrap items-center justify-between gap-3 border-b border-ink-400/15 p-4">

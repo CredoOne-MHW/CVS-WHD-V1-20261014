@@ -90,7 +90,9 @@ export default function Shell({ scope, children }: { scope: "super" | "company";
       })
       .catch(() => router.replace("/login"));
   }, [scope, router]);
-  useEffect(() => setDrawer(false), [path]);
+  useEffect(() => {
+    setDrawer(false);
+  }, [path]);
   useEffect(() => {
     const close = (e: MouseEvent) => menuRef.current && !menuRef.current.contains(e.target as Node) && setMenu(false);
     document.addEventListener("mousedown", close);
