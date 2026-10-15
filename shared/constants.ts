@@ -23,6 +23,7 @@ export const COMPANY_MODULES: ModuleDef[] = [
   { key: "dashboard", label: "Dashboard", group: "Main", path: "/app", icon: "LayoutDashboard" },
   { key: "leads", label: "Leads", group: "Main", path: "/app/leads", icon: "Users" },
   { key: "integrations", label: "Integration", group: "Main", path: "/app/integrations", icon: "PlugZap" },
+  { key: "reports", label: "Report", group: "Main", path: "/app/reports", icon: "BarChart3" },
   { key: "roles", label: "Role Management", group: "Settings", path: "/app/settings/roles", icon: "ShieldCheck" },
   { key: "activity_logs", label: "Activity Logs", group: "Settings", path: "/app/settings/activity-logs", icon: "ScrollText" },
   { key: "wa_webhooks", label: "WhatsApp Webhook", group: "Settings", path: "/app/settings/whatsapp", icon: "Webhook" },
@@ -35,6 +36,7 @@ export const SA_MODULES: ModuleDef[] = [
   { key: "companies", label: "Company", group: "Main", path: "/sa/companies", icon: "Building2" },
   { key: "ai_agents", label: "AI Agents", group: "Main", path: "/sa/ai-agents", icon: "Bot" },
   { key: "plans", label: "Plan", group: "Main", path: "/sa/plans", icon: "Layers" },
+  { key: "reports", label: "Report", group: "Main", path: "/sa/reports", icon: "BarChart3" },
   { key: "knowledgebase", label: "Knowledgebase", group: "Main", path: "/sa/knowledgebase", icon: "BookOpenText" },
   { key: "roles", label: "Role Management", group: "Settings", path: "/sa/settings/roles", icon: "ShieldCheck" },
   { key: "activity_logs", label: "Activity Logs", group: "Settings", path: "/sa/settings/activity-logs", icon: "ScrollText" },
@@ -100,7 +102,7 @@ export const SA_EVENTS = [
   { key: "company_reminder", label: "Company reminder (Company → Reminder)" },
   { key: "company_created", label: "Company created (welcome)" },
   { key: "company_deactivated", label: "Company deactivated" },
-  { key: "credits_low", label: "AI credits low" },
+  { key: "credits_low", label: "AI credits exhausted (company)" },
 ];
 export const COMPANY_SYSTEM_EVENTS = [
   { key: "lead_reminder", label: "Lead reminder (Lead → Reminder)" },
@@ -109,6 +111,7 @@ export const COMPANY_SYSTEM_EVENTS = [
   { key: "followup_digest", label: "Daily follow-up digest" },
   { key: "delete_otp", label: "Delete OTP (verification)" },
   { key: "broadcast", label: "Post / broadcast" },
+  { key: "ai_credits_exhausted", label: "AI credits exhausted (to admin)" },
 ];
 
 export const PLACEHOLDERS = [

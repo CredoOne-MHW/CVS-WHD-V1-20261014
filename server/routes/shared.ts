@@ -1,7 +1,7 @@
 import { Router, type Request } from "express";
 import { z } from "zod";
 import { Webhook, WaLog, ActivityLog, EventType, Role, Company, Plan } from "../models";
-import { can } from "../middleware/auth";
+import { can, invalidateAuth } from "../middleware/auth";
 import { h, parse, notFound, badRequest, paging, dateRange, escapeRegex } from "../lib/http";
 import { encrypt, decrypt } from "../lib/crypto";
 import { buildPayloads, dispatch, resendLog } from "../lib/whatsapp";
@@ -220,6 +220,7 @@ export function roleRoutes(scope: Scope) {
     if (b.permissions) role.permissions = await clampToPlan(role.plan, b.permissions as PermMap);
     role.markModified("permissions");
     await role.save();
+    await invalidateAuth();
     res.locals.item = role.name;
     res.json(role);
   }));
@@ -227,6 +228,7 @@ export function roleRoutes(scope: Scope) {
   r.delete("/:id", can("roles", "delete"), h(async (req, res) => {
     const d = await Role.findOneAndDelete({ _id: req.params.id, ...base(req) });
     if (!d) throw notFound();
+    await invalidateAuth();
     res.locals.item = d.name;
     res.json({ ok: true });
   }));

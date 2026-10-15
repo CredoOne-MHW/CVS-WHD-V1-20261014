@@ -27,7 +27,7 @@ export default function CompanyAiAgents() {
   function openForm(a?: any) {
     setFiles([]);
     setRemove([]);
-    setForm(a ? { ...a, agentId: a.agentId?._id || a.agentId, prompts: a.prompts?.length ? a.prompts : [{ title: "", text: "" }] } : { agentId: models[0]?._id || "", name: "", purpose: "", systemPrompt: "", prompts: [{ title: "", text: "" }], knowledge: [] });
+    setForm(a ? { ...a, isAssistant: !!a.isAssistant, agentId: a.agentId?._id || a.agentId, prompts: a.prompts?.length ? a.prompts : [{ title: "", text: "" }] } : { agentId: models[0]?._id || "", name: "", purpose: "", systemPrompt: "", prompts: [{ title: "", text: "" }], knowledge: [], isAssistant: !list?.some((x: any) => x.isAssistant) });
   }
 
   async function save() {
@@ -35,7 +35,7 @@ export default function CompanyAiAgents() {
     try {
       const fd = new FormData();
       const { agentId, name, purpose, systemPrompt, prompts } = form;
-      fd.append("data", JSON.stringify({ agentId, name, purpose, systemPrompt, prompts: prompts.filter((p: any) => p.title || p.text), removeKeys: remove }));
+      fd.append("data", JSON.stringify({ agentId, name, purpose, systemPrompt, isAssistant: !!form.isAssistant, prompts: prompts.filter((p: any) => p.title || p.text), removeKeys: remove }));
       files.forEach((f) => fd.append("files", f));
       if (form._id) await api(`/co/ai-agents/${form._id}`, { method: "PUT", form: fd });
       else await api("/co/ai-agents", { form: fd });
@@ -90,7 +90,9 @@ export default function CompanyAiAgents() {
           <tbody>
             {list?.map((a) => (
               <tr key={a._id} className="hover:bg-hive-50/40">
-                <td className="td font-semibold">{a.name}</td>
+                <td className="td font-semibold">
+                  {a.name} {a.isAssistant && <Badge color="green">Assistant</Badge>}
+                </td>
                 <td className="td">
                   {a.agentId?.name} <span className="mono text-ink-400">{a.agentId?.llmVersion}</span>
                 </td>
@@ -154,6 +156,13 @@ export default function CompanyAiAgents() {
                   ))}
                 </select>
               </Field>
+              <label className="flex items-start gap-3 rounded-2xl border border-hive-200 bg-hive-50/70 p-3.5">
+                <input type="checkbox" className="mt-0.5 h-4 w-4 accent-hive-700" checked={!!form.isAssistant} onChange={(e) => setForm({ ...form, isAssistant: e.target.checked })} />
+                <span className="text-sm">
+                  <b>Use as the company assistant</b>
+                  <span className="block text-ink-500">Shows a floating button with your logo on every screen. It answers from your data in read-only mode and uses this agent’s credits.</span>
+                </span>
+              </label>
               <Field label="Agent name" required>
                 <input className="input" placeholder="e.g. Health Package Advisor" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} />
               </Field>

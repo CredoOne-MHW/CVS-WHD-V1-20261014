@@ -181,3 +181,46 @@ Each webhook = endpoint + method + headers (encrypted) + payload template, bound
 
 ### Troubleshooting the login address
 Open `https://<address>/api/health` — it shows how the address is resolved (`platformHost`, `baseDomain`) and whether MongoDB/JWT are configured. If `baseDomain` is `null`, set `APP_BASE_DOMAIN` in Vercel and redeploy (quotes, `https://` and trailing slashes are tolerated). Without it, any address that matches no company shows the platform login.
+
+
+---
+
+## 10. October 2026 update
+
+### Dev and prod side by side
+`APP_BASE_DOMAIN` is resolved **per request**. Set it per Vercel environment (Production → `mhw.credovation.tech`, Preview → `dev-mhw.credovation.tech`) or put both in one comma-separated value. If an address isn't listed, the app auto-detects the base from the address, so a deployment never shows a dead end. `/api/health` reports the resolved base, its source and the Vercel environment.
+
+### Unique DNS per company
+Every company gets values nobody else has:
+| Type | Host | Value |
+|---|---|---|
+| CNAME | `lead` | `<shortname>.mhw.credovation.tech` (its own target, served by the wildcard) |
+| TXT | `_credoone-verify.lead` | `credoone-verify=<32 random hex>` (its own token) |
+| TXT | `_vercel` | only when Vercel asks for an ownership challenge |
+The Knowledgebase guide renders its example with the same generator (`server/lib/domains.ts › recordsFor`), so guide and dialog always match. "Check DNS now" verifies ownership via the TXT token.
+
+### S3 layout
+`<Company-Name>/logo/…`, `<Company-Name>/banner/…`, `<Company-Name>/brain/…` (knowledge base; extracted text under `brain/_extracted/`). The folder is fixed when the company is created (renaming the company doesn't move files). Objects are SSE-encrypted; the bucket stays private.
+
+### AI
+* **Providers** are a collection managed from the provider dropdown (`+ Add provider…`, `Manage providers…`). Seeded: OpenRouter, Anthropic, OpenAI, Google Gemini, Groq, Mistral, DeepSeek. Any OpenAI-compatible gateway can be added. The ↻ button loads the provider's model list (OpenRouter's is public and shows USD price per 1M tokens).
+* **Floating assistant:** tick "Use as the company assistant" on one company agent → a button with the company logo appears on every company screen. It is **read-only by construction**: its only data tool is the report engine (whitelisted fields, company filter, the user's own module permissions).
+* **Credits:** every call is metered. When a model's credits run out, the company admin gets a WhatsApp alert (`ai_credits_exhausted` event) once; topping up re-arms it.
+
+### Reports
+* **Super Admin › Report** and **Company › Report › DIY**: summaries (group by any field or per day/week/month/year, count/sum/avg/max) or detailed lists, filters, date range, Excel/CSV export (UTF-8 BOM so ₹ and Bengali open correctly in Excel).
+* **Company › Report › Agentic**: pick an agent, describe the report; the AI writes a spec, the engine runs it read-only, the AI adds 2–4 insights. Export the same way.
+
+### Performance & scale
+* **Sessions are stateless** (signed, httpOnly cookie) — concurrent *sessions* cost nothing on the server; capacity is about concurrent *requests*.
+* Auth context (user, company, plan, role) is cached 30–120 s instead of 3–4 DB reads per call; tenant, connector, provider and knowledge-base lookups are cached too. Add **Upstash Redis** to share the cache and rate limits across instances.
+* Mongo pool is small per instance (`MONGODB_POOL_SIZE`, default 5) with zlib compression; size the Atlas tier for (peak instances × pool).
+* Wildcard icon import removed: console first-load JS went from ~264 kB to ~100–120 kB. Client GET requests are de-duplicated with a 10 s micro-cache.
+* Branding responses are CDN-cacheable (`s-maxage`); static assets immutable.
+* For a 10-lakh-user launch: enable Upstash, Vercel Pro/Enterprise with Fluid compute, a dedicated Atlas cluster, and run `tests/load/k6-smoke.js` with rising stages first. No code can promise a number without that load test on your real plans.
+
+### Security
+CSP, HSTS (preload), frame-deny, Permissions-Policy, COOP · same-origin check on every cookie-authenticated write (CSRF) · Mongo operator stripping + simple query parser (NoSQL injection) · shared brute-force limits on login and intake · `no-store` on all API responses · consoles `noindex` + private cache.
+
+### SEO / AEO
+Per-address title, description, canonical, Open Graph and JSON-LD (Organization for company logins, SoftwareApplication for the platform) on `/login` · per-host `robots.txt` and `sitemap.xml` · `/llms.txt` for answer engines.

@@ -1,16 +1,18 @@
 import { Router } from "express";
 import bcrypt from "bcryptjs";
 import { z } from "zod";
-import { Company, User, Plan, Lead, WaLog, AiAgent, AiAllocation, AiUsage, Connector } from "../../models";
-import { can, requireScope } from "../../middleware/auth";
-import { h, parse, notFound, badRequest, paging, escapeRegex } from "../../lib/http";
+import { Company, User, Plan, Lead, WaLog, AiAgent, AiAllocation, AiUsage, AiProvider, Connector } from "../../models";
+import { cached, invalidate } from "../../lib/cache";
+import { can, requireScope, invalidateAuth } from "../../middleware/auth";
+import { h, parse, notFound, badRequest, paging, escapeRegex, HttpError } from "../../lib/http";
 import { encrypt } from "../../lib/crypto";
 import multer from "multer";
-import { putObject, deleteObject } from "../../lib/s3";
-import { baseDomain, tenantUrls, clearTenantCache, publicBranding, platformBranding } from "../../lib/tenant";
-import { vercelSync, vercelVerify, vercelRemove, vercelConfigured, recordsFor, checkRecords, platformRecords, FALLBACK_A, FALLBACK_CNAME } from "../../lib/domains";
+import { putObject, deleteObject, folderFor, companyFolder } from "../../lib/s3";
+import { baseDomain, baseSource, configuredBases, tenantUrls, clearTenantCache, publicBranding, platformBranding } from "../../lib/tenant";
+import { vercelSync, vercelVerify, vercelRemove, vercelConfigured, recordsFor, checkRecords, platformRecords, newVerifyToken, cnameTargetFor, VERIFY_LABEL, FALLBACK_A, FALLBACK_CNAME } from "../../lib/domains";
 import { fireEvent } from "../../lib/whatsapp";
 import { webhookRoutes, waLogRoutes, activityRoutes, roleRoutes } from "../shared";
+import { reportRoutes } from "../reports";
 import { COMPANY_MODULES, PLAN_TIERS, ACTIONS, type PermMap } from "../../../shared/constants";
 
 const r = Router();
@@ -108,6 +110,14 @@ async function syncDomain(companyId: any, domain?: string | null) {
   }
 }
 
+/** S3 base folder = company name ("Wellnesshive Diagnostica LLP" → "Wellnesshive-Diagnostica-LLP"), unique across companies. */
+async function uniqueFolder(name: string) {
+  const base = companyFolder(name);
+  let folder = base;
+  for (let i = 2; await Company.exists({ s3Folder: folder }); i++) folder = `${base}-${i}`;
+  return folder;
+}
+
 const slugFrom = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 32);
 
 r.get("/companies", can("companies", "read"), h(async (req, res) => {
@@ -147,6 +157,8 @@ r.post("/companies", can("companies", "create"), h(async (req, res) => {
     code: b.code.toUpperCase(),
     slug,
     customDomain,
+    s3Folder: await uniqueFolder(b.name),
+    domain: customDomain ? { verifyToken: newVerifyToken() } : undefined,
     branding: { shortName: b.name, ...(b.branding || {}), updatedAt: new Date() },
     loginEmail: undefined,
     password: undefined,
@@ -176,7 +188,7 @@ r.put("/companies/:id", can("companies", "update"), h(async (req, res) => {
   await assertDomainFree(String(c._id), rest.slug, newDomain || undefined);
   c.set({ ...rest, customDomain: newDomain, code: rest.code ? rest.code.toUpperCase() : c.code });
   if (branding) c.set("branding", { ...(c.toObject().branding || {}), ...branding, updatedAt: new Date() });
-  if (newDomain !== oldDomain) c.set("domain", {});
+  if (newDomain !== oldDomain) c.set("domain", newDomain ? { verifyToken: newVerifyToken() } : {});
   await c.save();
   if (newDomain !== oldDomain) {
     if (oldDomain) await vercelRemove(oldDomain);
@@ -195,6 +207,7 @@ r.put("/companies/:id", can("companies", "update"), h(async (req, res) => {
     }
     await owner.save();
   }
+  await invalidateAuth();
   res.locals.item = c.name;
   res.json(c);
 }));
@@ -204,6 +217,7 @@ r.post("/companies/:id/status", can("companies", "update"), h(async (req, res) =
   const c = await Company.findOneAndUpdate({ _id: req.params.id, deletedAt: null }, { status }, { new: true });
   if (!c) throw notFound();
   if (status === "inactive") await User.updateMany({ companyId: c._id }, { $inc: { tokenVersion: 1 } }); // kick sessions
+  await invalidateAuth();
   res.locals.action = status === "active" ? "Activate" : "Deactivate";
   res.locals.item = c.name;
   if (status === "inactive" && c.whatsapp) fireEvent("super", undefined, "company_deactivated", { phone: c.whatsapp, name: c.contactPerson ?? undefined, company: c.name, message: `Your LeadHive workspace for ${c.name} has been deactivated. Please contact support.` }).catch(() => undefined);
@@ -226,6 +240,7 @@ r.delete("/companies/:id", can("companies", "delete"), h(async (req, res) => {
   if (!c) throw notFound();
   if (c.customDomain) await vercelRemove(c.customDomain);
   clearTenantCache();
+  await invalidateAuth();
   await User.updateMany({ companyId: c._id }, { active: false, $inc: { tokenVersion: 1 }, $set: { email: undefined } }).catch(() => undefined);
   await User.deleteMany({ companyId: c._id }); // frees login emails; data stays (soft-deleted company) for audit
   res.locals.item = c.name;
@@ -235,7 +250,11 @@ r.delete("/companies/:id", can("companies", "delete"), h(async (req, res) => {
 /** AI credit allocation for a company (Company → AI Agents). */
 r.put("/companies/:id/ai", can("companies", "update"), h(async (req, res) => {
   const b = parse(z.array(z.object({ agentId: z.string(), credits: z.coerce.number().min(0) })), req.body);
-  for (const a of b) await AiAllocation.updateOne({ companyId: req.params.id, agentId: a.agentId }, { $set: { credits: a.credits } }, { upsert: true });
+  for (const a of b) {
+    await AiAllocation.updateOne({ companyId: req.params.id, agentId: a.agentId }, { $set: { credits: a.credits } }, { upsert: true });
+    // topped up → re-arm the one-time "credits exhausted" WhatsApp alert
+    await AiAllocation.updateOne({ companyId: req.params.id, agentId: a.agentId, $expr: { $gt: ["$credits", "$used"] } }, { $set: { exhaustedNotifiedAt: null } });
+  }
   res.locals.module = "companies";
   res.locals.item = `AI allocation ${req.params.id}`;
   res.json(await AiAllocation.find({ companyId: req.params.id }).lean());
@@ -245,7 +264,7 @@ r.put("/companies/:id/ai", can("companies", "update"), h(async (req, res) => {
 const agentBody = z.object({
   name: z.string().min(2).max(80),
   llmVersion: z.string().min(2).max(80),
-  provider: z.enum(["anthropic", "openai", "google", "openai-compatible"]),
+  provider: z.string().min(2).max(40),
   url: z.string().url().optional().or(z.literal("")),
   apiKey: z.string().optional(),
   tokenWeights: z.object({ input: z.coerce.number().min(0), output: z.coerce.number().min(0) }),
@@ -284,6 +303,62 @@ r.delete("/ai-agents/:id", can("ai_agents", "delete"), h(async (req, res) => {
   res.json({ ok: true });
 }));
 
+/* ───────────── AI providers (add / remove from the dropdown) ───────────── */
+r.get("/ai-providers", can("ai_agents", "read"), h(async (_req, res) => {
+  const [list, used] = await Promise.all([AiProvider.find().sort({ name: 1 }).lean(), AiAgent.aggregate([{ $group: { _id: "$provider", n: { $sum: 1 } } }])]);
+  const u = Object.fromEntries(used.map((x: any) => [x._id, x.n]));
+  res.json(list.map((p: any) => ({ ...p, agents: u[p.key] || 0 })));
+}));
+r.post("/ai-providers", can("ai_agents", "create"), h(async (req, res) => {
+  const b = parse(
+    z.object({
+      name: z.string().min(2).max(60),
+      key: z.string().toLowerCase().regex(/^[a-z0-9-]{2,30}$/).optional(),
+      apiStyle: z.enum(["openai", "anthropic", "google"]).default("openai"),
+      baseUrl: z.string().url(),
+      modelsUrl: z.string().url().optional().or(z.literal("")),
+      extraHeaders: z.record(z.string()).optional(),
+    }),
+    req.body
+  );
+  const key = b.key || b.name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 30);
+  const doc = await AiProvider.create({ ...b, key, modelsUrl: b.modelsUrl || undefined });
+  await invalidate("ai:provider:");
+  res.locals.item = doc.name;
+  res.status(201).json(doc);
+}));
+r.delete("/ai-providers/:id", can("ai_agents", "delete"), h(async (req, res) => {
+  const p = await AiProvider.findById(req.params.id);
+  if (!p) throw notFound();
+  const n = await AiAgent.countDocuments({ provider: p.key });
+  if (n) throw badRequest(`${n} AI agent(s) use ${p.name}. Change or delete them first.`);
+  await p.deleteOne();
+  await invalidate("ai:provider:");
+  res.locals.item = p.name;
+  res.json({ ok: true });
+}));
+/** Model list for the LLM-version picker (OpenRouter's list is public; others use the key typed in the form). */
+r.post("/ai-providers/:id/models", can("ai_agents", "read"), h(async (req, res) => {
+  const p = await AiProvider.findById(req.params.id).lean<any>();
+  if (!p) throw notFound();
+  const url = p.modelsUrl || `${p.baseUrl.replace(/\/$/, "")}/models`;
+  const key = typeof req.body?.apiKey === "string" ? req.body.apiKey : "";
+  const out = await cached(`ai:models:${p.key}:${key ? "k" : "anon"}`, 3600, async () => {
+    const r2 = await fetch(url, { headers: key ? { Authorization: `Bearer ${key}`, "x-api-key": key, "anthropic-version": "2023-06-01" } : {}, signal: AbortSignal.timeout(15000) });
+    if (!r2.ok) throw new HttpError(r2.status === 401 ? 400 : 502, r2.status === 401 ? "Enter the API key first to load this provider's models" : `Could not load models (${r2.status})`);
+    const j: any = await r2.json();
+    return (j.data || j.models || []).slice(0, 1000).map((m: any) => ({
+      id: m.id || m.name?.replace(/^models\//, ""),
+      name: m.name || m.display_name || m.id,
+      context: m.context_length || m.inputTokenLimit,
+      // OpenRouter pricing is USD per token → shown per 1M tokens
+      priceIn: m.pricing?.prompt ? Number(m.pricing.prompt) * 1e6 : undefined,
+      priceOut: m.pricing?.completion ? Number(m.pricing.completion) * 1e6 : undefined,
+    }));
+  });
+  res.json(out);
+}));
+
 /* ───────────── Plans ───────────── */
 r.get("/plans", can("plans", "read"), h(async (_req, res) => {
   const plans = await Plan.find().sort({ priceMonthly: 1, createdAt: 1 }).lean();
@@ -313,6 +388,7 @@ r.put("/plans/:id", can("plans", "update"), h(async (req, res) => {
   if (b.permissions) set.permissions = cleanPerms(b.permissions as PermMap);
   const doc = await Plan.findByIdAndUpdate(req.params.id, { $set: set }, { new: true });
   if (!doc) throw notFound();
+  await invalidateAuth();
   res.locals.item = doc.name;
   res.json(doc);
 }));
@@ -339,7 +415,9 @@ r.post("/companies/:id/brand-asset/:kind", can("companies", "update"), imgUpload
   const c = await Company.findOne({ _id: req.params.id, deletedAt: null });
   if (!c) throw notFound();
   const old = c.branding?.[`${kind}Key`];
-  const { key } = await putObject(String(c._id), "branding", `${kind}-${req.file.originalname}`, req.file.buffer, req.file.mimetype);
+  const folder = await folderFor(c);
+  const sub = kind === "banner" ? "banner" : "logo"; // favicon lives with the logo
+  const { key } = await putObject(`${folder}/${sub}`, `${kind}-${req.file.originalname}`, req.file.buffer, req.file.mimetype);
   c.set(`branding.${kind}Key`, key);
   c.set("branding.updatedAt", new Date());
   await c.save();
@@ -363,15 +441,24 @@ r.delete("/companies/:id/brand-asset/:kind", can("companies", "update"), h(async
 
 /* ───────────── Domain & DNS for one company ───────────── */
 async function domainReport(c: any, live: boolean) {
+  if (c.customDomain && !c.domain?.verifyToken) {
+    const verifyToken = newVerifyToken(); // companies created before tokens existed
+    await Company.updateOne({ _id: c._id }, { $set: { "domain.verifyToken": verifyToken } });
+    c = { ...c, domain: { ...(c.domain || {}), verifyToken } };
+  }
   const { zone, records } = recordsFor(c);
   const checked = live ? await checkRecords(records) : records;
   const required = checked.filter((x) => x.required);
+  const txt = checked.find((x) => x.host.startsWith(VERIFY_LABEL));
+  if (live && txt) await Company.updateOne({ _id: c._id }, { $set: { "domain.ownershipVerified": txt.status === "ok", "domain.lastCheckedAt": new Date() } });
   return {
     company: { _id: c._id, name: c.name, slug: c.slug, customDomain: c.customDomain },
     ...tenantUrls(c),
     baseDomain: baseDomain(),
+    cnameTarget: cnameTargetFor(c),
     zone,
     records: checked,
+    ownershipVerified: live && txt ? txt.status === "ok" : !!c.domain?.ownershipVerified,
     vercel: { configured: vercelConfigured(), added: !!c.domain?.vercelAdded, verified: c.domain?.verified, configuredDns: c.domain?.configured, lastError: c.domain?.lastError, lastCheckedAt: c.domain?.lastCheckedAt },
     ready: !!c.customDomain && required.length > 0 && required.every((x) => x.status === "ok") && (vercelConfigured() ? c.domain?.verified !== false : true),
   };
@@ -400,14 +487,19 @@ r.post("/companies/:id/domain/check", can("companies", "update"), h(async (req, 
 
 /* ───────────── Knowledgebase ───────────── */
 r.get("/knowledgebase/config", can("knowledgebase", "read"), h(async (req, res) => {
+  const example = { slug: "wellnesshive", customDomain: "leads.wellnesshive.in", domain: { verifyToken: "credoone-verify=7f3c2a91d4e85b60c1a9e2f4b8d73c05" } };
   res.json({
     baseDomain: baseDomain(),
-    deploymentHost: process.env.VERCEL_PROJECT_PRODUCTION_URL || process.env.VERCEL_URL || req.headers.host,
+    baseSource: baseSource(),
+    configuredBaseDomains: configuredBases(),
+    vercelEnv: process.env.VERCEL_ENV || "local",
+    deploymentHost: process.env.VERCEL_URL || req.headers.host,
     vercelConfigured: vercelConfigured(),
     fallbackA: FALLBACK_A,
     fallbackCNAME: FALLBACK_CNAME,
     platform: platformRecords(),
     branding: platformBranding(),
+    example: { ...recordsFor(example), cnameTarget: cnameTargetFor(example) },
   });
 }));
 
@@ -434,6 +526,7 @@ r.get("/knowledgebase/domains", can("knowledgebase", "read"), h(async (req, res)
   res.json(rows);
 }));
 
+r.use("/reports", reportRoutes("super"));
 r.use("/roles", roleRoutes("super"));
 r.use("/activity-logs", activityRoutes("super"));
 r.use("/webhooks", webhookRoutes("super"));

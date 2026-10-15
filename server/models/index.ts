@@ -47,6 +47,7 @@ const CompanySchema = new Schema(
     /* White-label: <slug>.<APP_BASE_DOMAIN> and an optional own domain */
     slug: { type: String, lowercase: true, trim: true, unique: true, sparse: true }, // "short name"
     customDomain: { type: String, lowercase: true, trim: true, unique: true, sparse: true },
+    s3Folder: String, // "<Company-Name>" — fixed at creation; logo/, banner/, brain/ live under it
     branding: {
       shortName: String, // display short name, e.g. "Wellness Hive"
       tagline: String, // e.g. "Diagnostic Centre · Polyclinic · Elder Care"
@@ -64,6 +65,8 @@ const CompanySchema = new Schema(
       updatedAt: Date,
     },
     domain: {
+      verifyToken: String, // unique TXT value for _credoone-verify.<domain>
+      ownershipVerified: Boolean,
       vercelAdded: Boolean,
       verified: Boolean, // ownership verified on Vercel (or no challenge needed)
       configured: Boolean, // DNS points to us and TLS can be issued
@@ -296,12 +299,27 @@ export const ActivityLog = m<any>("ActivityLog", ActivityLogSchema);
 
 /* ───────────────────────── AI ───────────────────────── */
 
+/** LLM providers — managed by Super Admin straight from the provider dropdown (add / remove). */
+const AiProviderSchema = new Schema(
+  {
+    key: { type: String, required: true, unique: true, lowercase: true, trim: true },
+    name: { type: String, required: true },
+    apiStyle: { type: String, enum: ["openai", "anthropic", "google"], default: "openai" }, // wire format
+    baseUrl: { type: String, required: true },
+    modelsUrl: String, // list endpoint (OpenRouter's is public)
+    extraHeaders: { type: Mixed, default: {} }, // e.g. OpenRouter HTTP-Referer / X-Title
+    active: { type: Boolean, default: true },
+  },
+  ts
+);
+export const AiProvider = m<any>("AiProvider", AiProviderSchema);
+
 /** Platform-level model definitions owned by Super Admin. */
 const AiAgentSchema = new Schema(
   {
     name: { type: String, required: true },
     llmVersion: { type: String, required: true }, // e.g. claude-sonnet-5-5, gpt-4.1
-    provider: { type: String, enum: ["anthropic", "openai", "google", "openai-compatible"], required: true },
+    provider: { type: String, required: true }, // AiProvider.key
     url: String, // API base URL
     apiKeyEnc: String,
     tokenWeights: { input: { type: Number, default: 1 }, output: { type: Number, default: 3 } },
@@ -321,6 +339,7 @@ const AiAllocationSchema = new Schema(
     agentId: { type: ObjectId, required: true },
     credits: { type: Number, default: 0 },
     used: { type: Number, default: 0 },
+    exhaustedNotifiedAt: Date, // WhatsApp alert sent once per exhaustion; cleared when credits are topped up
   },
   ts
 );
@@ -340,6 +359,7 @@ const CompanyAgentSchema = new Schema(
       type: [{ fileName: String, key: String, url: String, size: Number, mime: String, chars: Number, extractedKey: String }],
       default: [],
     },
+    isAssistant: { type: Boolean, default: false }, // shown as the floating assistant for the whole company
     active: { type: Boolean, default: true },
   },
   ts
@@ -351,6 +371,8 @@ const AiUsageSchema = new Schema(
     companyId: { type: ObjectId, index: true },
     agentId: ObjectId,
     companyAgentId: ObjectId,
+    purpose: String, // chat | assistant | report
+    userId: ObjectId,
     inputTokens: Number,
     outputTokens: Number,
     weighted: Number,

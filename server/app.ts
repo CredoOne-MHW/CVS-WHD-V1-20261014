@@ -1,14 +1,36 @@
-import express from "express";
+import express, { type Request, type Response, type NextFunction } from "express";
 import cookieParser from "cookie-parser";
 import { connectDB } from "./lib/db";
 import { errorHandler, HttpError } from "./lib/http";
-import { requestHost, isPlatformHost, platformBranding, baseDomain } from "./lib/tenant";
+import { requestHost, isPlatformHost, platformBranding, baseDomain, baseSource, configuredBases, hostContext, resolveHost } from "./lib/tenant";
 import { requireAuth } from "./middleware/auth";
 import { activityLogger } from "./middleware/activity";
 import authRoutes from "./routes/auth";
 import saRoutes from "./routes/sa";
 import coRoutes from "./routes/co";
 import publicRoutes from "./routes/public";
+
+/** Strip Mongo operators ($gt, $where…) and prototype keys from untrusted input (NoSQL-injection guard). */
+function sanitize(v: any, depth = 0): any {
+  if (depth > 10 || v === null || typeof v !== "object") return v;
+  if (Array.isArray(v)) return v.map((x) => sanitize(x, depth + 1));
+  for (const k of Object.keys(v)) {
+    if (k.startsWith("$") || k === "__proto__" || k === "constructor" || k === "prototype") delete v[k];
+    else v[k] = sanitize(v[k], depth + 1);
+  }
+  return v;
+}
+
+/** CSRF defence for cookie-authenticated calls: state-changing requests must come from this same site. */
+function sameOrigin(req: Request, _res: Response, next: NextFunction) {
+  if (["GET", "HEAD", "OPTIONS"].includes(req.method)) return next();
+  const origin = req.headers.origin;
+  if (!origin) return next(); // non-browser clients (no cookies sent cross-site anyway)
+  try {
+    if (new URL(origin).host.toLowerCase() === requestHost(req)) return next();
+  } catch {}
+  next(new HttpError(403, "Cross-site request blocked"));
+}
 
 /**
  * Express API. Mounted inside Next.js at /api/* (src/pages/api/[[...path]].ts),
@@ -17,67 +39,97 @@ import publicRoutes from "./routes/public";
 export function createApp() {
   const app = express();
   app.disable("x-powered-by");
+  app.disable("etag"); // API responses are per-user; caching is set explicitly
   app.set("trust proxy", 1);
+  app.set("query parser", "simple"); // no nested objects in query strings → no operator injection via ?a[$ne]=
 
-  // keep raw body for HMAC signature checks on intake
+  app.use(hostContext);
   app.use(
     express.json({
       limit: "2mb",
       verify: (req: any, _res, buf) => {
-        req.rawBody = buf.toString("utf8");
+        req.rawBody = buf.toString("utf8"); // kept for HMAC signature checks on intake
       },
     })
   );
   app.use(express.urlencoded({ extended: true, limit: "1mb" }));
   app.use(cookieParser());
+  app.use((req, res, next) => {
+    req.body = sanitize(req.body);
+    res.setHeader("Cache-Control", "no-store"); // default for API; public routes override
+    res.setHeader("X-Content-Type-Options", "nosniff");
+    next();
+  });
+
+  /** Website / landing-page forms post to intake from other domains: open CORS, never with cookies. Answered before any DB work. */
+  app.use(["/api/intake", "/api/forms"], (req, res, next) => {
+    res.setHeader("Access-Control-Allow-Origin", "*");
+    res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+    res.setHeader("Access-Control-Allow-Headers", "Content-Type, Idempotency-Key, X-Idempotency-Key, X-Api-Key, X-Signature");
+    res.setHeader("Access-Control-Max-Age", "86400");
+    if (req.method === "OPTIONS") return res.status(204).end();
+    next();
+  });
 
   // Quick deployment check: open /api/health on any address to see how it is resolved.
-  app.get("/api/health", (req, res) =>
+  app.get("/api/health", async (req, res) => {
+    const host = requestHost(req);
+    let resolved = "platform";
+    try {
+      await connectDB();
+      resolved = (await resolveHost(host)).kind;
+    } catch {
+      resolved = isPlatformHost(host) ? "platform" : "unknown (database unreachable)";
+    }
     res.json({
       ok: true,
       time: new Date().toISOString(),
-      host: requestHost(req),
-      platformHost: isPlatformHost(requestHost(req)),
-      baseDomain: process.env.APP_BASE_DOMAIN ? baseDomain() : null,
+      host,
+      resolvedAs: resolved,
+      baseDomain: baseDomain() || null,
+      baseDomainSource: baseSource() === "env" ? "APP_BASE_DOMAIN" : "auto-detected from this address",
+      configuredBaseDomains: configuredBases(),
+      vercelEnv: process.env.VERCEL_ENV || "local",
       mongoConfigured: !!process.env.MONGODB_URI,
       jwtConfigured: !!process.env.JWT_SECRET,
-    })
-  );
+      redisCache: !!process.env.UPSTASH_REDIS_REST_URL,
+    });
+  });
 
   // The platform login must render even if the database is unreachable.
   app.get("/api/public/branding", async (req, res, next) => {
     const host = requestHost(req);
     const platform = () => {
-      res.setHeader("Cache-Control", "public, max-age=60, stale-while-revalidate=300");
+      res.setHeader("Cache-Control", "public, max-age=60, s-maxage=60, stale-while-revalidate=600");
       res.json({ ...platformBranding(), host });
     };
     if (isPlatformHost(host)) return platform();
-    if (!baseDomain()) {
-      // Base domain not configured: a company custom domain still resolves when the DB is up;
-      // otherwise fall back to the platform login rather than a dead end.
-      try {
-        await connectDB();
-      } catch {
-        return platform();
-      }
+    try {
+      await connectDB();
+    } catch {
+      return platform();
     }
     next();
   });
 
-  app.use(async (_req, _res, next) => {
+  app.use(async (req, _res, next) => {
     try {
       await connectDB();
-      next();
     } catch (e: any) {
       console.error("MongoDB connection failed:", e?.message);
-      next(new HttpError(503, "Database unavailable. Check MONGODB_URI and Atlas network access (allow 0.0.0.0/0 for Vercel)."));
+      return next(new HttpError(503, "Database unavailable. Check MONGODB_URI and Atlas network access (allow 0.0.0.0/0 for Vercel)."));
     }
+    // resolve the tenant/base domain for this address once (cached) so every handler sees the right base
+    try {
+      await resolveHost(requestHost(req));
+    } catch {}
+    next();
   });
 
-  app.use("/api", publicRoutes); // intake, hosted forms, cron
-  app.use("/api/auth", authRoutes);
-  app.use("/api/sa", requireAuth, activityLogger, saRoutes);
-  app.use("/api/co", requireAuth, activityLogger, coRoutes);
+  app.use("/api", publicRoutes); // intake, hosted forms, cron, branding
+  app.use("/api/auth", sameOrigin, authRoutes);
+  app.use("/api/sa", sameOrigin, requireAuth, activityLogger, saRoutes);
+  app.use("/api/co", sameOrigin, requireAuth, activityLogger, coRoutes);
 
   app.use("/api", (_req, res) => res.status(404).json({ error: "Not found" }));
   app.use(errorHandler);

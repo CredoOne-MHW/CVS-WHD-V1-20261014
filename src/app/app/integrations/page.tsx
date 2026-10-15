@@ -1,7 +1,8 @@
 "use client";
 import { useEffect, useState } from "react";
 import Link from "next/link";
-import * as Icons from "lucide-react";
+import { Check, Copy as CopyIcon, Plus, Power, KeyRound, Trash2 } from "lucide-react";
+import { icon } from "@/components/icons";
 import { api, fmtDate } from "@/lib/api";
 import { PageHeader, Btn, Modal, Field, Badge, Spinner, Confirm, JsonView, useToast } from "@/components/ui";
 import { usePerm } from "@/components/Shell";
@@ -20,7 +21,7 @@ function Copy({ text }: { text: string }) {
         setTimeout(() => setOk(false), 1200);
       }}
     >
-      {ok ? <Icons.Check className="h-4 w-4 text-hive-600" /> : <Icons.Copy className="h-4 w-4" />}
+      {ok ? <Check className="h-4 w-4 text-hive-600" /> : <CopyIcon className="h-4 w-4" />}
     </button>
   );
 }
@@ -88,7 +89,7 @@ export default function Integrations() {
       <PageHeader title="Integration" subtitle="Every channel feeds one pipeline. Each delivery is idempotent and failed deliveries retry automatically." />
       <div className="grid gap-5 sm:grid-cols-2 xl:grid-cols-3">
         {data.types.map((t: any) => {
-          const Icon = (Icons as any)[t.icon] || Icons.Plug;
+          const Icon = icon(t.icon);
           const mine = data.connectors.filter((c: any) => c.type === t.type);
           const local = t.inbound === "manual" || t.inbound === "upload";
           return (
@@ -131,7 +132,7 @@ export default function Integrations() {
                 ) : (
                   perm.create && (
                     <Btn variant="secondary" className="w-full" onClick={() => setCreate({ type: t.type, name: mine.length ? `${t.label} ${mine.length + 1}` : t.label, defaultCampaign: "", defaultMedium: "", defaultSource: "", secret: "" })}>
-                      <Icons.Plus className="h-4 w-4" /> {mine.length ? "Add another" : "Connect"}
+                      <Plus className="h-4 w-4" /> {mine.length ? "Add another" : "Connect"}
                     </Btn>
                   )
                 )}
@@ -270,7 +271,7 @@ function ConnectorDrawer({ c, onClose, onChanged }: { c: any; onClose: () => voi
                   onClose();
                 }}
               >
-                <Icons.Power className="h-4 w-4" /> {c.active ? "Pause" : "Resume"}
+                <Power className="h-4 w-4" /> {c.active ? "Pause" : "Resume"}
               </Btn>
             )}
             {perm.update && !["meta_leads", "google_ads"].includes(c.type) && (
@@ -282,12 +283,12 @@ function ConnectorDrawer({ c, onClose, onChanged }: { c: any; onClose: () => voi
                   toast("ok", "New secret generated — update the sending system");
                 }}
               >
-                <Icons.KeyRound className="h-4 w-4" /> Rotate secret
+                <KeyRound className="h-4 w-4" /> Rotate secret
               </Btn>
             )}
             {perm.delete && (
               <Btn variant="secondary" className="ml-auto text-red-600" onClick={() => setDel(true)}>
-                <Icons.Trash2 className="h-4 w-4" /> Delete
+                <Trash2 className="h-4 w-4" /> Delete
               </Btn>
             )}
           </div>
