@@ -76,6 +76,78 @@ export function GuideSteps({ type, c, compact }: { type: string; c?: any; compac
 export const blankMcp = { serverUrl: "", toolName: "", toolArgs: {} as any, itemsPath: "", defaultSource: "" };
 export const blankTradeIndia = { userId: "", profileId: "" };
 export const blankGoogleAds = { campaignNames: {} as Record<string, string> };
+export const blankShopify = { events: ["checkouts", "customers", "orders"] as string[], ordersAsConverted: true };
+export const blankWoo = { siteUrl: "", consumerKey: "", events: ["customers", "orders"] as string[], ordersAsConverted: true };
+
+const SHOP_EVENTS: Record<string, { label: string; hint: string }> = {
+  checkouts: { label: "Abandoned checkouts", hint: "Shopper entered contact details but didn't pay — your warmest leads" },
+  customers: { label: "New customers / sign-ups", hint: "Account created or newsletter sign-up" },
+  orders: { label: "Orders", hint: "Unpaid / COD-pending orders stay New for follow-up" },
+};
+function CaptureBoxes({ cfg, set, options }: { cfg: any; set: (v: any) => void; options: string[] }) {
+  const on = (k: string) => (cfg.events || options).includes(k);
+  const toggle = (k: string) => {
+    const cur: string[] = cfg.events || options;
+    const next = cur.includes(k) ? cur.filter((x) => x !== k) : [...cur, k];
+    set({ ...cfg, events: options.filter((o) => next.includes(o)) });
+  };
+  return (
+    <div className="space-y-2">
+      <p className="label">Capture as leads</p>
+      {options.map((k) => (
+        <label key={k} className="flex cursor-pointer items-start gap-2.5 rounded-xl border border-ink-400/15 px-3 py-2.5 hover:bg-hive-50/50">
+          <input type="checkbox" className="mt-0.5 h-4 w-4 accent-hive-700" checked={on(k)} onChange={() => toggle(k)} />
+          <span>
+            <span className="text-sm font-semibold text-ink-900">{SHOP_EVENTS[k].label}</span>
+            <span className="block text-xs text-ink-500">{SHOP_EVENTS[k].hint}</span>
+          </span>
+        </label>
+      ))}
+      <label className="flex cursor-pointer items-center gap-2.5 pt-1 text-sm text-ink-700">
+        <input type="checkbox" className="h-4 w-4 accent-hive-700" checked={cfg.ordersAsConverted !== false} onChange={(e) => set({ ...cfg, ordersAsConverted: e.target.checked })} />
+        <span>
+          New leads from <b>paid</b> orders start as “Converted”
+        </span>
+      </label>
+    </div>
+  );
+}
+
+/** Shopify: what to capture + the store's webhook signing key (optional, recommended). */
+export function ShopifyForm({ cfg, set, platformKey, setPlatformKey, editing, masked }: { cfg: any; set: (v: any) => void; platformKey: string; setPlatformKey: (v: string) => void; editing?: boolean; masked?: string }) {
+  return (
+    <div className="space-y-4">
+      <CaptureBoxes cfg={cfg} set={set} options={["checkouts", "customers", "orders"]} />
+      <Field label="Webhook signing key (recommended)" hint={editing && masked ? `Saved: ${masked} — every delivery's signature is checked. Paste a new key to replace it.` : "Shopify admin → Settings → Notifications → Webhooks: the key under “Your webhooks will be signed with…”. Once saved, unsigned deliveries are refused."}>
+        <input className="input mono" type="password" autoComplete="off" value={platformKey} onChange={(e) => setPlatformKey(e.target.value)} placeholder="e.g. 3f9a…" />
+      </Field>
+    </div>
+  );
+}
+
+/** WooCommerce: what to capture + optional REST API keys for the 15-minute safety-net fetch. */
+export function WooForm({ cfg, set, platformKey, setPlatformKey, editing, masked }: { cfg: any; set: (v: any) => void; platformKey: string; setPlatformKey: (v: string) => void; editing?: boolean; masked?: string }) {
+  return (
+    <div className="space-y-4">
+      <CaptureBoxes cfg={cfg} set={set} options={["customers", "orders"]} />
+      <div className="rounded-xl border border-ink-400/15 p-3">
+        <p className="text-sm font-semibold text-ink-900">REST API keys (optional)</p>
+        <p className="mb-3 text-xs text-ink-500">Fetches recent orders every 15 minutes in case a webhook was missed. WooCommerce → Settings → Advanced → REST API → Add key → Permissions: Read.</p>
+        <div className="grid gap-3 sm:grid-cols-2">
+          <Field label="Store URL" className="sm:col-span-2">
+            <input className="input mono" value={cfg.siteUrl || ""} onChange={(e) => set({ ...cfg, siteUrl: e.target.value })} placeholder="https://shop.example.com" />
+          </Field>
+          <Field label="Consumer key">
+            <input className="input mono" autoComplete="off" value={cfg.consumerKey || ""} onChange={(e) => set({ ...cfg, consumerKey: e.target.value.trim() })} placeholder="ck_…" />
+          </Field>
+          <Field label="Consumer secret" hint={editing && masked ? `Saved: ${masked}` : "Stored encrypted"}>
+            <input className="input mono" type="password" autoComplete="off" value={platformKey} onChange={(e) => setPlatformKey(e.target.value.trim())} placeholder="cs_…" />
+          </Field>
+        </div>
+      </div>
+    </div>
+  );
+}
 
 /** IndiaMART: Pull API key (optional — Push works without it). */
 export function IndiaMartForm({ platformKey, setPlatformKey, editing, masked }: { platformKey: string; setPlatformKey: (v: string) => void; editing?: boolean; masked?: string }) {

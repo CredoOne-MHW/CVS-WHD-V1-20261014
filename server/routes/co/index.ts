@@ -19,7 +19,7 @@ import { currentDb } from "../../lib/context";
 import { splitKeywords } from "../../../shared/text";
 import { assertPublicUrl } from "../../lib/net";
 import { mcpSession } from "../../lib/mcp";
-import { runPull, PULL_TYPES } from "../../lib/pull";
+import { runPull, PULL_TYPES, wooBase } from "../../lib/pull";
 import { webhookRoutes, waLogRoutes, activityRoutes, roleRoutes } from "../shared";
 import { reportRoutes } from "../reports";
 import { assistantChat, assistantInfo, withAgentDb, endpointChat } from "../../lib/agentic";
@@ -272,6 +272,8 @@ r.post("/leads/import", can("leads", "create"), upload.single("file"), h(async (
 }));
 
 /* ───────────── Integrations / Connectors ───────────── */
+/** Platforms that can't sign or send headers get one self-authenticating Lead URL: …/intake/<key>/<token> */
+const TOKEN_URL_TYPES = ["indiamart", "justdial", "sulekha", "shopify"];
 const baseUrl = (req: any) => process.env.APP_BASE_URL || `${req.headers["x-forwarded-proto"] || "https"}://${req.headers.host}`;
 const serializeConnector = (c: any, req: any) => ({
   ...c,
@@ -282,7 +284,7 @@ const serializeConnector = (c: any, req: any) => ({
   configSecretEnc: undefined,
   platformKeyMasked: c.configSecretEnc ? maskSecret(decrypt(c.configSecretEnc)) : undefined,
   // push platforms (IndiaMART, JustDial, Sulekha) get one self-authenticating URL: …/intake/<key>/<token>
-  pushUrlMasked: ["indiamart", "justdial", "sulekha"].includes(c.type) ? `${baseUrl(req)}/api/intake/${c.key}/${maskSecret(decrypt(c.secretEnc))}` : undefined,
+  pushUrlMasked: TOKEN_URL_TYPES.includes(c.type) ? `${baseUrl(req)}/api/intake/${c.key}/${maskSecret(decrypt(c.secretEnc))}` : undefined,
 });
 
 r.get("/integrations", can("integrations", "read"), h(async (req, res) => {
@@ -311,6 +313,16 @@ const googleAdsCfg = z.object({
   // optional: show campaign names instead of numeric IDs on leads ({ "21456789012": "Home collection – Kolkata" })
   campaignNames: z.record(z.string().regex(/^\d{1,20}$/), z.string().trim().max(120)).default({}),
 });
+const shopEvents = z.array(z.enum(["checkouts", "customers", "orders"])).max(3).default(["checkouts", "customers", "orders"]);
+const shopifyCfg = z.object({ events: shopEvents, ordersAsConverted: z.boolean().default(true) });
+const wooCfg = z
+  .object({
+    siteUrl: z.string().trim().max(300).optional().or(z.literal("")),
+    consumerKey: z.string().trim().regex(/^ck_[A-Za-z0-9]{20,80}$/, "Consumer key starts with ck_").optional().or(z.literal("")),
+    events: z.array(z.enum(["customers", "orders"])).max(2).default(["customers", "orders"]),
+    ordersAsConverted: z.boolean().default(true),
+  })
+  .refine((c) => !c.consumerKey || !!c.siteUrl, { message: "Enter your store URL to use the REST API keys", path: ["siteUrl"] });
 const mcpCfg = z.object({
   serverUrl: z.string().url().max(500),
   toolName: z.string().min(1).max(120),
@@ -321,6 +333,15 @@ const mcpCfg = z.object({
 async function connectorConfig(type: string, cfg: any) {
   if (type === "tradeindia") return parse(tradeIndiaCfg, cfg || {});
   if (type === "google_ads") return cfg ? parse(googleAdsCfg, cfg) : undefined;
+  if (type === "shopify") return parse(shopifyCfg, cfg || {});
+  if (type === "woocommerce") {
+    const c = parse(wooCfg, cfg || {});
+    if (c.siteUrl) {
+      c.siteUrl = wooBase(/^https?:\/\//i.test(c.siteUrl) ? c.siteUrl : `https://${c.siteUrl}`);
+      await assertPublicUrl(c.siteUrl);
+    }
+    return c;
+  }
   if (type === "mcp") {
     const c = parse(mcpCfg, cfg || {});
     await assertPublicUrl(c.serverUrl);
@@ -339,7 +360,7 @@ r.post("/integrations", can("integrations", "create"), h(async (req, res) => {
   await ConnectorKey.create({ key: doc.key, companyId: doc.companyId, db: currentDb(), type: doc.type, active: doc.active !== false });
   res.locals.item = doc.name;
   // the full secret is shown once, on creation
-  res.status(201).json({ ...serializeConnector(doc.toObject(), req), secret, pushUrl: ["indiamart", "justdial", "sulekha"].includes(doc.type) ? `${baseUrl(req)}/api/intake/${doc.key}/${secret}` : undefined });
+  res.status(201).json({ ...serializeConnector(doc.toObject(), req), secret, pushUrl: TOKEN_URL_TYPES.includes(doc.type) ? `${baseUrl(req)}/api/intake/${doc.key}/${secret}` : undefined });
 }));
 
 r.put("/integrations/:id", can("integrations", "update"), h(async (req, res) => {
@@ -369,7 +390,7 @@ r.post("/integrations/:id/rotate", can("integrations", "update"), h(async (req, 
   if (!doc) throw notFound();
   res.locals.action = "Rotate secret";
   await invalidate(`conn:${(doc as any).key}`);
-  res.json({ ...serializeConnector(doc, req), secret, pushUrl: ["indiamart", "justdial", "sulekha"].includes((doc as any).type) ? `${baseUrl(req)}/api/intake/${(doc as any).key}/${secret}` : undefined });
+  res.json({ ...serializeConnector(doc, req), secret, pushUrl: TOKEN_URL_TYPES.includes((doc as any).type) ? `${baseUrl(req)}/api/intake/${(doc as any).key}/${secret}` : undefined });
 }));
 
 r.delete("/integrations/:id", can("integrations", "delete"), h(async (req, res) => {

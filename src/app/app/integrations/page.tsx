@@ -2,7 +2,7 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { Check, Copy as CopyIcon, Plus, Power, KeyRound, Trash2, BookOpen, Play, ExternalLink, EyeOff } from "lucide-react";
-import { GuideSteps, McpForm, blankMcp, IndiaMartForm, TradeIndiaForm, GoogleAdsForm, blankTradeIndia, blankGoogleAds } from "@/components/ConnectorGuide";
+import { GuideSteps, McpForm, blankMcp, IndiaMartForm, TradeIndiaForm, GoogleAdsForm, ShopifyForm, WooForm, blankTradeIndia, blankGoogleAds, blankShopify, blankWoo } from "@/components/ConnectorGuide";
 import { GUIDES } from "@/lib/guides";
 import { icon } from "@/components/icons";
 import { api, fmtDate } from "@/lib/api";
@@ -68,10 +68,13 @@ const HELP: Record<string, string> = {
 };
 
 const PULL_ONLY = ["mcp", "tradeindia"]; // nothing to paste anywhere — we fetch
-const HAS_PULL = ["mcp", "tradeindia", "indiamart"];
-const HAS_SETTINGS = ["mcp", "tradeindia", "indiamart", "google_ads"];
-const PUSH_PLATFORMS = ["indiamart", "justdial", "sulekha"];
-const blankCfg = (t: string) => (t === "mcp" ? { ...blankMcp } : t === "tradeindia" ? { ...blankTradeIndia } : t === "google_ads" ? { ...blankGoogleAds } : undefined);
+const HAS_PULL = ["mcp", "tradeindia", "indiamart", "woocommerce"];
+const HAS_SETTINGS = ["mcp", "tradeindia", "indiamart", "google_ads", "shopify", "woocommerce"];
+const PUSH_PLATFORMS = ["indiamart", "justdial", "sulekha", "shopify"]; // one self-authenticating Lead URL
+const blankCfg = (t: string) =>
+  t === "mcp" ? { ...blankMcp } : t === "tradeindia" ? { ...blankTradeIndia } : t === "google_ads" ? { ...blankGoogleAds } : t === "shopify" ? { ...blankShopify } : t === "woocommerce" ? { ...blankWoo } : undefined;
+/** Pull connectors whose fetch is optional (works by push without keys). */
+const pullReady = (c: any) => (c.type === "indiamart" ? !!c.platformKeyMasked : c.type === "woocommerce" ? !!(c.platformKeyMasked && c.config?.consumerKey && c.config?.siteUrl) : true);
 
 export default function Integrations() {
   const [data, setData] = useState<any>(null);
@@ -211,6 +214,16 @@ export default function Integrations() {
                 <TradeIndiaForm cfg={create.config} set={(v) => setCreate((c: any) => ({ ...c, config: v }))} platformKey={create.platformKey} setPlatformKey={(v) => setCreate((c: any) => ({ ...c, platformKey: v }))} />
               </div>
             )}
+            {create.type === "shopify" && (
+              <div className="sm:col-span-2">
+                <ShopifyForm cfg={create.config} set={(v) => setCreate((c: any) => ({ ...c, config: v }))} platformKey={create.platformKey} setPlatformKey={(v) => setCreate((c: any) => ({ ...c, platformKey: v }))} />
+              </div>
+            )}
+            {create.type === "woocommerce" && (
+              <div className="sm:col-span-2">
+                <WooForm cfg={create.config} set={(v) => setCreate((c: any) => ({ ...c, config: v }))} platformKey={create.platformKey} setPlatformKey={(v) => setCreate((c: any) => ({ ...c, platformKey: v }))} />
+              </div>
+            )}
             {create.type === "mcp" && (
               <div className="sm:col-span-2">
                 <McpForm cfg={create.config} set={(v) => setCreate((c: any) => ({ ...c, config: v }))} secret={create.secret} setSecret={(v) => setCreate((c: any) => ({ ...c, secret: v }))} />
@@ -307,7 +320,13 @@ function ConnectorDrawer({ c, onClose, onChanged }: { c: any; onClose: () => voi
           <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-ink-400/15 p-4">
             <div>
               <p className="text-sm font-semibold">
-                {c.type === "mcp" ? "Fetches daily at 2:00 AM IST" : c.type === "indiamart" && !c.platformKeyMasked ? "Pull API not set — add your key in Settings for the 15-minute safety net" : `Fetches every 15 minutes${c.type === "indiamart" ? " (plus instant Push)" : ""}`}
+                {c.type === "mcp"
+                  ? "Fetches daily at 2:00 AM IST"
+                  : !pullReady(c)
+                    ? c.type === "indiamart"
+                      ? "Pull API not set — add your key in Settings for the 15-minute safety net"
+                      : "Webhooks only — add REST API keys in Settings for the 15-minute safety net"
+                    : `Fetches every 15 minutes${c.type === "indiamart" ? " (plus instant Push)" : c.type === "woocommerce" ? " (plus instant webhooks)" : ""}`}
               </p>
               <p className="text-xs text-ink-500">
                 {lastRun?.at || c.lastRunAt ? `Last run ${fmtDate(lastRun?.at || c.lastRunAt)}` : "Not run yet"}
@@ -315,7 +334,7 @@ function ConnectorDrawer({ c, onClose, onChanged }: { c: any; onClose: () => voi
               </p>
               {lastRun?.errors?.length > 0 && lastRun.ok !== false && <p className="mt-1 text-xs text-red-700">{lastRun.errors.join(" · ")}</p>}
             </div>
-            {perm.update && !(c.type === "indiamart" && !c.platformKeyMasked) && (
+            {perm.update && pullReady(c) && (
               <Btn
                 loading={running}
                 onClick={async () => {
@@ -345,6 +364,8 @@ function ConnectorDrawer({ c, onClose, onChanged }: { c: any; onClose: () => voi
           {c.type === "indiamart" && <IndiaMartForm platformKey={platformKey} setPlatformKey={setPlatformKey} editing masked={c.platformKeyMasked} />}
           {c.type === "tradeindia" && <TradeIndiaForm cfg={cfg} set={setCfg} platformKey={platformKey} setPlatformKey={setPlatformKey} editing masked={c.platformKeyMasked} />}
           {c.type === "google_ads" && <GoogleAdsForm cfg={cfg} set={setCfg} />}
+          {c.type === "shopify" && <ShopifyForm cfg={cfg} set={setCfg} platformKey={platformKey} setPlatformKey={setPlatformKey} editing masked={c.platformKeyMasked} />}
+          {c.type === "woocommerce" && <WooForm cfg={cfg} set={setCfg} platformKey={platformKey} setPlatformKey={setPlatformKey} editing masked={c.platformKeyMasked} />}
           {perm.update && (
             <Btn
               onClick={async () => {
@@ -371,7 +392,7 @@ function ConnectorDrawer({ c, onClose, onChanged }: { c: any; onClose: () => voi
                 <CopyRow label="Your Lead URL — shown once, copy it now" value={pushUrl} />
               </div>
             ) : (
-              <CopyRow label="Lead URL (rotate the secret below to see a new one)" value={c.pushUrlMasked} />
+              <CopyRow label="Lead URL (use “New Lead URL” below to issue a fresh one)" value={c.pushUrlMasked} />
             )
           ) : (
             <CopyRow label="Endpoint URL" value={c.endpoint} />
