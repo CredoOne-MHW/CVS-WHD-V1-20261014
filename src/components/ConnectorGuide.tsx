@@ -29,7 +29,7 @@ function CodeBlock({ code }: { code: string }) {
 /** Numbered setup steps for a connector type, filled with the live values of `c` when given. */
 export function GuideSteps({ type, c, compact }: { type: string; c?: any; compact?: boolean }) {
   const g = GUIDES[type];
-  const v = useMemo(() => ({ endpoint: c?.endpoint, secret: c?.secret || c?.secretMasked, verify: c?.verifyToken, form: c?.formUrl }), [c]);
+  const v = useMemo(() => ({ endpoint: c?.endpoint, pushUrl: c?.pushUrl || c?.pushUrlMasked, secret: c?.secret || c?.secretMasked, verify: c?.verifyToken, form: c?.formUrl }), [c]);
   if (!g) return null;
   return (
     <div className="space-y-4">
@@ -73,54 +73,77 @@ export function GuideSteps({ type, c, compact }: { type: string; c?: any; compac
 
 /* ───────────── settings for pull connectors ───────────── */
 
-export const blankSearch = { provider: "serpapi", keywords: [] as string[], location: "", country: "in", language: "en", cx: "", sites: [] as string[], maxResults: 20, recentOnly: true };
 export const blankMcp = { serverUrl: "", toolName: "", toolArgs: {} as any, itemsPath: "", defaultSource: "" };
+export const blankTradeIndia = { userId: "", profileId: "" };
+export const blankGoogleAds = { campaignNames: {} as Record<string, string> };
 
-export function GoogleSearchForm({ cfg, set, secret, setSecret, editing }: { cfg: any; set: (v: any) => void; secret: string; setSecret: (v: string) => void; editing?: boolean }) {
+/** IndiaMART: Pull API key (optional — Push works without it). */
+export function IndiaMartForm({ platformKey, setPlatformKey, editing, masked }: { platformKey: string; setPlatformKey: (v: string) => void; editing?: boolean; masked?: string }) {
+  return (
+    <Field label="IndiaMART Pull API key (optional)" hint={editing && masked ? `Saved: ${masked} — paste a new key to replace it` : "Lead Manager → ⋮ → Import/Export Leads → Pull API → Generate Key. Enables the 15-minute safety-net fetch."}>
+      <input className="input mono" type="password" autoComplete="off" value={platformKey} onChange={(e) => setPlatformKey(e.target.value)} placeholder="mRyx…" />
+    </Field>
+  );
+}
+
+/** TradeIndia: paste the API link (fills all three) or type User ID / Profile ID / Key. */
+export function TradeIndiaForm({ cfg, set, platformKey, setPlatformKey, editing, masked }: { cfg: any; set: (v: any) => void; platformKey: string; setPlatformKey: (v: string) => void; editing?: boolean; masked?: string }) {
+  const [link, setLink] = useState("");
+  function fromLink(v: string) {
+    setLink(v);
+    try {
+      const u = new URL(v.trim());
+      const q = u.searchParams;
+      const userId = q.get("userid") || q.get("user_id");
+      const profileId = q.get("profile_id") || q.get("profileid");
+      const key = q.get("key");
+      if (userId || profileId) set({ ...cfg, userId: userId || cfg.userId, profileId: profileId || cfg.profileId });
+      if (key) setPlatformKey(key);
+    } catch {}
+  }
   return (
     <div className="grid gap-4 sm:grid-cols-2">
-      <Field label="Search provider" required>
-        <select className="input" value={cfg.provider} onChange={(e) => set({ ...cfg, provider: e.target.value })}>
-          <option value="serpapi">SerpAPI — Google results (recommended)</option>
-          <option value="brave">Brave Search API</option>
-          <option value="google_cse">Google Programmable Search (legacy, ends 1 Jan 2027)</option>
-        </select>
+      <Field label="Paste your TradeIndia API link" className="sm:col-span-2" hint="TradeIndia → your name → Inquiries & Contacts → My Inquiry API. Pasting fills the fields below.">
+        <input className="input mono text-xs" value={link} onChange={(e) => fromLink(e.target.value)} placeholder="https://www.tradeindia.com/utils/my_inquiry.html?userid=…&profile_id=…&key=…" />
       </Field>
-      <Field label="API key" required={!editing} hint={editing ? "Leave blank to keep the saved key" : "Stored encrypted"}>
-        <input className="input mono" type="password" autoComplete="off" value={secret} onChange={(e) => setSecret(e.target.value)} />
+      <Field label="User ID" required>
+        <input className="input mono" value={cfg.userId} onChange={(e) => set({ ...cfg, userId: e.target.value })} />
       </Field>
-      {cfg.provider === "google_cse" && (
-        <Field label="Search engine ID (cx)" required className="sm:col-span-2">
-          <input className="input mono" value={cfg.cx} onChange={(e) => set({ ...cfg, cx: e.target.value })} />
-        </Field>
-      )}
-      <Field label="Keywords — one per line" required className="sm:col-span-2" hint="Phrase them the way customers write. Up to 25.">
-        <textarea
-          rows={5}
-          className="input"
-          placeholder={"need home sample collection Kolkata\nfull body checkup near Salt Lake\nthyroid test price Howrah"}
-          value={(cfg.keywords || []).join("\n")}
-          onChange={(e) => set({ ...cfg, keywords: e.target.value.split("\n").map((s) => s.trimStart()).slice(0, 25) })}
-        />
+      <Field label="Profile ID" required>
+        <input className="input mono" value={cfg.profileId} onChange={(e) => set({ ...cfg, profileId: e.target.value })} />
       </Field>
-      <Field label="City / region">
-        <input className="input" placeholder="Kolkata, West Bengal, India" value={cfg.location} onChange={(e) => set({ ...cfg, location: e.target.value })} />
+      <Field label="Key" required={!editing} className="sm:col-span-2" hint={editing && masked ? `Saved: ${masked} — paste a new key to replace it` : "Stored encrypted"}>
+        <input className="input mono" type="password" autoComplete="off" value={platformKey} onChange={(e) => setPlatformKey(e.target.value)} />
       </Field>
-      <Field label="Results per keyword">
-        <select className="input" value={cfg.maxResults} onChange={(e) => set({ ...cfg, maxResults: Number(e.target.value) })}>
-          {[10, 20, 30, 50].map((n) => (
-            <option key={n} value={n}>
-              {n}
-            </option>
-          ))}
-        </select>
-      </Field>
-      <Field label="Only these sites (optional, one per line)" className="sm:col-span-2" hint="e.g. justdial.com, quora.com, reddit.com — leave empty for the whole web">
-        <textarea rows={2} className="input mono" value={(cfg.sites || []).join("\n")} onChange={(e) => set({ ...cfg, sites: e.target.value.split("\n").map((s) => s.trim()).filter(Boolean).slice(0, 10) })} />
-      </Field>
-      <label className="flex items-center gap-2 text-sm sm:col-span-2">
-        <input type="checkbox" className="h-4 w-4 accent-hive-700" checked={cfg.recentOnly !== false} onChange={(e) => set({ ...cfg, recentOnly: e.target.checked })} /> Only pages from the last 24 hours (best for a daily run)
-      </label>
+    </div>
+  );
+}
+
+/** Google Ads: optional campaign ID → name so leads show readable campaigns. */
+export function GoogleAdsForm({ cfg, set }: { cfg: any; set: (v: any) => void }) {
+  const [rows, setRows] = useState<{ id: string; name: string }[]>(() => [...Object.entries(cfg.campaignNames || {}).map(([id, name]) => ({ id, name: String(name) })), { id: "", name: "" }]);
+  const commit = (next: { id: string; name: string }[]) => {
+    const clean = next.filter((r) => r.id || r.name);
+    setRows([...clean, { id: "", name: "" }]);
+    set({ ...cfg, campaignNames: Object.fromEntries(clean.filter((r) => r.id && r.name).map((r) => [r.id, r.name])) });
+  };
+  return (
+    <div className="space-y-2">
+      <p className="label">Campaign names (optional)</p>
+      <p className="text-xs text-ink-500">Google sends the campaign ID only. Map IDs to names (Google Ads → Campaigns → add the “Campaign ID” column).</p>
+      {rows.map((r, i) => (
+        <div key={i} className="grid grid-cols-[1fr_1.4fr_auto] gap-2">
+          <input className="input mono" placeholder="Campaign ID e.g. 21456789012" value={r.id} onChange={(e) => commit(rows.map((x, j) => (j === i ? { ...x, id: e.target.value.replace(/\D/g, "") } : x)))} />
+          <input className="input" placeholder="Name e.g. Home collection – Kolkata" value={r.name} onChange={(e) => commit(rows.map((x, j) => (j === i ? { ...x, name: e.target.value } : x)))} />
+          {r.id || r.name ? (
+            <button type="button" className="btn-ghost text-red-600" aria-label="Remove" onClick={() => commit(rows.filter((_, j) => j !== i))}>
+              ×
+            </button>
+          ) : (
+            <span className="w-9" />
+          )}
+        </div>
+      ))}
     </div>
   );
 }

@@ -37,7 +37,12 @@ const ALIASES: Record<keyof LeadInput | string, string[]> = {
 const get = (o: any, path: string) => path.split(".").reduce((v, k) => (v == null ? undefined : v[k]), o);
 const flatKeys = (o: any) => {
   const out: Record<string, any> = {};
-  for (const [k, v] of Object.entries(o || {})) out[k.toLowerCase().replace(/[\s\-]+/g, "_")] = v;
+  for (const [k, v] of Object.entries(o || {})) {
+    out[k.toLowerCase().replace(/[\s\-]+/g, "_")] = v;
+    // camelCase / PascalCase too: CustomerName → customer_name, LeadId → lead_id (keeps the plain form above)
+    const snake = k.replace(/([a-z0-9])([A-Z])/g, "$1_$2").toLowerCase().replace(/[\s\-]+/g, "_");
+    if (!(snake in out)) out[snake] = v;
+  }
   return out;
 };
 
@@ -87,12 +92,61 @@ export async function adapt(connector: any, payload: any): Promise<{ leads: Lead
       if (!out.length && payload?.field_data) out.push(mapFields(Object.fromEntries(payload.field_data.map((f: any) => [f.name, f.values?.[0]])), fm));
       return { leads: out, naturalId: ids.filter(Boolean).join(",") || undefined };
     }
-    case "google_ads": {
-      const obj: any = { campaign: payload.campaign_id, medium: "cpc", gclid: payload.gcl_id };
-      for (const c of payload.user_column_data || []) obj[String(c.column_id || c.column_name).toLowerCase()] = c.string_value;
-      if (obj.full_name) obj.name = obj.full_name;
-      if (obj.phone_number) obj.phone = obj.phone_number;
-      return { leads: [{ ...mapFields(obj, fm), source: "google_ads" }], naturalId: payload.lead_id };
+    case "google_ads":
+      return googleAdsLead(connector, payload);
+    case "indiamart": {
+      const recs = indiamartRecords(payload);
+      return { leads: recs.map((r) => indiamartLead(r, fm)), naturalId: recs.map((r) => r.UNIQUE_QUERY_ID).filter(Boolean).join(",") || undefined };
+    }
+    case "tradeindia": {
+      const r = payload || {};
+      const f = flatKeys(r);
+      const pick = (...k: string[]) => k.map((x) => f[x]).find((v) => v != null && String(v).trim() !== "");
+      return {
+        leads: [
+          applyMap({
+            name: pick("sender_name", "sender", "name", "buyer_name"),
+            phone: pick("sender_mobile", "mobile", "sender_mobile_no", "phone", "sender_phone"),
+            email: pick("sender_email", "email", "sender_email_id"),
+            address: [pick("sender_city", "city"), pick("sender_state", "state"), pick("sender_country", "country")].filter(Boolean).join(", ") || undefined,
+            comments: [pick("subject"), pick("message", "inquiry_message", "msg"), pick("product_name", "product") && `Product: ${pick("product_name", "product")}`, pick("sender_co", "company", "sender_company") && `Company: ${pick("sender_co", "company", "sender_company")}`].filter(Boolean).join("\n") || undefined,
+            campaign: pick("product_name", "product", "subject"),
+            medium: pick("inquiry_type", "source") || "marketplace",
+            source: "tradeindia",
+          }, r, fm),
+        ],
+        naturalId: pick("rfi_id", "inquiry_id", "id", "rfiid") != null ? `ti:${pick("rfi_id", "inquiry_id", "id", "rfiid")}` : undefined,
+      };
+    }
+    case "justdial": {
+      // JustDial pushes one lead per call (usually GET query parameters)
+      const f = flatKeys(payload);
+      const name = [f.prefix, f.name].filter(Boolean).join(" ").trim() || undefined;
+      return {
+        leads: [
+          applyMap({
+            name,
+            phone: f.mobile || f.phone,
+            whatsapp: f.mobile,
+            email: f.email,
+            address: [f.area || f.brancharea, f.city, f.pincode].filter(Boolean).join(", ") || undefined,
+            comments: [f.category && `Looking for: ${f.category}`, f.company && `Company: ${f.company}`, f.date && `Enquiry: ${f.date} ${f.time || ""}`.trim(), f.phone && f.mobile && f.phone !== f.mobile ? `Alt phone: ${f.phone}` : ""].filter(Boolean).join("\n") || undefined,
+            campaign: f.category,
+            medium: f.leadtype || "marketplace",
+            source: "justdial",
+          }, payload, fm),
+        ],
+        naturalId: f.leadid ? `jd:${f.leadid}` : undefined,
+      };
+    }
+    case "sulekha": {
+      // Sulekha's team pushes in their own format — common names are mapped, the rest via Field mapping
+      const f = flatKeys(payload);
+      const l = mapFields(payload, fm);
+      return {
+        leads: [{ ...l, comments: l.comments || [f.service_name, f.servicename, f.category, f.locality].filter(Boolean).join(" · ") || undefined, campaign: l.campaign || f.service_name || f.servicename || f.category, source: "sulekha", medium: l.medium || "marketplace" }],
+        naturalId: f.leadid || f.lead_id || f.enquiryid || f.enquiry_id ? `su:${f.leadid || f.lead_id || f.enquiryid || f.enquiry_id}` : undefined,
+      };
     }
     case "whatsapp": {
       // Meta WhatsApp Cloud API inbound format, or a flat {phone,name,message} from a BSP.
@@ -126,6 +180,85 @@ export async function adapt(connector: any, payload: any): Promise<{ leads: Lead
     default:
       return { leads: [mapFields(payload, fm)], naturalId: payload.lead_id || payload.id || payload.submission_id };
   }
+}
+
+/* ───────────── platform mappers ───────────── */
+/** Platform defaults first; the company's own Field mapping (if any) wins; empty values dropped. */
+function applyMap(lead: any, raw: any, fm: Record<string, string> = {}): LeadInput {
+  const out: any = {};
+  for (const [k, v] of Object.entries(lead)) if (v != null && v !== "") out[k] = v;
+  for (const [field, path] of Object.entries(fm || {})) {
+    const v = path ? get(raw, path) : undefined;
+    if (v != null && v !== "") out[field] = String(v).trim();
+  }
+  return out;
+}
+const IM_TYPES: Record<string, string> = { W: "direct enquiry", B: "buy-lead", P: "PNS call", BIZ: "catalog view", WA: "WhatsApp enquiry" };
+
+/** IndiaMART Push sends {method, url, body: {CODE, STATUS, RESPONSE: {...}}}; Pull returns {RESPONSE: [...]}; accept all shapes. */
+export function indiamartRecords(p: any): any[] {
+  const r = p?.body?.RESPONSE ?? p?.RESPONSE ?? p?.response ?? p;
+  const arr = Array.isArray(r) ? r : r && typeof r === "object" ? [r] : [];
+  return arr.filter((x) => x && (x.UNIQUE_QUERY_ID || x.SENDER_MOBILE || x.SENDER_EMAIL));
+}
+export function indiamartLead(r: any, fm: Record<string, string> = {}): LeadInput {
+  const nm = String(r.SENDER_NAME || "").trim();
+  return applyMap({
+    name: nm && !/^indiamart buyer$/i.test(nm) ? nm : r.SENDER_COMPANY || nm || undefined,
+    phone: r.SENDER_MOBILE || r.SENDER_PHONE || undefined,
+    whatsapp: r.SENDER_MOBILE || undefined,
+    email: r.SENDER_EMAIL || r.SENDER_EMAIL_ALT || undefined,
+    address: [r.SENDER_ADDRESS, r.SENDER_CITY, r.SENDER_STATE, r.SENDER_PINCODE].filter(Boolean).join(", ") || undefined,
+    comments:
+      [
+        r.SUBJECT,
+        String(r.QUERY_MESSAGE || "").replace(/\\n/g, "\n").replace(/\\t/g, " ").trim(),
+        r.QUERY_PRODUCT_NAME && `Product: ${r.QUERY_PRODUCT_NAME}`,
+        r.SENDER_COMPANY && `Company: ${r.SENDER_COMPANY}`,
+        r.SENDER_MOBILE_ALT && `Alt mobile: ${r.SENDER_MOBILE_ALT}`,
+        r.QUERY_TYPE === "P" && r.CALL_DURATION ? `Call duration: ${r.CALL_DURATION}s` : "",
+      ]
+        .filter(Boolean)
+        .join("\n")
+        .slice(0, 4000) || undefined,
+    campaign: r.QUERY_PRODUCT_NAME || r.QUERY_MCAT_NAME || undefined,
+    medium: IM_TYPES[r.QUERY_TYPE] || r.QUERY_TYPE || "marketplace",
+    source: "indiamart",
+    customFields: { indiamart_query_id: r.UNIQUE_QUERY_ID, indiamart_type: IM_TYPES[r.QUERY_TYPE] || r.QUERY_TYPE, indiamart_time: r.QUERY_TIME, country: r.SENDER_COUNTRY_ISO },
+  }, r, fm);
+}
+
+/**
+ * Google Ads lead form webhook: { lead_id, user_column_data: [{ column_id, column_name, string_value }], campaign_id, adgroup_id,
+ * creative_id, form_id, gcl_id, is_test, google_key }. Standard questions map to lead fields; custom questions go to comments.
+ */
+const GA_STD: Record<string, keyof LeadInput | "first" | "last" | "skip"> = {
+  FULL_NAME: "name", FIRST_NAME: "first", LAST_NAME: "last", EMAIL: "email", WORK_EMAIL: "email", PHONE_NUMBER: "phone", PHONE_NUMBER_VERIFIED: "phone", WORK_PHONE: "phone",
+  CITY: "address", REGION: "address", POSTAL_CODE: "address", STREET_ADDRESS: "address", COUNTRY: "address",
+};
+function googleAdsLead(connector: any, p: any) {
+  const out: any = { source: "google_ads", medium: "cpc" };
+  const addr: string[] = [];
+  const extra: string[] = [];
+  let first = "", last = "";
+  for (const c of p?.user_column_data || []) {
+    const id = String(c.column_id || "").toUpperCase();
+    const v = String(c.string_value ?? "").trim();
+    if (!v) continue;
+    const t = GA_STD[id];
+    if (t === "first") first = v;
+    else if (t === "last") last = v;
+    else if (t === "address") addr.push(v);
+    else if (t) out[t] = out[t] || v;
+    else extra.push(`${c.column_name || id}: ${v}`); // custom questions (e.g. "Preferred date", "Test required")
+  }
+  if (!out.name && (first || last)) out.name = `${first} ${last}`.trim();
+  if (addr.length) out.address = addr.join(", ");
+  const names = connector.config?.campaignNames || {};
+  out.campaign = names[String(p.campaign_id)] || connector.defaultCampaign || (p.campaign_id ? `Google Ads campaign ${p.campaign_id}` : undefined);
+  out.comments = [p.is_test ? "[Google Ads TEST lead]" : "", ...extra].filter(Boolean).join("\n") || undefined;
+  out.utm = Object.fromEntries(Object.entries({ utm_source: "google", utm_medium: "cpc", gclid: p.gcl_id, adgroup_id: p.adgroup_id, creative_id: p.creative_id, form_id: p.form_id, campaign_id: p.campaign_id }).filter(([, v]) => v != null && v !== "").map(([k, v]) => [k, String(v)]));
+  return { leads: [applyMap(out, p, connector.fieldMap || {})], naturalId: p?.lead_id ? `ga:${p.lead_id}` : undefined };
 }
 
 function scoreLead(l: any) {

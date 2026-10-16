@@ -1,6 +1,6 @@
 /**
  * Step-by-step setup guides per connector. Tokens are filled with the live connector values:
- * {{endpoint}} intake URL · {{secret}} API key / secret · {{verify}} Meta verify token · {{form}} hosted form URL.
+ * {{endpoint}} intake URL · {{pushUrl}} self-authenticating push URL · {{secret}} API key / secret · {{verify}} Meta verify token · {{form}} hosted form URL.
  * Third-party menus are described as of Oct 2026 — names can shift slightly when vendors redesign.
  */
 export type Step = { title: string; body: string; code?: string };
@@ -62,13 +62,65 @@ export const GUIDES: Record<string, Guide> = {
     ],
   },
   google_ads: {
-    summary: "Google Ads lead form assets send each lead straight here — these are people who searched on Google and filled your form.",
+    summary: "People who searched your keywords on Google and filled the lead form on your ad — name, phone, email and your custom questions arrive here within seconds, with the campaign and click ID for attribution.",
+    note: "This is the only Google channel that gives you the searcher’s own details: they type them into your lead form and agree to share them. Google Ads lead forms are available for Search, YouTube, Discovery/Demand Gen and Performance Max campaigns (the advertiser account must meet Google’s lead-form policy requirements).",
     steps: [
-      { title: "Create this connector", body: "Copy the endpoint URL and the key (shown once)." },
-      { title: "Open the lead form", body: "Google Ads → Campaigns → Assets → Lead forms → open (or create) your lead form asset." },
-      { title: "Add the webhook", body: "Under “Lead delivery option” → Webhook integration → paste the URL and the key.", code: "Webhook URL: {{endpoint}}\nKey: {{secret}}" },
-      { title: "Send test data", body: "Click “Send test data”. A test lead appears in Leads; check the Deliveries tab if not." },
-      { title: "Save & attach", body: "Save the asset and attach it to your Search campaigns. Campaign ID and gclid are kept on every lead." },
+      { title: "Create this connector", body: "Click Connect. Copy the Webhook URL and the Key (the key is shown once — you can rotate it later)." },
+      { title: "Create or open a lead form", body: "Google Ads → Campaigns → Assets → “+” → Lead form (or open an existing one). Add the questions you need: Name, Phone number, Email, City, plus custom questions such as “Which test?” or “Preferred time?”." },
+      { title: "Add the webhook", body: "In the lead form, open “Lead delivery option” → Webhook integration → paste the URL and the Key below → Save.", code: "Webhook URL: {{endpoint}}\nKey: {{secret}}" },
+      { title: "Send test data", body: "Click “Send test data”. A lead marked “[Google Ads TEST lead]” appears in Leads within seconds (and on the Deliveries tab)." },
+      { title: "Attach the form to campaigns", body: "Add the lead form asset to your Search campaign(s) targeting keywords like “home sample collection Kolkata” or “full body checkup near me”. Every submission becomes a lead with source google_ads, medium cpc, the gclid, ad group and form IDs." },
+      { title: "Name your campaigns (optional)", body: "Google sends campaign IDs, not names. In this connector’s Settings, map each campaign ID to a readable name so Reports show “Home collection – Kolkata” instead of a number." },
+      { title: "Bring in older leads", body: "Google keeps form leads for 30 days: Assets → Lead forms → Leads column → Download (CSV). Import the file from Leads → Import; duplicates by phone/email are merged." },
+    ],
+    links: [
+      { label: "About lead form assets", url: "https://support.google.com/google-ads/answer/9423234" },
+      { label: "Lead form webhook integration", url: "https://developers.google.com/google-ads/webhook/docs/overview" },
+    ],
+  },
+  indiamart: {
+    summary: "Every IndiaMART enquiry — direct enquiries, buy-leads you purchase, PNS calls, catalog views and WhatsApp enquiries — with the buyer’s name, mobile, email, city, company and requirement. Push delivers in real time; Pull (every 15 minutes) is the safety net.",
+    note: "Needs a paid IndiaMART seller account (Lead Manager). Log in with your registered primary mobile number.",
+    steps: [
+      { title: "Create this connector", body: "Click Connect. Copy your Lead URL (shown once) — it already contains your private token." },
+      { title: "Turn on the Push API (real time)", body: "seller.indiamart.com → Lead Manager → ⋮ (three dots) → Import/Export Leads → Push API. Paste the Lead URL as the webhook URL and activate. Use the test option there — a test lead appears in Leads.", code: "{{pushUrl}}" },
+      { title: "Turn on the Pull API (safety net)", body: "Same menu → Pull API (or seller.indiamart.com/leadmanager/crmapi) → Generate Key. Paste the key in this connector’s Settings → “IndiaMART Pull API key”. We fetch every 15 minutes (IndiaMART allows one call per 5 minutes) and the key never expires while it is in use." },
+      { title: "Check", body: "Overview → Run now fetches the last 24 hours. Each enquiry is stored once (IndiaMART’s UNIQUE_QUERY_ID), even if it arrives by both Push and Pull." },
+      { title: "What you get on each lead", body: "Name, mobile (+ alternate), email, city/state/pincode, company, subject, message and product; type (direct enquiry, buy-lead, PNS call, catalog view, WhatsApp enquiry) as medium and the product as campaign." },
+      { title: "Keep it running", body: "If our URL stops answering for 48 hours IndiaMART switches Push off — the Pull keeps catching up, and you can re-activate Push from the same screen. Generating a new Pull key invalidates the old one: paste the new key here." },
+    ],
+    links: [
+      { label: "IndiaMART Push API help", url: "https://help.indiamart.com/knowledge-base/integration-of-indiamarts-lead-manager-crm-push-api-with-third-party-crms-real-time-push-of-leads" },
+      { label: "IndiaMART Pull API help", url: "https://help.indiamart.com/knowledge-base/lms-crm-integration-v2" },
+    ],
+  },
+  justdial: {
+    summary: "Every JustDial enquiry for your listing is pushed to your Lead URL the moment it is created — caller name, mobile, email, the category searched and area.",
+    note: "JustDial switches this on from their side for paid listings: you send them the Lead URL and they configure it. There is no self-serve screen.",
+    steps: [
+      { title: "Create this connector", body: "Click Connect and copy the Lead URL (shown once — it contains your private token)." },
+      { title: "Send it to JustDial", body: "Email or WhatsApp your JustDial account manager (or support) asking them to “push leads via API to this URL (GET)”. Mention your listing name and registered mobile.", code: "{{pushUrl}}" },
+      { title: "Ask for a test lead", body: "When they confirm, ask JustDial to send a test lead. It appears in Leads (source justdial) and on the Deliveries tab. We reply “RECEIVED”, which is what JustDial expects." },
+      { title: "Field names", body: "Standard JustDial fields (leadid, prefix, name, mobile, phone, email, category, city, area, pincode, date, time) are mapped automatically. If JustDial uses different names for your account, set them in Field mapping." },
+    ],
+  },
+  tradeindia: {
+    summary: "Buyer inquiries from your TradeIndia account are fetched every 15 minutes — name, mobile, email, company, city, product and message.",
+    note: "Needs a TradeIndia seller account with the My Inquiry API enabled.",
+    steps: [
+      { title: "Find your API details", body: "TradeIndia → click your name (top right) → Inquiries & Contacts → My Inquiry API. You’ll see your User ID, Profile ID and Key (and an API link that contains all three)." },
+      { title: "Create this connector", body: "Click Connect and paste the API link — User ID, Profile ID and Key are filled in for you — or type them separately." },
+      { title: "Run now", body: "Overview → Run now fetches the last 2 days. After that it runs every 15 minutes; each inquiry is stored once (by its inquiry ID)." },
+      { title: "Adjust if needed", body: "If your TradeIndia account returns different field names, set them in Field mapping (dot paths work)." },
+    ],
+  },
+  sulekha: {
+    summary: "Sulekha pushes each service enquiry (name, mobile, the service and locality) to your Lead URL in real time.",
+    note: "Sulekha’s team enables the push for paid business accounts — share the Lead URL with your Sulekha point of contact.",
+    steps: [
+      { title: "Create this connector", body: "Click Connect and copy the Lead URL (shown once — it contains your private token)." },
+      { title: "Send it to Sulekha", body: "Share the URL with your Sulekha account manager and ask them to push leads to it (POST JSON, form or GET — all are accepted).", code: "{{pushUrl}}" },
+      { title: "Ask for a test lead", body: "It appears in Leads (source sulekha). If a field lands in the wrong place, map it in Field mapping using Sulekha’s field name." },
     ],
   },
   email: {
@@ -106,21 +158,6 @@ export const GUIDES: Record<string, Guide> = {
       { title: "Track", body: "Leads carry the referral and the connector in their attribution history; filter by source in Reports." },
     ],
   },
-  google_search: {
-    summary: "Every night at 2 AM your keywords are searched on the public web. Results that show a phone number or email become leads; the rest are kept as prospects to review.",
-    note: "Google does not reveal who searched for a keyword — no tool can. This finds public pages and posts that match your keywords (enquiries, listings, forums). To capture people who actually search on Google, run a Search campaign with a Google Ads lead form (see that connector). Contact people only in line with consent rules (India DPDP Act 2023).",
-    steps: [
-      { title: "Get a search API key", body: "Pick a provider: SerpAPI (real Google results, incl. local listings with phone numbers) — serpapi.com → Dashboard → API key; or Brave Search API — api-dashboard.search.brave.com → subscribe → API key. Google’s own Custom Search JSON API is closed to new customers and is switched off on 1 Jan 2027; use it only if you already have a key + Search engine ID (cx)." },
-      { title: "Add your keywords", body: "Write them the way customers post, one per line — e.g. “need home sample collection Kolkata”, “full body checkup near Salt Lake”, “diagnostic centre Howrah review”. Up to 25." },
-      { title: "Narrow it down (optional)", body: "Set the city/region, keep “last 24 hours only” on for a daily feed, and optionally limit to sites such as justdial.com, quora.com, reddit.com, sulekha.com." },
-      { title: "Connect & run", body: "Click Create, then Run now to check results. After that it runs automatically every day at 2:00 AM IST (Run now is limited to 6 per hour because searches cost API credits)." },
-      { title: "Review", body: "Open the connector → Results: every page found, with phone/email if published. Ones with contact details are already in Leads (source “google_search”, campaign = keyword)." },
-    ],
-    links: [
-      { label: "SerpAPI", url: "https://serpapi.com/" },
-      { label: "Brave Search API", url: "https://brave.com/search/api/" },
-    ],
-  },
   mcp: {
     summary: "Model Context Protocol (MCP) servers expose apps as tools. Point this connector at one and pick a tool that returns records — they are pulled as leads every night at 2 AM.",
     steps: [
@@ -151,5 +188,5 @@ export const GUIDES: Record<string, Guide> = {
 };
 
 export function fillGuide(text: string, v: Record<string, string | undefined>) {
-  return text.replace(/\{\{(\w+)\}\}/g, (_, k) => v[k] || `<${k === "endpoint" ? "endpoint URL — connect first" : k === "secret" ? "your secret" : k === "verify" ? "verify token" : k}>`);
+  return text.replace(/\{\{(\w+)\}\}/g, (_, k) => v[k] || `<${k === "endpoint" ? "endpoint URL — connect first" : k === "pushUrl" ? "your Lead URL — connect first" : k === "secret" ? "your secret" : k === "verify" ? "verify token" : k}>`);
 }

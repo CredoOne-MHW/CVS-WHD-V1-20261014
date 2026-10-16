@@ -1,128 +1,119 @@
-import { Connector, ConnectorKey, Prospect } from "../models";
+import { Connector, ConnectorKey } from "../models";
 import { decrypt, sha256 } from "./crypto";
-import { processIntake } from "./intake";
+import { processIntake, indiamartRecords } from "./intake";
 import { mcpSession, toolItems } from "./mcp";
 import { runInDb } from "./context";
 import { HttpError } from "./http";
 
-/* ───────────────────────── Google Search (keyword prospecting) ─────────────────────────
- * Google never tells anyone WHO searched for a keyword. What we can do daily is search the public web for your
- * keywords (e.g. "need full body checkup Kolkata", "diagnostic centre near Salt Lake") and keep what is public:
- * listings, posts, enquiries and business pages. Results that show a phone number or email become leads; the rest
- * are kept as prospects to review. For people who actually search on Google, use Google Ads lead forms.
+/** Connectors whose leads we fetch (as opposed to platforms that push to us). */
+export const PULL_TYPES = ["indiamart", "tradeindia", "mcp"] as const;
+const FREQUENT = ["indiamart", "tradeindia"]; // every 15 minutes
+const DAILY = ["mcp"]; // 02:00 IST
+
+type Tally = { found: number; created: number; duplicates: number; failed: number };
+async function ingest(c: any, payload: any, idem: string, t: Tally) {
+  t.found++;
+  const r: any = await processIntake(c, payload, idem).catch((e) => ({ ok: false, error: e?.message }));
+  if (r?.duplicate || r?.created === false) t.duplicates++;
+  else if (r?.ok === false) t.failed++;
+  else t.created++;
+}
+
+/* ───────────────────────── IndiaMART Lead Manager — Pull API ─────────────────────────
+ * GET https://mapi.indiamart.com/wservce/crm/crmListing/v2/?glusr_crm_key=…&start_time=…&end_time=…
+ * Times are IST "DD-Mon-YYYYHH:MM:SS"; window ≤ 7 days; at most one call per 5 minutes (5+/minute blocks the key
+ * for 15 minutes); the key expires after 7 days unused — the 15-minute schedule keeps it alive.
+ * Rolling window: from 5 minutes before the last successful end to now; UNIQUE_QUERY_ID makes overlaps harmless.
  */
-type Hit = { title: string; url: string; snippet: string; phone?: string };
-
-const PROVIDERS = {
-  /** SerpAPI — real Google results (organic + local pack with phone numbers). */
-  async serpapi(key: string, q: string, o: any): Promise<Hit[]> {
-    const u = new URL("https://serpapi.com/search.json");
-    u.search = new URLSearchParams({ engine: "google", q, api_key: key, gl: o.country || "in", hl: o.language || "en", num: String(o.max || 20), ...(o.location ? { location: o.location } : {}), ...(o.recent ? { tbs: "qdr:d" } : {}) }).toString();
-    const r = await fetch(u, { signal: AbortSignal.timeout(25_000) });
-    const j: any = await r.json().catch(() => ({}));
-    if (!r.ok || j.error) throw new HttpError(502, `SerpAPI: ${j.error || r.status}`);
-    const local = (j.local_results?.places || j.local_results || []).map?.((p: any) => ({ title: p.title, url: p.website || p.links?.website || `https://www.google.com/maps/search/${encodeURIComponent(p.title)}`, snippet: [p.address, p.type, p.description].filter(Boolean).join(" · "), phone: p.phone })) || [];
-    return [...local, ...(j.organic_results || []).map((x: any) => ({ title: x.title, url: x.link, snippet: x.snippet || "" }))];
-  },
-  /** Brave Search API — independent index, simple API key. */
-  async brave(key: string, q: string, o: any): Promise<Hit[]> {
-    const u = new URL("https://api.search.brave.com/res/v1/web/search");
-    u.search = new URLSearchParams({ q: o.location ? `${q} ${o.location}` : q, country: (o.country || "in").toUpperCase(), count: String(Math.min(o.max || 20, 20)), ...(o.recent ? { freshness: "pd" } : {}) }).toString();
-    const r = await fetch(u, { headers: { accept: "application/json", "x-subscription-token": key }, signal: AbortSignal.timeout(25_000) });
-    const j: any = await r.json().catch(() => ({}));
-    if (!r.ok) throw new HttpError(502, `Brave Search: ${j?.error?.detail || r.status}`);
-    return (j.web?.results || []).map((x: any) => ({ title: x.title, url: x.url, snippet: (x.description || "").replace(/<[^>]+>/g, "") }));
-  },
-  /** Google Programmable Search (Custom Search JSON API) — closed to new customers, switched off by Google on 1 Jan 2027. */
-  async google_cse(key: string, q: string, o: any): Promise<Hit[]> {
-    if (!o.cx) throw new HttpError(400, "Google Programmable Search needs a Search engine ID (cx)");
-    const out: Hit[] = [];
-    for (let start = 1; start <= Math.min(o.max || 10, 20); start += 10) {
-      const u = new URL("https://www.googleapis.com/customsearch/v1");
-      u.search = new URLSearchParams({ key, cx: o.cx, q: o.location ? `${q} ${o.location}` : q, gl: o.country || "in", num: "10", start: String(start), ...(o.recent ? { dateRestrict: "d1" } : {}) }).toString();
-      const r = await fetch(u, { signal: AbortSignal.timeout(25_000) });
-      const j: any = await r.json().catch(() => ({}));
-      if (!r.ok) throw new HttpError(502, `Google Programmable Search: ${j?.error?.message || r.status}`);
-      out.push(...(j.items || []).map((x: any) => ({ title: x.title, url: x.link, snippet: x.snippet || "" })));
-      if (!j.queries?.nextPage) break;
-    }
-    return out;
-  },
-};
-export const SEARCH_PROVIDERS = Object.keys(PROVIDERS) as (keyof typeof PROVIDERS)[];
-
-const PHONE = /(?:\+?91[\s-]?|0)?[6-9]\d{4}[\s-]?\d{5}\b/g;
-const EMAIL = /[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi;
-export function extractContacts(text: string) {
-  const phones = [...new Set((text.match(PHONE) || []).map((p) => p.replace(/\D/g, "").slice(-10)).filter((p) => /^[6-9]\d{9}$/.test(p)))];
-  const emails = [...new Set((text.match(EMAIL) || []).map((e) => e.toLowerCase()).filter((e) => !/\.(png|jpe?g|gif|webp)$/.test(e) && !/^(noreply|no-reply|example)@/.test(e)))];
-  return { phones, emails };
+const MON = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+export function imTime(d: Date) {
+  const ist = new Date(d.getTime() + 330 * 60_000); // IST = UTC+05:30
+  const p = (n: number) => String(n).padStart(2, "0");
+  return `${p(ist.getUTCDate())}-${MON[ist.getUTCMonth()]}-${ist.getUTCFullYear()}${p(ist.getUTCHours())}:${p(ist.getUTCMinutes())}:${p(ist.getUTCSeconds())}`;
 }
+const IM_URL = () => process.env.INDIAMART_API_URL || "https://mapi.indiamart.com/wservce/crm/crmListing/v2/";
 
-async function runGoogleSearch(c: any) {
-  const o = c.config || {};
-  const key = decrypt(c.secretEnc);
-  if (!key) throw new HttpError(400, "Add the search API key in the connector settings");
-  const provider = (o.provider || "serpapi") as keyof typeof PROVIDERS;
-  if (!PROVIDERS[provider]) throw new HttpError(400, `Unknown search provider "${provider}"`);
-  const keywords: string[] = (o.keywords || []).slice(0, 25);
-  if (!keywords.length) throw new HttpError(400, "Add at least one keyword");
-  const sites: string[] = (o.sites || []).filter(Boolean).slice(0, 10);
-  let found = 0, created = 0, duplicates = 0, prospects = 0;
-  const errors: string[] = [];
-  for (const kw of keywords) {
-    const q = sites.length ? `${kw} (${sites.map((s) => `site:${s}`).join(" OR ")})` : kw;
-    let hits: Hit[] = [];
-    try {
-      hits = await PROVIDERS[provider](key, q, { ...o, max: Math.min(Number(o.maxResults) || 20, 50), recent: o.recentOnly !== false });
-    } catch (e: any) {
-      errors.push(`${kw}: ${e.message}`);
-      continue;
-    }
-    for (const h of hits) {
-      if (!h.url) continue;
-      found++;
-      const { phones, emails } = extractContacts(`${h.title} ${h.snippet} ${h.phone || ""}`);
-      const existing = await Prospect.findOneAndUpdate(
-        { connectorId: c._id, url: h.url },
-        { $setOnInsert: { companyId: c.companyId, connectorId: c._id, keyword: kw, title: h.title, url: h.url, snippet: h.snippet, phones, emails } },
-        { upsert: true, new: false }
-      ).lean<any>();
-      if (existing) continue; // seen on an earlier day
-      prospects++;
-      if (!phones.length && !emails.length) continue;
-      const r: any = await processIntake(c, { name: h.title.slice(0, 120), phone: phones[0], email: emails[0], comments: `${h.snippet}\n${h.url}`.slice(0, 1500), campaign: kw, source: "google_search", medium: "organic_search" }, `gs:${sha256(h.url)}`).catch(() => null);
-      if (r?.leadId) {
-        await Prospect.updateOne({ connectorId: c._id, url: h.url }, { $set: { leadId: r.leadId, status: "lead" } });
-        r.created === false || r.duplicate ? duplicates++ : created++;
-      }
-    }
+async function runIndiaMart(c: any) {
+  const key = decrypt(c.configSecretEnc);
+  if (!key) return { ok: true, skipped: "Pull API key not set — leads arrive by Push only" };
+  const now = new Date();
+  const from = new Date(Math.max(c.pullCursor ? new Date(c.pullCursor).getTime() - 5 * 60_000 : now.getTime() - 24 * 3600_000, now.getTime() - 7 * 86400_000 + 60_000));
+  const u = new URL(IM_URL());
+  u.search = new URLSearchParams({ glusr_crm_key: key, start_time: imTime(from), end_time: imTime(now) }).toString();
+  const r = await fetch(u, { signal: AbortSignal.timeout(25_000) });
+  const j: any = await r.json().catch(() => ({}));
+  const code = Number(j.CODE ?? r.status);
+  if (code === 204) {
+    await Connector.updateOne({ _id: c._id }, { $set: { pullCursor: now } });
+    return { ok: true, found: 0, created: 0, duplicates: 0, failed: 0, window: [imTime(from), imTime(now)] };
   }
-  return { ok: !errors.length || found > 0, found, newProspects: prospects, created, duplicates, errors: errors.slice(0, 5) };
+  if (code === 429) return { ok: true, throttled: true, note: "IndiaMART allows one call per 5 minutes — the next scheduled run will catch up" };
+  if (code === 401) throw new HttpError(400, "IndiaMART rejected the key (wrong, regenerated, or expired after 7 days unused). Generate a new key in Lead Manager › Pull API and save it here.");
+  if (code !== 200) throw new HttpError(502, `IndiaMART: ${j.MESSAGE || j.STATUS || `HTTP ${r.status}`}`);
+  const t: Tally = { found: 0, created: 0, duplicates: 0, failed: 0 };
+  for (const rec of indiamartRecords(j)) await ingest(c, { RESPONSE: rec }, `im:${rec.UNIQUE_QUERY_ID || sha256(JSON.stringify(rec))}`, t);
+  await Connector.updateOne({ _id: c._id }, { $set: { pullCursor: now } });
+  return { ok: true, ...t, window: [imTime(from), imTime(now)] };
 }
 
-/* ───────────────────────── MCP server pull ───────────────────────── */
+/* ───────────────────────── TradeIndia — My Inquiry API ─────────────────────────
+ * Credentials from TradeIndia › (your name) › Inquiries & Contacts › My Inquiry API: User ID, Profile ID, Key.
+ * GET https://www.tradeindia.com/utils/my_inquiry.html?userid=…&profile_id=…&key=…&from_date=YYYY-MM-DD&to_date=YYYY-MM-DD&limit=…&page_no=…
+ */
+const TI_URL = () => process.env.TRADEINDIA_API_URL || "https://www.tradeindia.com/utils/my_inquiry.html";
+const ymd = (d: Date) => new Date(d.getTime() + 330 * 60_000).toISOString().slice(0, 10);
+
+async function runTradeIndia(c: any) {
+  const o = c.config || {};
+  const key = decrypt(c.configSecretEnc);
+  if (!o.userId || !o.profileId || !key) throw new HttpError(400, "Add your TradeIndia User ID, Profile ID and Key (TradeIndia › Inquiries & Contacts › My Inquiry API)");
+  const now = new Date();
+  const from = c.pullCursor ? new Date(new Date(c.pullCursor).getTime() - 86400_000) : new Date(now.getTime() - 2 * 86400_000);
+  const t: Tally = { found: 0, created: 0, duplicates: 0, failed: 0 };
+  const limit = 100;
+  for (let page = 1; page <= 20; page++) {
+    const u = new URL(TI_URL());
+    u.search = new URLSearchParams({ userid: o.userId, profile_id: o.profileId, key, from_date: ymd(from), to_date: ymd(now), limit: String(limit), page_no: String(page) }).toString();
+    const r = await fetch(u, { signal: AbortSignal.timeout(25_000) });
+    const text = await r.text();
+    if (!r.ok) throw new HttpError(502, `TradeIndia: HTTP ${r.status}`);
+    let j: any;
+    try {
+      j = JSON.parse(text);
+    } catch {
+      throw new HttpError(502, `TradeIndia sent an unexpected response: ${text.slice(0, 120)}`);
+    }
+    if (j && !Array.isArray(j) && (j.error || j.status === "error")) throw new HttpError(400, `TradeIndia: ${j.error || j.message || "check User ID, Profile ID and Key"}`);
+    const rows: any[] = Array.isArray(j) ? j : Array.isArray(j?.data) ? j.data : Array.isArray(j?.inquiries) ? j.inquiries : (Object.values(j || {}).find(Array.isArray) as any[]) || [];
+    for (const row of rows) {
+      const id = row.rfi_id ?? row.inquiry_id ?? row.id ?? row.rfiid;
+      await ingest(c, row, `ti:${id != null ? id : sha256(JSON.stringify(row))}`, t);
+    }
+    if (rows.length < limit) break;
+  }
+  await Connector.updateOne({ _id: c._id }, { $set: { pullCursor: now } });
+  return { ok: true, ...t, window: [ymd(from), ymd(now)] };
+}
+
+/* ───────────────────────── MCP server ───────────────────────── */
 async function runMcp(c: any) {
   const o = c.config || {};
   if (!o.serverUrl || !o.toolName) throw new HttpError(400, "Set the MCP server URL and pick a tool");
   const s = await mcpSession(o.serverUrl, decrypt(c.secretEnc) || undefined);
   const items = toolItems(await s.callTool(o.toolName, o.toolArgs || {}), o.itemsPath).slice(0, 500);
-  let created = 0, duplicates = 0, failed = 0;
+  const t: Tally = { found: 0, created: 0, duplicates: 0, failed: 0 };
   for (const it of items) {
     const id = it?.id ?? it?.Id ?? it?.record_id ?? it?.uuid;
-    const r: any = await processIntake(c, { ...it, source: it?.source || o.defaultSource || "mcp" }, `mcp:${id != null ? String(id) : sha256(JSON.stringify(it))}`).catch(() => ({ ok: false }));
-    if (r?.duplicate || r?.created === false) duplicates++;
-    else if (r?.ok === false) failed++;
-    else created++;
+    await ingest(c, { ...it, source: it?.source || o.defaultSource || "mcp" }, `mcp:${id != null ? String(id) : sha256(JSON.stringify(it))}`, t);
   }
-  return { ok: true, found: items.length, created, duplicates, failed };
+  return { ok: true, ...t };
 }
 
-/** Runs one pull connector now (also used by the "Run now" button). Must be called inside the company's database context. */
+/** Runs one pull connector now (also used by "Run now"). Must be called inside the company's database context. */
 export async function runPull(c: any) {
   let result: any;
   try {
-    result = c.type === "google_search" ? await runGoogleSearch(c) : c.type === "mcp" ? await runMcp(c) : { ok: false, error: "Not a pull connector" };
+    result = c.type === "indiamart" ? await runIndiaMart(c) : c.type === "tradeindia" ? await runTradeIndia(c) : c.type === "mcp" ? await runMcp(c) : { ok: false, error: "Not a pull connector" };
   } catch (e: any) {
     result = { ok: false, error: e.message };
   }
@@ -130,9 +121,9 @@ export async function runPull(c: any) {
   return result;
 }
 
-/** Daily 02:00 IST: every active Google Search / MCP connector of every company, each in its own database. */
-export async function runPullConnectors() {
-  const regs = await ConnectorKey.find({ type: { $in: ["google_search", "mcp"] }, active: true }).lean<any[]>();
+/** Scheduled pulls for every company, each in its own database. `frequent` = IndiaMART + TradeIndia (15 min); otherwise MCP (daily). */
+export async function runPullConnectors(which: "frequent" | "daily" = "daily") {
+  const regs = await ConnectorKey.find({ type: { $in: which === "frequent" ? FREQUENT : DAILY }, active: true }).lean<any[]>();
   const out: any[] = [];
   for (const reg of regs) {
     const r = await runInDb(reg.db, async () => {

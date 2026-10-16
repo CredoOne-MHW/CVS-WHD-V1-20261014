@@ -136,6 +136,18 @@ async function bootstrap() {
       .catch((e) => console.warn("company database move:", e?.message));
   }
 
+  // One-time: the Google Search (keyword prospecting) connector was retired in favour of Google Ads lead forms
+  // (v2: sweeps every company database — v1 relied on the key registry, which can miss older connectors)
+  if (!(await meta.findOne({ _id: "gsearch_off_v2" }))) {
+    const { ConnectorKey, tenantModelFor } = await import("../models");
+    const { forEachCompanyDb } = await import("./tenantdb");
+    const off = { $set: { active: false } };
+    await forEachCompanyDb(async (c) => (c.db ? tenantModelFor("Connector", c.db).updateMany({ type: "google_search" }, off) : null), { includeDeleted: true });
+    await mongoose.connection.collection("connectors").updateMany({ type: "google_search" }, off); // not-yet-moved companies
+    await ConnectorKey.updateMany({ type: "google_search" }, off);
+    await meta.updateOne({ _id: "gsearch_off_v2" }, { $set: { at: new Date() } }, { upsert: true });
+  }
+
   // One-time (v2): move existing logos/banners/knowledge files into <Company Name>/logo · /banner · /brain.
   // Runs in the background so the first request isn't delayed; idempotent if an instance stops midway.
   if (process.env.S3_BUCKET && !(await meta.findOne({ _id: "s3_layout_v2" }))) {

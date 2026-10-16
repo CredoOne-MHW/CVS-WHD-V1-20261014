@@ -5,7 +5,7 @@ import crypto from "crypto";
 import { z } from "zod";
 import mongoose, { Types } from "mongoose";
 import * as XLSX from "xlsx";
-import { Lead, Connector, IntakeEvent, Company, User, Webhook, Otp, AiAgent, AiAllocation, CompanyAgent, Role, Plan, AiProvider, AiUsage, Subscription, SubscriptionCycle, SubscriptionPlan, ConnectorKey, Prospect, AiEndpoint, EndpointKey } from "../../models";
+import { Lead, Connector, IntakeEvent, Company, User, Webhook, Otp, AiAgent, AiAllocation, CompanyAgent, Role, Plan, AiProvider, AiUsage, Subscription, SubscriptionCycle, SubscriptionPlan, ConnectorKey, AiEndpoint, EndpointKey } from "../../models";
 import { can, requireScope, tenant, invalidateAuth } from "../../middleware/auth";
 import { h, parse, notFound, badRequest, forbidden, paging, dateRange, escapeRegex, HttpError } from "../../lib/http";
 import { upsertLead, mapFields, runEvent } from "../../lib/intake";
@@ -16,9 +16,10 @@ import { encrypt, decrypt, randomKey, sha256, maskSecret } from "../../lib/crypt
 import { chat, walletFor } from "../../lib/ai";
 import { renewAllocations, billingAlert, enrichCycles, refreshIfStale } from "../../lib/billing";
 import { currentDb } from "../../lib/context";
+import { splitKeywords } from "../../../shared/text";
 import { assertPublicUrl } from "../../lib/net";
 import { mcpSession } from "../../lib/mcp";
-import { runPull } from "../../lib/pull";
+import { runPull, PULL_TYPES } from "../../lib/pull";
 import { webhookRoutes, waLogRoutes, activityRoutes, roleRoutes } from "../shared";
 import { reportRoutes } from "../reports";
 import { assistantChat, assistantInfo, withAgentDb, endpointChat } from "../../lib/agentic";
@@ -278,6 +279,10 @@ const serializeConnector = (c: any, req: any) => ({
   secretMasked: maskSecret(decrypt(c.secretEnc)),
   endpoint: `${baseUrl(req)}/api/intake/${c.key}`,
   formUrl: c.type === "qr_campaign" ? `${baseUrl(req)}/f/${c.key}` : undefined,
+  configSecretEnc: undefined,
+  platformKeyMasked: c.configSecretEnc ? maskSecret(decrypt(c.configSecretEnc)) : undefined,
+  // push platforms (IndiaMART, JustDial, Sulekha) get one self-authenticating URL: …/intake/<key>/<token>
+  pushUrlMasked: ["indiamart", "justdial", "sulekha"].includes(c.type) ? `${baseUrl(req)}/api/intake/${c.key}/${maskSecret(decrypt(c.secretEnc))}` : undefined,
 });
 
 r.get("/integrations", can("integrations", "read"), h(async (req, res) => {
@@ -294,22 +299,17 @@ const connectorBody = z.object({
   defaultCampaign: z.string().max(120).optional(),
   defaultMedium: z.string().max(60).optional(),
   fieldMap: z.record(z.string()).optional(),
-  secret: z.string().max(500).optional(), // API key / Meta page token / Google key / search API key / MCP token; generated if blank
+  secret: z.string().max(500).optional(), // our API key / push token, or Meta page token / Google key / MCP token; generated if blank
+  platformKey: z.string().trim().max(500).optional(), // IndiaMART Pull API key / TradeIndia key (encrypted)
   active: z.boolean().optional(),
   config: z.record(z.any()).optional(), // validated per type below
 });
 
-/** Per-type settings for pull connectors (Google Search, MCP). Secrets never go here — they use `secret`. */
-const googleSearchCfg = z.object({
-  provider: z.enum(["serpapi", "brave", "google_cse"]).default("serpapi"),
-  keywords: z.array(z.string().trim().min(2).max(120)).min(1).max(25),
-  location: z.string().max(80).optional(),
-  country: z.string().regex(/^[a-z]{2}$/i).default("in"),
-  language: z.string().regex(/^[a-z]{2}$/i).default("en"),
-  cx: z.string().max(120).optional(), // Google Programmable Search engine id
-  sites: z.array(z.string().trim().regex(/^[a-z0-9.-]+\.[a-z]{2,}$/i, "Use a domain like justdial.com")).max(10).optional(),
-  maxResults: z.coerce.number().int().min(10).max(50).default(20),
-  recentOnly: z.boolean().default(true),
+/** Per-type settings. Platform credentials go in `platformKey` (stored encrypted), never in `config`. */
+const tradeIndiaCfg = z.object({ userId: z.string().trim().min(1).max(40), profileId: z.string().trim().min(1).max(40) });
+const googleAdsCfg = z.object({
+  // optional: show campaign names instead of numeric IDs on leads ({ "21456789012": "Home collection – Kolkata" })
+  campaignNames: z.record(z.string().regex(/^\d{1,20}$/), z.string().trim().max(120)).default({}),
 });
 const mcpCfg = z.object({
   serverUrl: z.string().url().max(500),
@@ -319,7 +319,8 @@ const mcpCfg = z.object({
   defaultSource: z.string().max(60).optional(),
 });
 async function connectorConfig(type: string, cfg: any) {
-  if (type === "google_search") return parse(googleSearchCfg, cfg || {});
+  if (type === "tradeindia") return parse(tradeIndiaCfg, cfg || {});
+  if (type === "google_ads") return cfg ? parse(googleAdsCfg, cfg) : undefined;
   if (type === "mcp") {
     const c = parse(mcpCfg, cfg || {});
     await assertPublicUrl(c.serverUrl);
@@ -327,18 +328,18 @@ async function connectorConfig(type: string, cfg: any) {
   }
   return undefined;
 }
-const PULL = ["google_search", "mcp"];
+const PULL: string[] = [...PULL_TYPES];
 
 r.post("/integrations", can("integrations", "create"), h(async (req, res) => {
   const b = parse(connectorBody, req.body);
-  if (b.type === "google_search" && !b.secret) throw badRequest("Enter your search API key (SerpAPI, Brave or Google)");
+  if (b.type === "tradeindia" && !b.platformKey) throw badRequest("Enter your TradeIndia Key (My Inquiry API)");
   const config = await connectorConfig(b.type, b.config);
   const secret = b.secret || (b.type === "mcp" ? "" : randomKey(24));
-  const doc = await Connector.create({ ...b, config, secret: undefined, ...tenant(req), key: `${b.type.slice(0, 3)}_${randomKey(10)}`, secretEnc: secret ? encrypt(secret) : undefined, verifyToken: b.type === "meta_leads" ? randomKey(12) : undefined });
+  const doc = await Connector.create({ ...b, config, secret: undefined, platformKey: undefined, configSecretEnc: b.platformKey ? encrypt(b.platformKey) : undefined, ...tenant(req), key: `${b.type.slice(0, 3)}_${randomKey(10)}`, secretEnc: secret ? encrypt(secret) : undefined, verifyToken: b.type === "meta_leads" ? randomKey(12) : undefined });
   await ConnectorKey.create({ key: doc.key, companyId: doc.companyId, db: currentDb(), type: doc.type, active: doc.active !== false });
   res.locals.item = doc.name;
   // the full secret is shown once, on creation
-  res.status(201).json({ ...serializeConnector(doc.toObject(), req), secret });
+  res.status(201).json({ ...serializeConnector(doc.toObject(), req), secret, pushUrl: ["indiamart", "justdial", "sulekha"].includes(doc.type) ? `${baseUrl(req)}/api/intake/${doc.key}/${secret}` : undefined });
 }));
 
 r.put("/integrations/:id", can("integrations", "update"), h(async (req, res) => {
@@ -347,7 +348,12 @@ r.put("/integrations/:id", can("integrations", "update"), h(async (req, res) => 
   if (!cur) throw notFound();
   const set: any = { ...b };
   delete set.secret;
+  delete set.platformKey;
   if (b.secret) set.secretEnc = encrypt(b.secret);
+  if (b.platformKey) {
+    set.configSecretEnc = encrypt(b.platformKey);
+    set.lastRun = null; // new credentials → fresh status
+  }
   if (b.config !== undefined) set.config = await connectorConfig(cur.type, b.config);
   const doc = await Connector.findOneAndUpdate({ _id: req.params.id, ...tenant(req) }, { $set: set }, { new: true }).lean<any>();
   if (!doc) throw notFound();
@@ -362,7 +368,8 @@ r.post("/integrations/:id/rotate", can("integrations", "update"), h(async (req, 
   const doc = await Connector.findOneAndUpdate({ _id: req.params.id, ...tenant(req) }, { secretEnc: encrypt(secret) }, { new: true }).lean();
   if (!doc) throw notFound();
   res.locals.action = "Rotate secret";
-  res.json({ ...serializeConnector(doc, req), secret });
+  await invalidate(`conn:${(doc as any).key}`);
+  res.json({ ...serializeConnector(doc, req), secret, pushUrl: ["indiamart", "justdial", "sulekha"].includes((doc as any).type) ? `${baseUrl(req)}/api/intake/${(doc as any).key}/${secret}` : undefined });
 }));
 
 r.delete("/integrations/:id", can("integrations", "delete"), h(async (req, res) => {
@@ -378,8 +385,9 @@ r.delete("/integrations/:id", can("integrations", "delete"), h(async (req, res) 
 r.post("/integrations/:id/run", can("integrations", "update"), h(async (req, res) => {
   const c = await Connector.findOne({ _id: req.params.id, ...tenant(req) }).lean<any>();
   if (!c) throw notFound();
-  if (!PULL.includes(c.type)) throw badRequest("Only Google Search and MCP connectors are pulled");
-  if (!(await rateLimit(`pull:${c._id}`, 6, 3600))) throw new HttpError(429, "Run limit reached — try again in an hour (searches cost API credits)");
+  if (!PULL.includes(c.type)) throw badRequest("This connector receives leads by push — nothing to run");
+  // IndiaMART allows one Pull call per 5 minutes per key
+  if (!(await rateLimit(`pull:${c._id}`, 1, c.type === "indiamart" ? 300 : 60))) throw new HttpError(429, c.type === "indiamart" ? "IndiaMART allows one fetch every 5 minutes — try again shortly" : "Please wait a minute before running again");
   res.locals.action = "Run now";
   res.locals.item = c.name;
   res.json(await runPull(c));
@@ -396,21 +404,6 @@ r.post("/integrations/mcp/tools", can("integrations", "create"), h(async (req, r
   const s = await mcpSession(b.serverUrl, token || undefined);
   const tools = await s.listTools();
   res.json({ server: s.server, tools: tools.map((t: any) => ({ name: t.name, description: t.description, inputSchema: t.inputSchema })) });
-}));
-
-/** Google Search results kept for review (with or without contact details). */
-r.get("/integrations/:id/prospects", can("integrations", "read"), h(async (req, res) => {
-  const { page, limit, skip } = paging(req.query);
-  const q: any = { connectorId: req.params.id, ...tenant(req) };
-  if (req.query.status && ["new", "lead", "dismissed"].includes(String(req.query.status))) q.status = req.query.status;
-  const [items, total] = await Promise.all([Prospect.find(q).sort({ createdAt: -1 }).skip(skip).limit(limit).lean(), Prospect.countDocuments(q)]);
-  res.json({ items, total, page, limit });
-}));
-r.put("/integrations/prospects/:pid", can("integrations", "update"), h(async (req, res) => {
-  const { status } = parse(z.object({ status: z.enum(["new", "dismissed"]) }), req.body);
-  const p = await Prospect.findOneAndUpdate({ _id: req.params.pid, ...tenant(req) }, { $set: { status } }, { new: true }).lean();
-  if (!p) throw notFound();
-  res.json(p);
 }));
 
 r.get("/integrations/:id/events", can("integrations", "read"), h(async (req, res) => {

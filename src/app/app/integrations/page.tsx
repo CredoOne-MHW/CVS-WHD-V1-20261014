@@ -2,7 +2,7 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { Check, Copy as CopyIcon, Plus, Power, KeyRound, Trash2, BookOpen, Play, ExternalLink, EyeOff } from "lucide-react";
-import { GuideSteps, GoogleSearchForm, McpForm, blankSearch, blankMcp } from "@/components/ConnectorGuide";
+import { GuideSteps, McpForm, blankMcp, IndiaMartForm, TradeIndiaForm, GoogleAdsForm, blankTradeIndia, blankGoogleAds } from "@/components/ConnectorGuide";
 import { GUIDES } from "@/lib/guides";
 import { icon } from "@/components/icons";
 import { api, fmtDate } from "@/lib/api";
@@ -67,7 +67,11 @@ const HELP: Record<string, string> = {
   partner: "Give each partner their own connector. Every lead is credited via the referral field and attribution history.",
 };
 
-const PULL = ["google_search", "mcp"];
+const PULL_ONLY = ["mcp", "tradeindia"]; // nothing to paste anywhere — we fetch
+const HAS_PULL = ["mcp", "tradeindia", "indiamart"];
+const HAS_SETTINGS = ["mcp", "tradeindia", "indiamart", "google_ads"];
+const PUSH_PLATFORMS = ["indiamart", "justdial", "sulekha"];
+const blankCfg = (t: string) => (t === "mcp" ? { ...blankMcp } : t === "tradeindia" ? { ...blankTradeIndia } : t === "google_ads" ? { ...blankGoogleAds } : undefined);
 
 export default function Integrations() {
   const [data, setData] = useState<any>(null);
@@ -141,7 +145,7 @@ export default function Integrations() {
                   </Link>
                 ) : (
                   perm.create && (
-                    <Btn variant="secondary" className="w-full" onClick={() => setCreate({ type: t.type, name: mine.length ? `${t.label} ${mine.length + 1}` : t.label, defaultCampaign: "", defaultMedium: "", defaultSource: "", secret: "", config: t.type === "google_search" ? { ...blankSearch } : t.type === "mcp" ? { ...blankMcp } : undefined })}>
+                    <Btn variant="secondary" className="w-full" onClick={() => setCreate({ type: t.type, name: mine.length ? `${t.label} ${mine.length + 1}` : t.label, defaultCampaign: "", defaultMedium: "", defaultSource: "", secret: "", platformKey: "", config: blankCfg(t.type) })}>
                       <Plus className="h-4 w-4" /> {mine.length ? "Add another" : "Connect"}
                     </Btn>
                   )
@@ -169,8 +173,8 @@ export default function Integrations() {
                 try {
                   const body = { ...create };
                   if (!body.secret) delete body.secret;
-                  if (body.config?.keywords) body.config = { ...body.config, keywords: body.config.keywords.map((k: string) => k.trim()).filter(Boolean) };
-                  if (body.config && !body.config.cx) delete body.config.cx;
+                  if (!body.platformKey) delete body.platformKey;
+                  if (!body.config) delete body.config;
                   const c = await api("/co/integrations", { body });
                   setCreate(null);
                   load();
@@ -197,9 +201,14 @@ export default function Integrations() {
                 </button>
               )}
             </div>
-            {create.type === "google_search" && (
+            {create.type === "indiamart" && (
               <div className="sm:col-span-2">
-                <GoogleSearchForm cfg={create.config} set={(v) => setCreate({ ...create, config: v })} secret={create.secret} setSecret={(v) => setCreate({ ...create, secret: v })} />
+                <IndiaMartForm platformKey={create.platformKey} setPlatformKey={(v) => setCreate((c: any) => ({ ...c, platformKey: v }))} />
+              </div>
+            )}
+            {create.type === "tradeindia" && (
+              <div className="sm:col-span-2">
+                <TradeIndiaForm cfg={create.config} set={(v) => setCreate((c: any) => ({ ...c, config: v }))} platformKey={create.platformKey} setPlatformKey={(v) => setCreate((c: any) => ({ ...c, platformKey: v }))} />
               </div>
             )}
             {create.type === "mcp" && (
@@ -245,12 +254,14 @@ export default function Integrations() {
 }
 
 function ConnectorDrawer({ c, onClose, onChanged }: { c: any; onClose: () => void; onChanged: () => void }) {
-  const [tab, setTab] = useState<"setup" | "settings" | "results" | "mapping" | "deliveries">("setup");
+  const [tab, setTab] = useState<"setup" | "settings" | "mapping" | "deliveries">("setup");
+  const [pushUrl, setPushUrl] = useState<string | undefined>();
+  const [platformKey, setPlatformKey] = useState("");
   const [running, setRunning] = useState(false);
   const [lastRun, setLastRun] = useState<any>(null);
   const [cfg, setCfg] = useState<any>(null);
   const [newSecret, setNewSecret] = useState("");
-  const [prospects, setProspects] = useState<any>(null);
+
   const [secret, setSecret] = useState<string | undefined>();
   const [map, setMap] = useState<Record<string, string>>({});
   const [events, setEvents] = useState<any>(null);
@@ -266,13 +277,11 @@ function ConnectorDrawer({ c, onClose, onChanged }: { c: any; onClose: () => voi
     setMap(c.fieldMap || {});
     setEvents(null);
     setLastRun(c.lastRun ? { ...c.lastRun, at: c.lastRunAt } : null);
-    setCfg(c.config ? { ...(c.type === "google_search" ? blankSearch : blankMcp), ...c.config } : null);
+    setCfg(HAS_SETTINGS.includes(c.type) ? { ...(blankCfg(c.type) || {}), ...(c.config || {}) } : null);
     setNewSecret("");
-    setProspects(null);
+    setPlatformKey("");
+    setPushUrl(c.pushUrl);
   }, [c]);
-  useEffect(() => {
-    if (c && tab === "results") api(`/co/integrations/${c._id}/prospects`, { fresh: true }).then(setProspects);
-  }, [c, tab]);
   useEffect(() => {
     if (c && tab === "deliveries") api(`/co/integrations/${c._id}/events`).then(setEvents);
   }, [c, tab]);
@@ -287,25 +296,26 @@ function ConnectorDrawer({ c, onClose, onChanged }: { c: any; onClose: () => voi
         value={tab}
         onChange={setTab}
         tabs={[
-          { key: "setup", label: PULL.includes(c.type) ? "Overview" : "Setup" },
-          ...(PULL.includes(c.type) ? [{ key: "settings" as const, label: "Settings" }] : []),
-          ...(c.type === "google_search" ? [{ key: "results" as const, label: "Results" }] : []),
+          { key: "setup", label: "Setup" },
+          ...(HAS_SETTINGS.includes(c.type) ? [{ key: "settings" as const, label: "Settings" }] : []),
           { key: "mapping" as const, label: "Field mapping" },
-          { key: "deliveries" as const, label: PULL.includes(c.type) ? "Imported" : "Deliveries" },
+          { key: "deliveries" as const, label: "Deliveries" },
         ]}
       />
-      {tab === "setup" && PULL.includes(c.type) && (
-        <div className="space-y-4">
+      {tab === "setup" && HAS_PULL.includes(c.type) && (
+        <div className="mb-4 space-y-4">
           <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-ink-400/15 p-4">
             <div>
-              <p className="text-sm font-semibold">Runs daily at 2:00 AM IST</p>
+              <p className="text-sm font-semibold">
+                {c.type === "mcp" ? "Fetches daily at 2:00 AM IST" : c.type === "indiamart" && !c.platformKeyMasked ? "Pull API not set — add your key in Settings for the 15-minute safety net" : `Fetches every 15 minutes${c.type === "indiamart" ? " (plus instant Push)" : ""}`}
+              </p>
               <p className="text-xs text-ink-500">
                 {lastRun?.at || c.lastRunAt ? `Last run ${fmtDate(lastRun?.at || c.lastRunAt)}` : "Not run yet"}
-                {lastRun && (lastRun.ok === false ? ` · failed: ${lastRun.error || (lastRun.errors || []).join("; ")}` : ` · ${lastRun.found ?? 0} found · ${lastRun.created ?? 0} new lead(s) · ${lastRun.duplicates ?? 0} merged${lastRun.newProspects != null ? ` · ${lastRun.newProspects} new result(s)` : ""}`)}
+                {lastRun && (lastRun.ok === false ? ` · failed: ${lastRun.error}` : lastRun.throttled ? " · IndiaMART asked to wait 5 minutes — next run will catch up" : lastRun.skipped ? ` · ${lastRun.skipped}` : ` · ${lastRun.found ?? 0} found · ${lastRun.created ?? 0} new lead(s) · ${lastRun.duplicates ?? 0} already in Leads`)}
               </p>
               {lastRun?.errors?.length > 0 && lastRun.ok !== false && <p className="mt-1 text-xs text-red-700">{lastRun.errors.join(" · ")}</p>}
             </div>
-            {perm.update && (
+            {perm.update && !(c.type === "indiamart" && !c.platformKeyMasked) && (
               <Btn
                 loading={running}
                 onClick={async () => {
@@ -326,23 +336,21 @@ function ConnectorDrawer({ c, onClose, onChanged }: { c: any; onClose: () => voi
               </Btn>
             )}
           </div>
-          <GuideSteps type={c.type} c={c} compact />
+          {PULL_ONLY.includes(c.type) && <GuideSteps type={c.type} c={c} compact />}
         </div>
       )}
       {tab === "settings" && cfg && (
         <div className="space-y-4">
-          {c.type === "google_search" ? (
-            <GoogleSearchForm cfg={cfg} set={setCfg} secret={newSecret} setSecret={setNewSecret} editing />
-          ) : (
-            <McpForm cfg={cfg} set={setCfg} secret={newSecret} setSecret={setNewSecret} connectorId={c._id} editing />
-          )}
+          {c.type === "mcp" && <McpForm cfg={cfg} set={setCfg} secret={newSecret} setSecret={setNewSecret} connectorId={c._id} editing />}
+          {c.type === "indiamart" && <IndiaMartForm platformKey={platformKey} setPlatformKey={setPlatformKey} editing masked={c.platformKeyMasked} />}
+          {c.type === "tradeindia" && <TradeIndiaForm cfg={cfg} set={setCfg} platformKey={platformKey} setPlatformKey={setPlatformKey} editing masked={c.platformKeyMasked} />}
+          {c.type === "google_ads" && <GoogleAdsForm cfg={cfg} set={setCfg} />}
           {perm.update && (
             <Btn
               onClick={async () => {
                 try {
-                  const config = { ...cfg, ...(cfg.keywords ? { keywords: cfg.keywords.map((k: string) => k.trim()).filter(Boolean) } : {}) };
-                  if (!config.cx) delete config.cx;
-                  await api(`/co/integrations/${c._id}`, { method: "PUT", body: { config, ...(newSecret ? { secret: newSecret } : {}) } });
+                  const body: any = { ...(c.type === "indiamart" ? {} : { config: cfg }), ...(newSecret ? { secret: newSecret } : {}), ...(platformKey ? { platformKey } : {}) };
+                  await api(`/co/integrations/${c._id}`, { method: "PUT", body });
                   toast("ok", "Settings saved");
                   onChanged();
                 } catch (e: any) {
@@ -355,63 +363,21 @@ function ConnectorDrawer({ c, onClose, onChanged }: { c: any; onClose: () => voi
           )}
         </div>
       )}
-      {tab === "results" && (
-        <div className="overflow-x-auto">
-          {!prospects ? (
-            <div className="flex justify-center py-10 text-hive-700">
-              <Spinner />
-            </div>
-          ) : (
-            <table className="w-full min-w-[700px]">
-              <thead>
-                <tr>
-                  {["Found", "Keyword", "Result", "Contact", ""].map((h) => (
-                    <th key={h} className="th">
-                      {h}
-                    </th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {prospects.items.map((p: any) => (
-                  <tr key={p._id} className={p.status === "dismissed" ? "opacity-50" : ""}>
-                    <td className="td whitespace-nowrap text-ink-500">{fmtDate(p.createdAt)}</td>
-                    <td className="td text-xs">{p.keyword}</td>
-                    <td className="td max-w-[320px]">
-                      <a href={p.url} target="_blank" rel="noreferrer noopener" className="inline-flex items-center gap-1 font-semibold text-hive-800 hover:underline">
-                        <span className="line-clamp-1">{p.title}</span> <ExternalLink className="h-3 w-3 shrink-0" />
-                      </a>
-                      <p className="line-clamp-2 text-xs text-ink-500">{p.snippet}</p>
-                    </td>
-                    <td className="td text-xs">{[...(p.phones || []), ...(p.emails || [])].join(", ") || "—"}</td>
-                    <td className="td whitespace-nowrap">
-                      {p.status === "lead" ? (
-                        <Badge color="green">In Leads</Badge>
-                      ) : perm.update ? (
-                        <button
-                          className="btn-ghost"
-                          onClick={async () => {
-                            await api(`/co/integrations/prospects/${p._id}`, { method: "PUT", body: { status: p.status === "dismissed" ? "new" : "dismissed" } });
-                            setProspects(await api(`/co/integrations/${c._id}/prospects`, { fresh: true }));
-                          }}
-                        >
-                          <EyeOff className="h-4 w-4" /> {p.status === "dismissed" ? "Restore" : "Dismiss"}
-                        </button>
-                      ) : null}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          )}
-          {prospects && !prospects.items.length && <p className="py-10 text-center text-sm text-ink-400">No results yet — click Run now on the Overview tab.</p>}
-        </div>
-      )}
-      {tab === "setup" && !PULL.includes(c.type) && (
+      {tab === "setup" && !PULL_ONLY.includes(c.type) && (
         <div className="space-y-4">
-          <CopyRow label="Endpoint URL" value={c.endpoint} />
+          {PUSH_PLATFORMS.includes(c.type) ? (
+            pushUrl ? (
+              <div className="rounded-xl border border-honey-300 bg-honey-100/60 p-3">
+                <CopyRow label="Your Lead URL — shown once, copy it now" value={pushUrl} />
+              </div>
+            ) : (
+              <CopyRow label="Lead URL (rotate the secret below to see a new one)" value={c.pushUrlMasked} />
+            )
+          ) : (
+            <CopyRow label="Endpoint URL" value={c.endpoint} />
+          )}
 
-          {secret ? (
+          {PUSH_PLATFORMS.includes(c.type) ? null : secret ? (
             <div className="rounded-xl border border-honey-300 bg-honey-100/60 p-3">
               <CopyRow label="Secret / API key — shown once, copy it now" value={secret} />
             </div>
@@ -457,10 +423,11 @@ function ConnectorDrawer({ c, onClose, onChanged }: { c: any; onClose: () => voi
                 onClick={async () => {
                   const r = await api(`/co/integrations/${c._id}/rotate`, { method: "POST" });
                   setSecret(r.secret);
-                  toast("ok", "New secret generated — update the sending system");
+                  setPushUrl(r.pushUrl);
+                  toast("ok", PUSH_PLATFORMS.includes(c.type) ? "New Lead URL generated — send it to the platform; the old one stops working" : "New secret generated — update the sending system");
                 }}
               >
-                <KeyRound className="h-4 w-4" /> Rotate secret
+                <KeyRound className="h-4 w-4" /> {PUSH_PLATFORMS.includes(c.type) ? "New Lead URL" : "Rotate secret"}
               </Btn>
             )}
             {perm.delete && (
