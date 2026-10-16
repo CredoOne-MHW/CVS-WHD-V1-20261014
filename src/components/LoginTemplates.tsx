@@ -5,6 +5,8 @@
  * The same components render the live login page and the scaled previews in the template picker, so a preview is exact.
  */
 import { useEffect, useRef, useState, type ReactNode } from "react";
+import { AuraLogo } from "./Login3D";
+import { CinematicScene, PreviewCtx } from "./cinema/CinematicScene";
 import { Globe, MessageCircle, Megaphone, Search, Mail, PhoneCall, QrCode, Handshake, FileSpreadsheet, Braces, Sparkles, Zap, BellRing, ShieldCheck, LockKeyhole } from "lucide-react";
 
 export interface LoginBrand {
@@ -26,6 +28,7 @@ export const LOGIN_TEMPLATES = [
   { key: "photo", name: "Photo Panel", hint: "Your banner fills the brand side" },
   { key: "spotlight", name: "Spotlight Card", hint: "Card centred over full-screen banner" },
   { key: "aurora", name: "Aurora", hint: "Glowing logo halo + channel icons" },
+  { key: "cinema", name: "Cinematic 3D", hint: "Real-time 3D · leads stream in, clients orbit, AI glows" },
   { key: "minimal", name: "Minimal", hint: "Clean white page, accent hairline" },
   { key: "editorial", name: "Editorial", hint: "Form left, big type headline right" },
   { key: "mesh", name: "Gradient Mesh", hint: "Living colour blobs, glass card" },
@@ -39,7 +42,8 @@ export const TEMPLATE_KEYS = LOGIN_TEMPLATES.map((t) => t.key) as unknown as [Lo
 /** Older companies stored a 3-option layout; map it to the matching template. */
 export function templateOf(b: { loginTemplate?: string; loginLayout?: string; kind?: string }): LoginTemplateKey {
   if (b.loginTemplate && LOGIN_TEMPLATES.some((t) => t.key === b.loginTemplate)) return b.loginTemplate as LoginTemplateKey;
-  if (b.kind === "platform") return "aurora";
+  if (["orbit", "depth", "funnel"].includes(b.loginTemplate || "")) return "cinema"; // retired CSS-3D designs
+  if (b.kind === "platform") return "cinema";
   return b.loginLayout === "banner" ? "photo" : b.loginLayout === "centered" ? "spotlight" : "classic";
 }
 
@@ -57,7 +61,7 @@ const initials = (s: string) =>
 function Logo({ b, size = 56, ring = true, className = "" }: { b: LoginBrand; size?: number; ring?: boolean; className?: string }) {
   return (
     <span className={`grid shrink-0 place-items-center overflow-hidden rounded-full bg-white ${ring ? "p-1 shadow-lg shadow-black/15" : ""} ${className}`} style={{ width: size, height: size }}>
-      {b.logoUrl ? <img src={b.logoUrl} alt="" className="h-full w-full rounded-full object-contain" /> : <span className="font-extrabold text-hive-700" style={{ fontSize: size * 0.34 }}>{initials(b.shortName || b.name)}</span>}
+      {b.logoUrl ? <img src={b.logoUrl} alt="" className="max-h-[70%] max-w-[78%] object-contain" draggable={false} /> : <span className="font-extrabold text-hive-700" style={{ fontSize: size * 0.34 }}>{initials(b.shortName || b.name)}</span>}
     </span>
   );
 }
@@ -65,7 +69,7 @@ function Wordmark({ b, light, size = "md" }: { b: LoginBrand; light?: boolean; s
   const s = size === "lg" ? 64 : size === "sm" ? 40 : 52;
   return (
     <div className="flex min-w-0 items-center gap-3.5">
-      <Logo b={b} size={s} ring={!!light} />
+      {b.logoUrl && !light ? <img src={b.logoUrl} alt="" className="w-auto max-w-[120px] shrink-0 object-contain" style={{ height: s }} draggable={false} /> : <Logo b={b} size={s} ring={!!light} />}
       <div className="min-w-0">
         <p className={`truncate font-extrabold leading-tight tracking-tight ${size === "lg" ? "text-[26px]" : "text-[21px]"} ${light ? "text-white" : "text-ink-900"}`}>{b.shortName}</p>
         {b.tagline && <p className={`mt-0.5 truncate text-[11px] font-bold uppercase tracking-[.18em] ${light ? "text-white/60" : "text-ink-500"}`}>{b.tagline}</p>}
@@ -208,14 +212,7 @@ function Aurora({ b, form }: P) {
     <div className={`grid ${H} bg-[#f3f4f8] lg:grid-cols-[1.05fr_1fr]`}>
       <section className="relative hidden flex-col items-center justify-center overflow-hidden px-10 py-10 text-white lg:flex" style={{ background: "radial-gradient(120% 90% at 50% 22%, rgb(var(--brand-500)) 0%, rgb(var(--brand-700)) 46%, rgb(var(--brand-950)) 100%)" }}>
         <div aria-hidden className="absolute inset-0 opacity-[.16]" style={{ backgroundImage: "radial-gradient(rgba(255,255,255,.4) 1px, transparent 1px)", backgroundSize: "22px 22px" }} />
-        <div className="relative grid aspect-square w-[300px] place-items-center">
-          <span aria-hidden className="absolute inset-0 rounded-full border border-white/20" />
-          <span aria-hidden className="aura-glow" />
-          <span aria-hidden className="aura-comet" />
-          <span aria-hidden className="aura-trail" />
-          <span aria-hidden className="aura-breathe absolute inset-[14%] rounded-full" style={{ background: "radial-gradient(circle, #ffffff 0%, rgb(var(--brand-50)) 42%, rgb(var(--brand-200) / .8) 64%, transparent 78%)" }} />
-          {b.logoUrl ? <img src={b.logoUrl} alt="" className="relative w-[58%] rounded-full object-contain drop-shadow-[0_6px_18px_rgba(0,0,0,.25)]" /> : <span className="relative text-[64px] font-extrabold text-hive-800">{initials(b.shortName)}</span>}
-        </div>
+        <div className="relative"><AuraLogo src={b.logoUrl} name={b.shortName} size={300} /></div>
         <h1 className="relative mt-8 text-center text-[42px] font-extrabold leading-[1.08] tracking-[-0.02em]">{b.headline}</h1>
         <p className="relative mt-3 max-w-[560px] text-center text-[16px] leading-relaxed text-white/75">{b.subheadline}</p>
         <ul className="relative mt-8 grid w-full max-w-[580px] grid-cols-5 gap-x-3 gap-y-4 rounded-[22px] border border-white/10 bg-white/[.05] px-5 py-5 backdrop-blur-sm">
@@ -237,6 +234,49 @@ function Aurora({ b, form }: P) {
           <Secured b={b} />
         </div>
       </section>
+    </div>
+  );
+}
+
+/* ───────────── Cinematic 3D (WebGL) ───────────── */
+function RightForm({ b, form }: { b: LoginBrand; form: ReactNode }) {
+  return (
+    <section className="flex items-center justify-center px-6 py-12">
+      <div className="w-full max-w-[440px]">
+        <div className="mb-10"><Wordmark b={b} size="lg" /></div>
+        {form}
+        <Help b={b} />
+        <Secured b={b} />
+      </div>
+    </section>
+  );
+}
+const STORY = ["Leads from every source", "Clients, end to end", "AI intelligence"];
+function Cinema({ b, form }: P) {
+  const [phase, setPhase] = useState(0);
+  return (
+    <div className={`grid ${H} bg-[#f3f4f8] lg:grid-cols-[1.15fr_1fr]`}>
+      <section className="relative hidden overflow-hidden bg-hive-950 text-white lg:block">
+        <CinematicScene logoUrl={b.logoUrl} name={b.shortName} onPhase={setPhase} />
+        <div aria-hidden className="pointer-events-none absolute inset-x-0 bottom-0 h-[46%] bg-gradient-to-t from-hive-950 via-hive-950/70 to-transparent" />
+        <div className="pointer-events-none absolute inset-x-0 bottom-0 px-12 pb-12">
+          <h1 className="text-center text-[40px] font-extrabold leading-[1.08] tracking-[-0.02em]">{b.headline}</h1>
+          <p className="mx-auto mt-3 max-w-[540px] text-center text-[15px] leading-relaxed text-white/65">{b.subheadline}</p>
+          <ol className="mx-auto mt-8 grid max-w-[580px] grid-cols-3 gap-3" aria-label="How it works">
+            {STORY.map((label, i) => (
+              <li key={label} className={`transition-colors duration-500 ${phase === i ? "text-white" : "text-white/40"}`}>
+                <span className="block h-[2px] overflow-hidden rounded-full bg-white/15">
+                  {phase === i && <span key={`${i}-${phase}`} className="cin-progress block h-full rounded-full bg-honey-300" />}
+                </span>
+                <span className="mt-2.5 flex items-baseline gap-2 text-[13px] font-semibold">
+                  <span className="font-mono text-[11px] opacity-70">0{i + 1}</span> {label}
+                </span>
+              </li>
+            ))}
+          </ol>
+        </div>
+      </section>
+      <RightForm b={b} form={form} />
     </div>
   );
 }
@@ -392,7 +432,7 @@ function Glass({ b, darkForm }: P) {
   );
 }
 
-const DESIGNS: Record<LoginTemplateKey, (p: P) => JSX.Element> = { classic: Classic, photo: Photo, spotlight: Spotlight, aurora: Aurora, minimal: Minimal, editorial: Editorial, mesh: Mesh, noir: Noir, showcase: Showcase, glass: Glass };
+const DESIGNS: Record<LoginTemplateKey, (p: P) => JSX.Element> = { classic: Classic, photo: Photo, spotlight: Spotlight, aurora: Aurora, cinema: Cinema, minimal: Minimal, editorial: Editorial, mesh: Mesh, noir: Noir, showcase: Showcase, glass: Glass };
 export const DARK_TEMPLATES: LoginTemplateKey[] = ["mesh", "noir", "glass"];
 
 export function LoginTemplate({ template, b, form, darkForm }: { template: LoginTemplateKey; b: LoginBrand; form: ReactNode; darkForm?: ReactNode }) {
@@ -435,7 +475,9 @@ export function TemplateThumb({ template, b, width }: { template: LoginTemplateK
   return (
     <div ref={box} className="lp-preview relative w-full overflow-hidden" style={{ width: width || "100%", height: Hh * s }} aria-hidden>
       <div className="pointer-events-none absolute left-0 top-0 origin-top-left select-none" style={{ width: W, height: Hh, transform: `scale(${s})`, ["--lp-h" as any]: `${Hh}px` }}>
-        <LoginTemplate template={template} b={b} form={<PreviewForm />} darkForm={dark ? <PreviewForm dark /> : undefined} />
+        <PreviewCtx.Provider value={true}>
+          <LoginTemplate template={template} b={b} form={<PreviewForm />} darkForm={dark ? <PreviewForm dark /> : undefined} />
+        </PreviewCtx.Provider>
       </div>
     </div>
   );
