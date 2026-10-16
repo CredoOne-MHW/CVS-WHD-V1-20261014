@@ -1,0 +1,591 @@
+"use client";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { Plus, Pencil, Trash2, BellRing, Search, Repeat, Zap } from "lucide-react";
+import { api, qs, fmtDate, inr } from "@/lib/api";
+import { Btn, Modal, Field, Empty, Pager, Spinner, Confirm, Stat, useToast } from "../ui";
+import { usePerm } from "../Shell";
+import { Tabs } from "../Logs";
+import { ServicePicker } from "../ServicePicker";
+import { CLIENT_FREQUENCIES, PAYMENT_MODES, applyDiscount, clientFreqLabel } from "@shared/clients";
+import { ClientSelect, PAY_STATUS } from "./common";
+
+type View = "recurring" | "on_demand" | "history";
+const today = () => new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Kolkata" });
+const istDate = (d?: string) => (d ? new Date(new Date(d).getTime() + 5.5 * 3600e3).toISOString().slice(0, 10) : "");
+const fromIst = (s: string) => (s ? new Date(s + "T00:00:00+05:30").toISOString() : undefined);
+
+/** Client › Subscription Management: Payment Details · Payment (Recurring | On-Demand) · Transaction History. */
+export function Billing() {
+  const [tab, setTab] = useState<"details" | "payment" | "history">("details");
+  const [sub, setSub] = useState<"recurring" | "on_demand">("recurring");
+  return (
+    <>
+      <Tabs
+        value={tab}
+        onChange={setTab}
+        tabs={[
+          { key: "details", label: "Payment Details" },
+          { key: "payment", label: "Payment" },
+          { key: "history", label: "Transaction History" },
+        ]}
+      />
+      {tab === "details" && <PlanTable />}
+      {tab === "payment" && (
+        <>
+          <div className="mb-4 inline-flex rounded-xl border border-ink-400/15 bg-white p-1">
+            {(
+              [
+                ["recurring", "Recurring", Repeat],
+                ["on_demand", "On-Demand", Zap],
+              ] as const
+            ).map(([k, label, I]) => (
+              <button key={k} onClick={() => setSub(k)} className={`flex items-center gap-1.5 rounded-lg px-3.5 py-1.5 text-sm font-semibold ${sub === k ? "bg-hive-700 text-white" : "text-ink-700 hover:bg-hive-50"}`}>
+                <I className="h-4 w-4" /> {label}
+              </button>
+            ))}
+          </div>
+          <PaymentTable key={sub} view={sub} />
+        </>
+      )}
+      {tab === "history" && <PaymentTable view="history" />}
+    </>
+  );
+}
+
+/* ───────────── Payment Details ───────────── */
+const BLANK_PLAN = { clientId: "", serviceType: "", amount: "", type: "recurring", frequency: "monthly", startDate: today() };
+
+function PlanTable() {
+  const [f, setF] = useState({ q: "", type: "", page: 1 });
+  const [data, setData] = useState<any>(null);
+  const [form, setForm] = useState<any>(null);
+  const [del, setDel] = useState<any>(null);
+  const [busy, setBusy] = useState(false);
+  const perm = usePerm("clients");
+  const toast = useToast();
+  const load = useCallback(() => api(`/co/clients-plans${qs(f)}`).then(setData), [f]);
+  useEffect(() => {
+    load();
+  }, [load]);
+
+  async function save() {
+    setBusy(true);
+    try {
+      const body = { ...form, amount: Number(form.amount), startDate: form.type === "recurring" ? fromIst(form.startDate) : undefined };
+      delete body._id;
+      if (form._id) await api(`/co/clients-plans/${form._id}`, { method: "PUT", body });
+      else await api("/co/clients-plans", { body });
+      toast("ok", form._id ? "Payment details updated" : form.type === "recurring" ? "Saved — dues appear under Payment › Recurring" : "Saved");
+      setForm(null);
+      load();
+    } catch (e: any) {
+      toast("err", e.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+  async function remind(p: any) {
+    try {
+      await api(`/co/clients-plans/${p._id}/reminder`, { method: "POST" });
+      toast("ok", `Reminder sent to ${p.clientName || p.clientCode} on WhatsApp`);
+      load();
+    } catch (e: any) {
+      toast("err", e.message);
+    }
+  }
+  const setType = (type: string) => setForm({ ...form, type, frequency: type === "on_demand" ? "on_demand" : form.frequency === "on_demand" ? "monthly" : form.frequency });
+
+  return (
+    <div className="card">
+      <div className="flex flex-wrap items-center gap-3 border-b border-ink-400/15 p-4">
+        <div className="relative">
+          <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-ink-400" />
+          <input className="input w-64 pl-9" placeholder="Client or service" value={f.q} onChange={(e) => setF({ ...f, q: e.target.value, page: 1 })} />
+        </div>
+        <select className="input w-auto" value={f.type} onChange={(e) => setF({ ...f, type: e.target.value, page: 1 })} aria-label="Payment type">
+          <option value="">Recurring & On-Demand</option>
+          <option value="recurring">Recurring</option>
+          <option value="on_demand">On-Demand</option>
+        </select>
+        {perm.create && (
+          <Btn className="ml-auto" onClick={() => setForm({ ...BLANK_PLAN })}>
+            <Plus className="h-4 w-4" /> Create
+          </Btn>
+        )}
+      </div>
+      <div className="overflow-x-auto">
+        <table className="w-full min-w-[900px]">
+          <thead>
+            <tr>
+              {["Client", "Service Type", "Payment Amount", "Payment Type", "Frequency", "Starts", "Action"].map((h) => (
+                <th key={h} className={`th ${h === "Action" ? "text-right" : ""}`}>
+                  {h}
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {data?.items.map((p: any) => (
+              <tr key={p._id} className="hover:bg-hive-50/40">
+                <td className="td">
+                  <p className="font-semibold">{p.clientName || "NA"}</p>
+                  <p className="mono text-xs text-hive-800">{p.clientCode}</p>
+                </td>
+                <td className="td">{p.serviceType}</td>
+                <td className="td font-semibold tabular-nums">{inr(p.amount)}</td>
+                <td className="td">{p.type === "recurring" ? "Recurring" : "On-Demand"}</td>
+                <td className="td">{clientFreqLabel(p.frequency)}</td>
+                <td className="td text-ink-700">{p.startDate ? fmtDate(p.startDate, false) : "—"}</td>
+                <td className="td">
+                  <div className="flex justify-end gap-1">
+                    {perm.update && (
+                      <button className="btn-ghost" title="Edit" aria-label="Edit" onClick={() => setForm({ ...p, amount: String(p.amount), startDate: istDate(p.startDate) || today(), clientId: String(p.clientId) })}>
+                        <Pencil className="h-4 w-4" />
+                      </button>
+                    )}
+                    {perm.delete && (
+                      <button className="btn-ghost text-red-600" title="Delete" aria-label="Delete" onClick={() => setDel(p)}>
+                        <Trash2 className="h-4 w-4" />
+                      </button>
+                    )}
+                    {perm.update && (
+                      <button className="btn-ghost" title={p.lastReminderAt ? `Reminder · last sent ${fmtDate(p.lastReminderAt)}` : "Reminder"} aria-label="Reminder" onClick={() => remind(p)}>
+                        <BellRing className="h-4 w-4" />
+                      </button>
+                    )}
+                  </div>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+        {!data && (
+          <div className="flex justify-center py-16 text-hive-700">
+            <Spinner className="h-6 w-6" />
+          </div>
+        )}
+        {data && !data.items.length && <Empty title="No payment details yet" hint="Create one per client and service — recurring ones generate their dues automatically." />}
+      </div>
+      {data?.total > 0 && <Pager page={data.page} limit={data.limit} total={data.total} onPage={(page) => setF({ ...f, page })} />}
+
+      <Modal
+        open={!!form}
+        onClose={() => setForm(null)}
+        title={form?._id ? "Edit payment details" : "Create payment details"}
+        size="md"
+        footer={
+          <>
+            <Btn variant="secondary" onClick={() => setForm(null)}>
+              Cancel
+            </Btn>
+            <Btn loading={busy} onClick={save}>
+              Save
+            </Btn>
+          </>
+        }
+      >
+        {form && (
+          <div className="grid gap-4 sm:grid-cols-2">
+            <Field label="Client" required className="sm:col-span-2">
+              <ClientSelect value={form.clientId} onChange={(v) => setForm({ ...form, clientId: v })} />
+            </Field>
+            <Field label="Service Type" required className="sm:col-span-2" hint="Type to add a new service; trash icon removes one from the list">
+              <ServicePicker multiple={false} value={form.serviceType} onChange={(v) => setForm({ ...form, serviceType: v })} placeholder="Select service type…" />
+            </Field>
+            <Field label="Payment Amount (₹)" required>
+              <input className="input tabular-nums" inputMode="decimal" value={form.amount} onChange={(e) => setForm({ ...form, amount: e.target.value.replace(/[^\d.]/g, "") })} />
+            </Field>
+            <Field label="Payment Type" required>
+              <div className="flex rounded-xl border border-ink-400/20 bg-white p-1">
+                {[
+                  ["recurring", "Recurring"],
+                  ["on_demand", "On-Demand"],
+                ].map(([k, l]) => (
+                  <button key={k} type="button" onClick={() => setType(k)} className={`flex-1 rounded-lg py-1.5 text-sm font-semibold ${form.type === k ? "bg-hive-700 text-white" : "text-ink-700"}`}>
+                    {l}
+                  </button>
+                ))}
+              </div>
+            </Field>
+            <Field label="Payment Frequency" required>
+              <select className="input" value={form.frequency} disabled={form.type === "on_demand"} onChange={(e) => setForm({ ...form, frequency: e.target.value })}>
+                {CLIENT_FREQUENCIES.filter((x) => (form.type === "on_demand" ? x.key === "on_demand" : x.key !== "on_demand")).map((x) => (
+                  <option key={x.key} value={x.key}>
+                    {x.label}
+                  </option>
+                ))}
+              </select>
+            </Field>
+            {form.type === "recurring" && (
+              <Field label="First due date" hint="Next dues follow the frequency">
+                <input type="date" className="input" value={form.startDate} onChange={(e) => setForm({ ...form, startDate: e.target.value })} />
+              </Field>
+            )}
+            {form.type === "on_demand" && <p className="self-end text-xs text-ink-500">On-demand prices fill in automatically when you create an On-Demand payment for this client and service.</p>}
+          </div>
+        )}
+      </Modal>
+      <Confirm
+        open={!!del}
+        title="Delete these payment details?"
+        body={del ? `${del.clientCode} · ${del.serviceType} · ${inr(del.amount)}. Unpaid dues generated from it are removed; paid ones stay in Transaction History.` : ""}
+        confirmLabel="Delete"
+        danger
+        onClose={() => setDel(null)}
+        onConfirm={async () => {
+          await api(`/co/clients-plans/${del._id}`, { method: "DELETE" });
+          toast("ok", "Deleted");
+          setDel(null);
+          load();
+        }}
+      />
+    </div>
+  );
+}
+
+/* ───────────── Payments (Recurring · On-Demand · History) ───────────── */
+const BLANK_PAY = { clientId: "", services: [] as string[], amount: "", discountType: "fixed", discountFixed: "", discountPct: "", status: "unpaid", mode: "", txnId: "", remarks: "", dueDate: today() };
+
+function PaymentTable({ view }: { view: View }) {
+  const [f, setF] = useState({ q: "", status: "", page: 1 });
+  const [data, setData] = useState<any>(null);
+  const [form, setForm] = useState<any>(null);
+  const [del, setDel] = useState<any>(null);
+  const [busy, setBusy] = useState(false);
+  const perm = usePerm("clients");
+  const toast = useToast();
+  const load = useCallback(() => api(`/co/clients-payments${qs({ ...f, view })}`).then(setData), [f, view]);
+  useEffect(() => {
+    load();
+  }, [load]);
+
+  async function setStatus(p: any, status: string) {
+    try {
+      await api(`/co/clients-payments/${p._id}`, { method: "PUT", body: { status } });
+      toast("ok", status === "paid" ? "Marked Paid — moved to Transaction History" : view === "history" ? `Moved back to Payment as ${PAY_STATUS[status].label}` : `Status → ${PAY_STATUS[status].label}`);
+      load();
+    } catch (e: any) {
+      toast("err", e.message);
+    }
+  }
+  async function remind(p: any) {
+    try {
+      await api(`/co/clients-payments/${p._id}/reminder`, { method: "POST" });
+      toast("ok", `${p.status === "paid" ? "Receipt" : "Reminder"} sent to ${p.clientName || p.clientCode} on WhatsApp`);
+      load();
+    } catch (e: any) {
+      toast("err", e.message);
+    }
+  }
+  const openEdit = (p: any) =>
+    setForm({
+      ...p,
+      clientId: String(p.clientId),
+      amount: String(p.amount),
+      discountFixed: p.discountAmount ? String(p.discountAmount) : "",
+      discountPct: p.discountAmount && p.amount ? String(Math.round((p.discountAmount / p.amount) * 10000) / 100) : "",
+      mode: p.mode || "",
+      txnId: p.txnId || "",
+      remarks: p.remarks || "",
+      dueDate: istDate(p.dueDate),
+    });
+
+  async function save() {
+    setBusy(true);
+    try {
+      if (form._id && view === "history") {
+        await api(`/co/clients-payments/${form._id}`, { method: "PUT", body: { status: form.status } });
+      } else {
+        const body: any = {
+          amount: Number(form.amount || 0),
+          discountType: form.discountType,
+          discountValue: Number((form.discountType === "percent" ? form.discountPct : form.discountFixed) || 0),
+          status: form.status,
+          mode: form.mode || null,
+          txnId: form.txnId,
+          remarks: form.remarks,
+        };
+        if (!form._id || form.kind === "on_demand") Object.assign(body, { clientId: form.clientId, services: form.services, dueDate: fromIst(form.dueDate) });
+        if (form._id) await api(`/co/clients-payments/${form._id}`, { method: "PUT", body });
+        else await api("/co/clients-payments", { body });
+      }
+      toast("ok", form.status === "paid" && view !== "history" ? "Saved — paid entries move to Transaction History" : "Saved");
+      setForm(null);
+      load();
+    } catch (e: any) {
+      toast("err", e.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const sums = data?.sums || {};
+  const heads = view === "history" ? ["Client", "Service Type", "Type", "Gross", "Paid on", "Mode", "Transaction ID", "Payment Status", "Action"] : view === "recurring" ? ["Client", "Service Type", "Due date", "Payment Amount", "Gross", "Payment Status", "Action"] : ["Client", "Service Type", "Payment Amount", "Discount", "Gross", "Due date", "Payment Status", "Mode", "Action"];
+
+  return (
+    <>
+      <div className="mb-4 grid gap-3 sm:grid-cols-3">
+        {view === "history" ? (
+          <Stat label="Collected" value={inr(sums.paid?.amount || 0)} hint={`${sums.paid?.n || 0} payment(s)`} tone="green" />
+        ) : (
+          <>
+            <Stat label="Unpaid" value={inr(sums.unpaid?.amount || 0)} hint={`${sums.unpaid?.n || 0} due`} tone="honey" />
+            <Stat label="Over-Due" value={inr(sums.overdue?.amount || 0)} hint={`${sums.overdue?.n || 0} late`} tone="red" />
+          </>
+        )}
+      </div>
+      <div className="card">
+        <div className="flex flex-wrap items-center gap-3 border-b border-ink-400/15 p-4">
+          <div className="relative">
+            <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-ink-400" />
+            <input className="input w-64 pl-9" placeholder="Client, service, transaction ID" value={f.q} onChange={(e) => setF({ ...f, q: e.target.value, page: 1 })} />
+          </div>
+          {view !== "history" && (
+            <select className="input w-auto" value={f.status} onChange={(e) => setF({ ...f, status: e.target.value, page: 1 })} aria-label="Payment status">
+              <option value="">Unpaid & Over-Due</option>
+              <option value="unpaid">Unpaid</option>
+              <option value="overdue">Over-Due</option>
+            </select>
+          )}
+          {view === "on_demand" && perm.create && (
+            <Btn className="ml-auto" onClick={() => setForm({ ...BLANK_PAY })}>
+              <Plus className="h-4 w-4" /> Create
+            </Btn>
+          )}
+          {view === "recurring" && <p className="ml-auto text-xs text-ink-500">Generated automatically from recurring Payment Details.</p>}
+        </div>
+        <div className="overflow-x-auto">
+          <table className="w-full min-w-[1000px]">
+            <thead>
+              <tr>
+                {heads.map((h) => (
+                  <th key={h} className={`th ${h === "Action" ? "text-right" : ""}`}>
+                    {h}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {data?.items.map((p: any) => (
+                <tr key={p._id} className="hover:bg-hive-50/40">
+                  <td className="td">
+                    <p className="font-semibold">{p.clientName || "NA"}</p>
+                    <p className="mono text-xs text-hive-800">{p.clientCode}</p>
+                  </td>
+                  <td className="td max-w-[220px]">{p.services.join(", ")}</td>
+                  {view === "history" ? (
+                    <>
+                      <td className="td">{p.kind === "recurring" ? "Recurring" : "On-Demand"}</td>
+                      <td className="td font-semibold tabular-nums">{inr(p.gross)}</td>
+                      <td className="td">{fmtDate(p.paidAt)}</td>
+                      <td className="td">{p.mode || "NA"}</td>
+                      <td className="td mono">{p.txnId || "NA"}</td>
+                    </>
+                  ) : view === "recurring" ? (
+                    <>
+                      <td className="td">{fmtDate(p.dueDate, false)}</td>
+                      <td className="td tabular-nums">{inr(p.amount)}</td>
+                      <td className="td font-semibold tabular-nums">{inr(p.gross)}</td>
+                    </>
+                  ) : (
+                    <>
+                      <td className="td tabular-nums">{inr(p.amount)}</td>
+                      <td className="td tabular-nums">{p.discountAmount ? `${inr(p.discountAmount)}${p.discountType === "percent" ? ` (${p.discountValue}%)` : ""}` : "—"}</td>
+                      <td className="td font-semibold tabular-nums">{inr(p.gross)}</td>
+                      <td className="td">{fmtDate(p.dueDate, false)}</td>
+                    </>
+                  )}
+                  <td className="td">
+                    <select className={`rounded-lg border-0 py-1 pl-2 pr-7 text-xs font-semibold ring-1 ring-inset ring-ink-400/20 ${PAY_STATUS[p.status].cls}`} value={p.status} disabled={!perm.update} onChange={(e) => setStatus(p, e.target.value)} aria-label="Payment status">
+                      {Object.entries(PAY_STATUS).map(([k, v]) => (
+                        <option key={k} value={k}>
+                          {v.label}
+                        </option>
+                      ))}
+                    </select>
+                  </td>
+                  {view === "on_demand" && <td className="td">{p.mode || "NA"}</td>}
+                  <td className="td">
+                    <div className="flex justify-end gap-1">
+                      {perm.update && (
+                        <button className="btn-ghost" title={view === "history" ? "Edit status" : "Edit"} aria-label="Edit" onClick={() => openEdit(p)}>
+                          <Pencil className="h-4 w-4" />
+                        </button>
+                      )}
+                      {perm.delete && (
+                        <button className="btn-ghost text-red-600" title="Delete" aria-label="Delete" onClick={() => setDel(p)}>
+                          <Trash2 className="h-4 w-4" />
+                        </button>
+                      )}
+                      {perm.update && (
+                        <button className="btn-ghost" title={p.status === "paid" ? "Send receipt on WhatsApp" : p.lastReminderAt ? `Reminder · last sent ${fmtDate(p.lastReminderAt)}` : "Reminder"} aria-label="Reminder" onClick={() => remind(p)}>
+                          <BellRing className="h-4 w-4" />
+                        </button>
+                      )}
+                    </div>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          {!data && (
+            <div className="flex justify-center py-16 text-hive-700">
+              <Spinner className="h-6 w-6" />
+            </div>
+          )}
+          {data && !data.items.length && <Empty title={view === "history" ? "No payments received yet" : "Nothing due"} hint={view === "recurring" ? "Recurring Payment Details create their dues here automatically." : view === "on_demand" ? "Create a one-off payment for a client." : "Payments marked Paid appear here."} />}
+        </div>
+        {data?.total > 0 && <Pager page={data.page} limit={data.limit} total={data.total} onPage={(page) => setF({ ...f, page })} />}
+      </div>
+
+      <PaymentForm form={form} setForm={setForm} view={view} busy={busy} onSave={save} />
+      <Confirm
+        open={!!del}
+        title="Delete this payment?"
+        body={del ? `${del.clientCode} · ${del.services.join(", ")} · ${inr(del.gross)}` : ""}
+        confirmLabel="Delete"
+        danger
+        onClose={() => setDel(null)}
+        onConfirm={async () => {
+          await api(`/co/clients-payments/${del._id}`, { method: "DELETE" });
+          toast("ok", "Deleted");
+          setDel(null);
+          load();
+        }}
+      />
+    </>
+  );
+}
+
+function PaymentForm({ form, setForm, view, busy, onSave }: { form: any; setForm: (f: any) => void; view: View; busy: boolean; onSave: () => void }) {
+  const [pricing, setPricing] = useState<{ missing: string[] } | null>(null);
+  const lastKey = useRef("");
+  const statusOnly = !!form?._id && view === "history";
+  const pickable = !!form && (!form._id || form.kind === "on_demand");
+
+  // Amount fills in from the client's Payment Details for the chosen services (still editable)
+  useEffect(() => {
+    if (!form || !pickable || !form.clientId || !form.services?.length) return;
+    const key = `${form.clientId}|${form.services.join(",")}`;
+    if (key === lastKey.current) return;
+    lastKey.current = key;
+    api(`/co/clients/price${qs({ clientId: form.clientId, services: form.services.join(",") })}`)
+      .then((r) => {
+        setPricing({ missing: r.missing });
+        if (r.amount > 0) setForm((f: any) => (f ? { ...f, amount: String(r.amount), ...linked(String(r.amount), f.discountType, f.discountType === "percent" ? f.discountPct : f.discountFixed) } : f));
+      })
+      .catch(() => undefined);
+  }, [form?.clientId, form?.services?.join(","), pickable]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    if (!form) {
+      lastKey.current = "";
+      setPricing(null);
+    }
+  }, [form]);
+
+  if (!form) return null;
+  /** Fixed ⇄ % — whichever was typed drives the other. */
+  function linked(amount: string, type: string, value: string) {
+    const a = Number(amount || 0);
+    const v = Number(value || 0);
+    const d = applyDiscount(a, type as any, v);
+    return type === "percent" ? { discountType: "percent", discountPct: value, discountFixed: value ? String(d.discountAmount) : "" } : { discountType: "fixed", discountFixed: value, discountPct: value && a ? String(d.percent) : "" };
+  }
+  const calc = applyDiscount(Number(form.amount || 0), form.discountType, Number((form.discountType === "percent" ? form.discountPct : form.discountFixed) || 0));
+  const set = (k: string, v: any) => setForm({ ...form, [k]: v });
+
+  return (
+    <Modal
+      open
+      onClose={() => setForm(null)}
+      title={statusOnly ? "Update payment status" : form._id ? "Edit payment" : "Create On-Demand payment"}
+      size="md"
+      footer={
+        <>
+          <Btn variant="secondary" onClick={() => setForm(null)}>
+            Cancel
+          </Btn>
+          <Btn loading={busy} onClick={onSave}>
+            Save
+          </Btn>
+        </>
+      }
+    >
+      {statusOnly ? (
+        <div className="space-y-4">
+          <p className="rounded-xl bg-[#f6f7f5] p-3 text-sm">
+            <b>{form.clientName}</b> <span className="mono text-hive-800">{form.clientCode}</span> · {form.services.join(", ")} · <b>{inr(form.gross)}</b>
+            <br />
+            <span className="text-ink-500">
+              Paid {fmtDate(form.paidAt)} {form.mode ? `· ${form.mode}` : ""} {form.txnId ? `· ${form.txnId}` : ""}
+            </span>
+          </p>
+          <Field label="Payment Status" hint="Only the status can change here. Unpaid / Over-Due moves it back to the Payment list.">
+            <select className="input" value={form.status} onChange={(e) => set("status", e.target.value)}>
+              {Object.entries(PAY_STATUS).map(([k, v]) => (
+                <option key={k} value={k}>
+                  {v.label}
+                </option>
+              ))}
+            </select>
+          </Field>
+        </div>
+      ) : (
+        <div className="grid gap-4 sm:grid-cols-2">
+          <Field label="Client" required className="sm:col-span-2">
+            <ClientSelect value={form.clientId} disabled={!pickable} onChange={(v) => set("clientId", v)} />
+          </Field>
+          <Field label="Service Type" required className="sm:col-span-2" hint={pricing?.missing?.length ? `No price in Payment Details for: ${pricing.missing.join(", ")} — enter the amount` : "Multi-select · search or add new"}>
+            {pickable ? <ServicePicker value={form.services} onChange={(v) => set("services", v)} placeholder="Select service type(s)…" /> : <input className="input" disabled value={form.services.join(", ")} />}
+          </Field>
+          <Field label="Payment Amount (₹)" required hint={pickable ? "Filled from the client's Payment Details — can be changed" : undefined}>
+            <input className="input tabular-nums" inputMode="decimal" value={form.amount} onChange={(e) => setForm({ ...form, amount: e.target.value.replace(/[^\d.]/g, ""), ...linked(e.target.value.replace(/[^\d.]/g, ""), form.discountType, form.discountType === "percent" ? form.discountPct : form.discountFixed) })} />
+          </Field>
+          {pickable && (
+            <Field label="Due date">
+              <input type="date" className="input" value={form.dueDate} onChange={(e) => set("dueDate", e.target.value)} />
+            </Field>
+          )}
+          <Field label="Discount applied" className="sm:col-span-2" hint="Enter either — the other is calculated">
+            <div className="grid grid-cols-2 gap-2">
+              <div className="relative">
+                <span className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-sm text-ink-400">₹</span>
+                <input className="input pl-7 tabular-nums" inputMode="decimal" placeholder="Fixed" value={form.discountFixed} onChange={(e) => setForm({ ...form, ...linked(form.amount, "fixed", e.target.value.replace(/[^\d.]/g, "")) })} aria-label="Discount amount" />
+              </div>
+              <div className="relative">
+                <input className="input pr-8 tabular-nums" inputMode="decimal" placeholder="Percent" value={form.discountPct} onChange={(e) => setForm({ ...form, ...linked(form.amount, "percent", e.target.value.replace(/[^\d.]/g, "")) })} aria-label="Discount percent" />
+                <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-sm text-ink-400">%</span>
+              </div>
+            </div>
+          </Field>
+          <Field label="Gross" hint="Payment amount − discount">
+            <input className="input bg-[#f6f7f5] font-bold tabular-nums" readOnly value={inr(calc.gross)} />
+          </Field>
+          <Field label="Payment Status">
+            <select className="input" value={form.status} onChange={(e) => set("status", e.target.value)}>
+              {Object.entries(PAY_STATUS).map(([k, v]) => (
+                <option key={k} value={k}>
+                  {v.label}
+                </option>
+              ))}
+            </select>
+          </Field>
+          <Field label="Payment Mode">
+            <select className="input" value={form.mode} onChange={(e) => set("mode", e.target.value)}>
+              <option value="">Select…</option>
+              {PAYMENT_MODES.map((m) => (
+                <option key={m}>{m}</option>
+              ))}
+            </select>
+          </Field>
+          <Field label="Payment Transaction ID">
+            <input className="input font-mono" maxLength={80} value={form.txnId} onChange={(e) => set("txnId", e.target.value)} />
+          </Field>
+          <Field label="Payment Remarks" className="sm:col-span-2">
+            <textarea className="input min-h-[70px]" maxLength={1000} value={form.remarks} onChange={(e) => set("remarks", e.target.value)} />
+          </Field>
+        </div>
+      )}
+    </Modal>
+  );
+}

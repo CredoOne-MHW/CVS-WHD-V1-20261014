@@ -65,6 +65,8 @@ const findCompany = (q: any) => cached(`tenant:${JSON.stringify(q)}`, 60, () => 
 
 /** platform → Super Admin login · company → that company · unknown → an unused sub-domain of our base. */
 export async function resolveHost(host: string): Promise<{ kind: "platform" } | { kind: "company"; company: any } | { kind: "unknown" }> {
+  // support.<company address> is that company's client support portal
+  if (host.startsWith("support.") && host.split(".").length >= 3) host = host.slice("support.".length);
   // 1. configured base or a sub-domain of it
   const m = matchConfigured(host);
   if (m) {
@@ -131,6 +133,7 @@ export function publicBranding(c: any) {
     themeColor: b.themeColor || "#2f5c24",
     accentColor: b.accentColor || "#d9b52a",
     loginLayout: b.loginLayout || "split",
+    loginTemplate: b.loginTemplate || (b.loginLayout === "banner" ? "photo" : b.loginLayout === "centered" ? "spotlight" : "classic"),
     logoUrl: asset("logo", b.logoKey),
     bannerUrl: asset("banner", b.bannerKey),
     faviconUrl: asset("favicon", b.faviconKey) || asset("logo", b.logoKey),
@@ -140,17 +143,40 @@ export function publicBranding(c: any) {
   };
 }
 
+/* Platform login look, editable by the Super Admin (Settings › Platform branding); env vars are the defaults. */
+let platformOverride: any = {};
+let platformLoadedAt = 0;
+/** Refreshes the Super Admin's platform branding at most once a minute per instance (call before platformBranding()). */
+export async function loadPlatformBranding(force = false) {
+  if (!force && Date.now() - platformLoadedAt < 60_000) return;
+  try {
+    const { PlatformSetting } = await import("../models");
+    const doc = await PlatformSetting.findById("platform_branding").lean<any>();
+    platformOverride = doc?.value || {};
+    platformLoadedAt = Date.now();
+  } catch {
+    /* keep the last known value */
+  }
+}
+export const setPlatformBranding = (v: any) => {
+  platformOverride = v || {};
+  platformLoadedAt = Date.now();
+};
+
 export function platformBranding() {
+  const o = platformOverride || {};
+  const pick = (k: string, d: string) => (typeof o[k] === "string" && o[k].trim() ? o[k] : d);
   return {
     kind: "platform" as const,
     name: process.env.PLATFORM_NAME || "CredoOne",
     shortName: process.env.PLATFORM_NAME || "CredoOne",
-    tagline: process.env.PLATFORM_TAGLINE || "Lead Management Console",
-    headline: "Every lead. One console.",
-    subheadline: "Capture enquiries from every channel, qualify them automatically and follow up on WhatsApp — for every company you run, under their own brand.",
-    footerText: process.env.PLATFORM_FOOTER || `© ${new Date().getFullYear()} Credovation Solutions Pvt Ltd`,
-    themeColor: process.env.PLATFORM_THEME || "#2b2d72",
-    accentColor: process.env.PLATFORM_ACCENT || "#6c63ff",
+    tagline: pick("tagline", process.env.PLATFORM_TAGLINE || "Lead Management Console"),
+    headline: pick("headline", "Every lead. One console."),
+    subheadline: pick("subheadline", "Capture enquiries from every channel, qualify them automatically and follow up on WhatsApp — for every company you run, under their own brand."),
+    footerText: pick("footerText", process.env.PLATFORM_FOOTER || `© ${new Date().getFullYear()} Credovation Solutions Pvt Ltd`),
+    themeColor: pick("themeColor", process.env.PLATFORM_THEME || "#2b2d72"),
+    accentColor: pick("accentColor", process.env.PLATFORM_ACCENT || "#6c63ff"),
+    loginTemplate: pick("loginTemplate", "aurora"),
     logoUrl: process.env.NEXT_PUBLIC_PLATFORM_LOGO || "/credoone-logo.png",
   };
 }
