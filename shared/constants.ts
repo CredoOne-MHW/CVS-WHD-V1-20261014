@@ -49,7 +49,7 @@ export const SA_MODULES: ModuleDef[] = [
 ];
 
 /** Login page designs (rendered by src/components/LoginTemplates.tsx). */
-export const LOGIN_TEMPLATE_KEYS = ["classic", "photo", "spotlight", "aurora", "minimal", "editorial", "mesh", "noir", "showcase", "glass"] as const;
+export const LOGIN_TEMPLATE_KEYS = ["classic", "photo", "spotlight", "aurora", "cinema", "orbit", "depth", "funnel", "minimal", "editorial", "mesh", "noir", "showcase", "glass"] as const;
 
 export const PLAN_TIERS = ["Trial", "Standard", "Pro", "Enterprise"] as const;
 export type PlanTier = (typeof PLAN_TIERS)[number];

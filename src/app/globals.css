@@ -163,3 +163,76 @@ body {
 @media (prefers-reduced-motion: reduce) {
   .lp-blob { animation: none; }
 }
+
+/* ── Login 3D scenes (Orbit · Depth Layers · Lead Funnel) ───────────────────────
+   Only transform / opacity animate (GPU-composited). --rx / --ry come from the pointer (useTilt). */
+.l3-scene { transform-style: preserve-3d; transform: rotateX(calc(-8deg + var(--rx, 0deg))) rotateY(var(--ry, 0deg)); transition: transform .5s cubic-bezier(.2,.7,.2,1); }
+.l3-ring { transform-style: preserve-3d; transform: rotateX(68deg); }
+.l3-ring-inner { transform: rotateX(68deg) rotateY(-16deg); }
+.l3-spin { transform-style: preserve-3d; animation: l3-spin 40s linear infinite; }
+.l3-spin-rev { animation: l3-spin-rev 18s linear infinite; }
+.l3-item { transform-style: preserve-3d; }
+.l3-face { transform-style: preserve-3d; transform: rotateZ(calc(var(--a) * -1)) rotateX(-68deg); animation: l3-face 40s linear infinite; }
+.l3-center { transform: translateZ(1px); }
+@keyframes l3-spin { to { transform: rotateZ(360deg); } }
+@keyframes l3-spin-rev { to { transform: rotateZ(-360deg); } }
+/* keeps every orbiting source upright and facing the viewer while the ring turns */
+@keyframes l3-face {
+  from { transform: rotateZ(calc(var(--a) * -1)) rotateX(-68deg); }
+  to { transform: rotateZ(calc(var(--a) * -1 - 360deg)) rotateX(-68deg); }
+}
+/* a bright spark riding the aura ring, in addition to the sweeping glow */
+.l3-aura-dot { position: absolute; inset: 0; border-radius: 9999px; pointer-events: none; animation: aura-spin 5.5s linear infinite; }
+.l3-aura-dot::after { content: ""; position: absolute; top: -5px; left: 50%; width: 10px; height: 10px; margin-left: -5px; border-radius: 9999px; background: #fff; box-shadow: 0 0 14px 5px rgba(255,255,255,.85), 0 0 34px 12px rgb(var(--accent-300) / .55); }
+
+/* floating glass cards */
+.l3-card { transform: rotateY(var(--ry0, 0deg)) translateZ(var(--tz, 0px)); animation: l3-float 6.5s ease-in-out infinite; animation-delay: var(--d, 0s); overflow: hidden; }
+@keyframes l3-float {
+  0%, 100% { transform: rotateY(var(--ry0, 0deg)) translateZ(var(--tz, 0px)) translateY(0); }
+  50% { transform: rotateY(var(--ry0, 0deg)) translateZ(var(--tz, 0px)) translateY(-9px); }
+}
+.l3-sheen { background: linear-gradient(115deg, transparent 30%, rgba(255,255,255,.16) 45%, transparent 60%); background-size: 260% 100%; animation: l3-sheen 7s ease-in-out infinite; animation-delay: var(--d, 0s); }
+@keyframes l3-sheen { 0%, 60% { background-position: 130% 0; } 100% { background-position: -130% 0; } }
+.l3-ping { animation: l3-ping 2.8s ease-in-out infinite; }
+@keyframes l3-ping { 0%, 100% { transform: translateY(0); opacity: .75; } 40% { transform: translateY(-3px); opacity: 1; box-shadow: 0 0 14px rgb(var(--accent-300) / .6); } }
+.l3-travel { animation: l3-travel 4.5s ease-in-out infinite; }
+@keyframes l3-travel { 0% { left: 6%; } 45%, 55% { left: 46%; } 100% { left: 86%; } }
+.l3-dial { animation: l3-dial 4s ease-out infinite alternate; }
+@keyframes l3-dial { from { stroke-dashoffset: 94; } to { stroke-dashoffset: 12; } }
+.l3-spark { stroke-dasharray: 90; animation: l3-spark 4s ease-out infinite alternate; }
+@keyframes l3-spark { from { stroke-dashoffset: 90; } to { stroke-dashoffset: 0; } }
+
+/* isometric layers */
+.l3-iso { transform-style: preserve-3d; transform: rotateX(calc(56deg + var(--rx, 0deg))) rotateZ(calc(-38deg + var(--ry, 0deg))); transition: transform .5s cubic-bezier(.2,.7,.2,1); }
+.l3-layer { transform: translateZ(var(--z)); animation: l3-lift 6s ease-in-out infinite; animation-delay: var(--d, 0s); }
+@keyframes l3-lift { 0%, 100% { transform: translateZ(var(--z)); } 50% { transform: translateZ(calc(var(--z) + 22px)); } }
+
+/* funnel: perspective floor + sources travelling into the logo */
+.l3-floor { transform: rotateX(78deg); transform-origin: 50% 100%; background-image: linear-gradient(rgba(255,255,255,.16) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,.16) 1px, transparent 1px); background-size: 60px 60px; -webkit-mask-image: linear-gradient(to top, #000 15%, transparent 85%); mask-image: linear-gradient(to top, #000 15%, transparent 85%); animation: l3-floor 3s linear infinite; }
+@keyframes l3-floor { to { background-position: 0 -60px; } }
+.l3-fly { animation: l3-fly 7.2s linear infinite; animation-delay: var(--d, 0s); opacity: 0; }
+@keyframes l3-fly {
+  0% { transform: translate3d(var(--x), 0, 140px); opacity: 0; }
+  12% { opacity: 1; }
+  80% { opacity: .95; }
+  100% { transform: translate3d(0, -150px, -1200px); opacity: 0; }
+}
+
+/* shorter screens: the scene scales down so the page never scrolls */
+@media (max-height: 860px) { .l3-fit { transform: scale(.88); } }
+@media (max-height: 760px) { .l3-fit { transform: scale(.76); } }
+@media (max-height: 660px) { .l3-fit { transform: scale(.66); } }
+.lp-preview .l3-fit { transform: none; }
+.lp-preview .l3-fly:nth-child(odd) { opacity: .9; transform: translate3d(var(--x), -60px, -400px); }
+.lp-preview .l3-fly:nth-child(even) { opacity: .7; transform: translate3d(calc(var(--x) * .5), -100px, -800px); }
+
+@media (prefers-reduced-motion: reduce) {
+  .l3-spin, .l3-spin-rev, .l3-face, .l3-card, .l3-sheen, .l3-ping, .l3-travel, .l3-dial, .l3-spark, .l3-layer, .l3-floor, .l3-aura-dot { animation: none !important; }
+  .l3-fly { animation: none; opacity: .85; transform: translate3d(var(--x), -60px, -400px); }
+  .l3-scene, .l3-iso { transition: none; }
+}
+
+/* Cinematic login: progress bar under the active story step (matches the scene's phase length) */
+.cin-progress { width: 0; animation: cin-progress 4.5s linear forwards; }
+@keyframes cin-progress { to { width: 100%; } }
+@media (prefers-reduced-motion: reduce) { .cin-progress { animation: none; width: 100%; } }

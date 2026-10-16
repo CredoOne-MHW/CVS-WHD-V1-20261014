@@ -176,7 +176,7 @@ export function platformBranding() {
     footerText: pick("footerText", process.env.PLATFORM_FOOTER || `© ${new Date().getFullYear()} Credovation Solutions Pvt Ltd`),
     themeColor: pick("themeColor", process.env.PLATFORM_THEME || "#2b2d72"),
     accentColor: pick("accentColor", process.env.PLATFORM_ACCENT || "#6c63ff"),
-    loginTemplate: pick("loginTemplate", "aurora"),
-    logoUrl: process.env.NEXT_PUBLIC_PLATFORM_LOGO || "/credoone-logo.png",
+    loginTemplate: ["orbit", "depth", "funnel"].includes(o.loginTemplate) ? "cinema" : pick("loginTemplate", "cinema"),
+    logoUrl: process.env.NEXT_PUBLIC_PLATFORM_LOGO || "/credoone-logo.png?v=3",
   };
 }

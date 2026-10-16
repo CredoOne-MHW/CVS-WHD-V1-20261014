@@ -2,7 +2,7 @@
   "name": "leadhive-lms",
   "version": "1.0.0",
   "private": true,
-  "description": "Multi-tenant Lead Management System \u2014 Next.js UI + Express API (Vercel), MongoDB, S3",
+  "description": "Multi-tenant Lead Management System — Next.js UI + Express API (Vercel), MongoDB, S3",
   "scripts": {
     "dev": "next dev",
     "build": "next build",
@@ -32,6 +32,7 @@
     "qrcode": "^1.5.4",
     "react": "18.3.1",
     "react-dom": "18.3.1",
+    "three": "^0.169.0",
     "xlsx": "^0.18.5",
     "zod": "^3.23.8"
   },
@@ -47,6 +48,7 @@
     "@types/qrcode": "^1.5.6",
     "@types/react": "^18.3.11",
     "@types/react-dom": "^18.3.0",
+    "@types/three": "^0.169.0",
     "autoprefixer": "^10.4.20",
     "postcss": "^8.4.47",
     "tailwindcss": "^3.4.13",
