@@ -3,7 +3,7 @@ import { dbOf, forEachCompanyDb } from "./tenantdb";
 import mongoose from "mongoose";
 import * as XLSX from "xlsx";
 import { z } from "zod";
-import { Lead, WaLog, ActivityLog, AiUsage, Company } from "../models";
+import { Lead, WaLog, ActivityLog, AiUsage, Company, SupportTicket, ClientPlan, ClientPayment, TICKET_STATUSES } from "../models";
 import { HttpError } from "./http";
 import type { AuthCtx } from "../middleware/auth";
 
@@ -61,6 +61,86 @@ export const DATASETS: Dataset[] = [
       { key: "createdAt", label: "Created", type: "date" },
       { key: "updatedAt", label: "Updated", type: "date" },
       { key: "nextFollowUpAt", label: "Next follow-up", type: "date" },
+    ],
+  },
+  {
+    key: "clients",
+    label: "Clients",
+    model: Lead,
+    module: "clients",
+    scopes: ["company"],
+    dateField: "clientSince",
+    softDelete: true,
+    scopeFilter: () => ({ isClient: true }),
+    fields: [
+      { key: "clientCode", label: "Client ID", type: "string" },
+      { key: "name", label: "Name", type: "string" },
+      { key: "whatsapp", label: "WhatsApp No", type: "string" },
+      { key: "phone", label: "Phone No", type: "string" },
+      { key: "email", label: "Email", type: "string" },
+      { key: "source", label: "Source", type: "string" },
+      { key: "status", label: "Status", type: "enum", options: STATUSES },
+      { key: "clientSince", label: "Client since", type: "date" },
+      { key: "stageAt", label: "Stage changed", type: "date" },
+      { key: "createdAt", label: "Lead created", type: "date" },
+    ],
+  },
+  {
+    key: "tickets",
+    label: "Support tickets",
+    model: SupportTicket,
+    module: "clients",
+    scopes: ["company"],
+    dateField: "createdAt",
+    fields: [
+      { key: "ticketNo", label: "Ticket No", type: "string" },
+      { key: "clientCode", label: "Client ID", type: "string" },
+      { key: "clientName", label: "Client", type: "string" },
+      { key: "category", label: "Category", type: "enum", options: ["Support", "Request", "Grievance"] },
+      { key: "status", label: "Status", type: "enum", options: TICKET_STATUSES },
+      { key: "via", label: "Raised via", type: "enum", options: ["portal", "staff"] },
+      { key: "description", label: "Support needed", type: "string" },
+      { key: "createdAt", label: "Raised", type: "date" },
+      { key: "closedAt", label: "Closed", type: "date" },
+    ],
+  },
+  {
+    key: "client_plans",
+    label: "Payment details",
+    model: ClientPlan,
+    module: "clients",
+    scopes: ["company"],
+    dateField: "createdAt",
+    fields: [
+      { key: "clientCode", label: "Client ID", type: "string" },
+      { key: "clientName", label: "Client", type: "string" },
+      { key: "serviceType", label: "Service type", type: "string" },
+      { key: "amount", label: "Amount (₹)", type: "number" },
+      { key: "type", label: "Type", type: "enum", options: ["recurring", "on_demand"] },
+      { key: "frequency", label: "Frequency", type: "enum", options: ["on_demand", "weekly", "monthly", "quarterly", "half_yearly", "yearly"] },
+      { key: "startDate", label: "Start date", type: "date" },
+      { key: "createdAt", label: "Created", type: "date" },
+    ],
+  },
+  {
+    key: "client_payments",
+    label: "Payments & transactions",
+    model: ClientPayment,
+    module: "clients",
+    scopes: ["company"],
+    dateField: "dueDate",
+    fields: [
+      { key: "clientCode", label: "Client ID", type: "string" },
+      { key: "clientName", label: "Client", type: "string" },
+      { key: "kind", label: "Kind", type: "enum", options: ["recurring", "on_demand"] },
+      { key: "status", label: "Status", type: "enum", options: ["unpaid", "overdue", "paid"] },
+      { key: "amount", label: "Amount (₹)", type: "number" },
+      { key: "discountAmount", label: "Discount (₹)", type: "number" },
+      { key: "gross", label: "Gross (₹)", type: "number" },
+      { key: "dueDate", label: "Due date", type: "date" },
+      { key: "paidAt", label: "Paid on", type: "date" },
+      { key: "mode", label: "Mode", type: "enum", options: ["NEFT", "CASH", "UPI", "Card", "RTGS"] },
+      { key: "txnId", label: "Transaction ID", type: "string" },
     ],
   },
   {
@@ -157,8 +237,24 @@ export const specSchema = z.object({
 });
 export type ReportSpec = z.infer<typeof specSchema>;
 
+const granted = (a: AuthCtx, key: string) => !a.allowedDatasets || a.allowedDatasets.includes(key);
+
+/**
+ * The data tables of ONE company that an AI agent can be given (company scope only — Super-Admin-only tables such as
+ * Companies never appear). Every table lives in the company's own database and is always filtered by its companyId.
+ */
+export function companyTables(a: AuthCtx) {
+  return DATASETS.filter((d) => d.scopes.includes("company") && a.perms[d.module]?.read).map((d) => ({ key: d.key, label: d.label, module: d.module, fields: d.fields.map((f) => f.label) }));
+}
+/** Live record count of a company table (runs in the current — the company's own — database). */
+export async function countTable(companyId: string, key: string) {
+  const d = DATASETS.find((x) => x.key === key && x.scopes.includes("company"));
+  if (!d) return 0;
+  return d.model.countDocuments({ ...(d.scopeFilter?.({ scope: "company" } as AuthCtx) || {}), companyId: new mongoose.Types.ObjectId(companyId), ...(d.softDelete ? { deletedAt: null } : {}) });
+}
+
 export function datasetsFor(a: AuthCtx) {
-  return DATASETS.filter((d) => d.scopes.includes(a.scope) && (a.scope === "super" ? true : a.perms[d.module]?.read)).map((d) => ({
+  return DATASETS.filter((d) => d.scopes.includes(a.scope) && (a.scope === "super" ? true : a.perms[d.module]?.read) && granted(a, d.key)).map((d) => ({
     key: d.key,
     label: d.label,
     dateField: d.dateField,
@@ -196,6 +292,7 @@ export async function runReport(a: AuthCtx, raw: unknown, opts: { maxRows?: numb
   const ds = DATASETS.find((d) => d.key === spec.dataset && d.scopes.includes(a.scope));
   if (!ds) throw new HttpError(400, `Unknown dataset "${spec.dataset}"`);
   if (a.scope === "company" && !a.perms[ds.module]?.read) throw new HttpError(403, `No access to ${ds.label}`);
+  if (!granted(a, ds.key)) throw new HttpError(403, `This AI agent has no access to ${ds.label}`);
   const fieldMap = new Map(ds.fields.map((f) => [f.key, f]));
   const allowCompany = a.scope === "super" && ds.key !== "companies";
   const field = (k: string) => {

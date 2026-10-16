@@ -23,6 +23,8 @@ export interface AuthCtx {
   companyName?: string;
   plan?: string;
   perms: PermMap;
+  /** AI agents only: the data tables this agent was granted (undefined = every table the user can read). */
+  allowedDatasets?: string[];
 }
 
 declare global {
