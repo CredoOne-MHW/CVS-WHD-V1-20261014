@@ -32,6 +32,8 @@ import {
   PhoneIncoming,
   Building,
   BadgeCheck,
+  ShoppingBag,
+  ShoppingCart,
   type LucideIcon,
 } from "lucide-react";
 
@@ -66,5 +68,7 @@ export const ICONS: Record<string, LucideIcon> = {
   PhoneIncoming,
   Building,
   BadgeCheck,
+  ShoppingBag,
+  ShoppingCart,
 };
 export const icon = (name: string): LucideIcon => ICONS[name] || Circle;

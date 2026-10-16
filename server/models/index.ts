@@ -228,7 +228,7 @@ const ConnectorSchema = new Schema(
     lastRun: Mixed, // { ok, found, created, duplicates, error }
     pullCursor: Date, // IndiaMART / TradeIndia: end of the last successfully pulled window
     active: { type: Boolean, default: true },
-    stats: { received: { type: Number, default: 0 }, created: { type: Number, default: 0 }, duplicates: { type: Number, default: 0 }, failed: { type: Number, default: 0 }, lastAt: Date },
+    stats: { received: { type: Number, default: 0 }, created: { type: Number, default: 0 }, duplicates: { type: Number, default: 0 }, failed: { type: Number, default: 0 }, ignored: { type: Number, default: 0 }, lastAt: Date },
   },
   ts
 );

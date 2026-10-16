@@ -341,6 +341,17 @@ discount ≤ amount / ≤ 100 %), company routes are tenant-scoped, Super Admin 
   (User ID, Profile ID and Key are filled in automatically; key stored encrypted). Deduped by `rfi_id`.
 - **Sulekha** — Sulekha's team pushes enquiries to your Lead URL in their format (camelCase/snake_case both understood; anything else via
   Field mapping). Deduped by lead ID.
+- **Shopify** — abandoned checkouts (with cart, value and the recovery link), new customers and orders arrive instantly via the
+  store's webhooks (Shopify admin → Settings → Notifications → Webhooks: Checkout creation / update, Customer creation, Order creation →
+  the connector's Lead URL). Paste the store's webhook signing key in Settings and every delivery's `X-Shopify-Hmac-Sha256` is verified
+  (unsigned → 401). UTM campaign from the landing page, referrer, marketing consent kept. Checkouts without contact details yet, completed
+  checkouts, cancelled orders and other topics are acknowledged and ignored (not stored, not retried). Choose what to capture; new leads
+  from paid orders can start as Converted.
+- **WooCommerce** — webhooks "Order created" / "Customer created" with the connector's endpoint as Delivery URL and its secret as Secret;
+  `X-WC-Webhook-Signature` is verified, the save-time ping is answered. Optional read-only REST API key (Store URL + ck_/cs_) adds a
+  15-minute fetch of recent orders (`/wp-json/wc/v3/orders`, GMT window, SSRF-guarded) — same ids as the webhooks, so nothing doubles.
+  Campaign from WooCommerce order attribution (`_wc_order_attribution_utm_*`). Pending / failed orders stay New for follow-up.
+- Shop events for the same person (checkout → order) merge into one lead with each event in its history.
 - Push-platform Lead URLs have the form `/api/intake/<key>/<token>` (the token is the connector secret, shown once; rotate to issue a
   new URL). Every marketplace lead goes through the same duplicate merge, assignment, WhatsApp alerts and webhooks as other channels.
 - **MCP Server** connector — Streamable-HTTP MCP client (Zapier MCP, Make, HubSpot, Pipedream, Composio, your own): List tools → pick a
