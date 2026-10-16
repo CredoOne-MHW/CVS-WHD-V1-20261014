@@ -204,6 +204,15 @@ async function bootstrap() {
       .catch((e) => console.warn("lead name repair:", e?.message));
   }
 
+  // One-time: records saved after a file upload (AI agents, lead imports, WhatsApp posts) could land in the main database
+  // instead of the company's own one (multer dropped the request context — fixed). Move them home. Idempotent.
+  if (!(await meta.findOne({ _id: "upload_ctx_repair_v1" }))) {
+    import("./tenantdb")
+      .then(({ repairStragglers }) => repairStragglers())
+      .then((moved) => meta.updateOne({ _id: "upload_ctx_repair_v1" }, { $set: { at: new Date(), moved } }, { upsert: true }))
+      .catch((e) => console.error("upload_ctx_repair_v1 failed", e));
+  }
+
   // One-time: the Super Admin login moves to the Cinematic 3D design (from the previous defaults / retired CSS-3D designs)
   if (!(await meta.findOne({ _id: "platform_cinema_v1" }))) {
     const { PlatformSetting } = await import("../models");

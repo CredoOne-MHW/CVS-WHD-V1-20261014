@@ -2,8 +2,8 @@ import { AiAgent, AiAllocation, CompanyAgent } from "../models";
 import { runInDb } from "./context";
 import { dbOf } from "./tenantdb";
 import { toText } from "../../shared/text";
-import { complete, knowledge, agentSystem, parseJson, type Msg } from "./ai";
-import { runReport, schemaForPrompt, specSchema } from "./reports";
+import { complete, knowledge, agentSystem, parseJson, chat, type Msg } from "./ai";
+import { runReport, schemaForPrompt, specSchema, datasetsFor, DATASETS } from "./reports";
 import { HttpError } from "./http";
 import type { AuthCtx } from "../middleware/auth";
 
@@ -19,6 +19,16 @@ A spec is JSON:
  "sort": {"field": "...", "dir": "asc|desc"}, "limit": 1-500}
 Use groupBy + metrics for totals, trends and breakdowns; use columns for lists. Today is ${today()} (India time).`;
 
+/**
+ * Narrow the caller to the data tables this agent was granted (Edit AI agent › Data access).
+ * Tables are always this company's own: the engine filters by companyId and runs in the company's database.
+ */
+export function scopeToAgent(a: AuthCtx, ca: any): AuthCtx {
+  return Array.isArray(ca?.dataAccess) ? { ...a, allowedDatasets: ca.dataAccess } : a;
+}
+const hasData = (a: AuthCtx) => datasetsFor(a).length > 0;
+const NO_DATA = "You have no access to the company's data tables (none were selected for you); answer only from your knowledge base and instructions. If asked for data, say an admin can grant table access in Settings › AI Agent › Edit › Data access.";
+
 async function loadAgent(companyId: string, companyAgentId?: string, assistant = false) {
   const ca = await CompanyAgent.findOne({ companyId, active: true, ...(assistant ? { isAssistant: true } : { _id: companyAgentId }) }).lean<any>();
   if (!ca) throw new HttpError(assistant ? 404 : 400, assistant ? "No AI assistant is enabled for this company" : "Select an AI agent");
@@ -29,8 +39,10 @@ async function loadAgent(companyId: string, companyAgentId?: string, assistant =
 }
 
 /** Agentic report: the AI turns a plain-English request into a spec, we run it read-only, the AI summarises. */
-export async function agenticReport(a: AuthCtx, companyAgentId: string, prompt: string) {
-  const { ca, agent } = await loadAgent(a.companyId!, companyAgentId);
+export async function agenticReport(a0: AuthCtx, companyAgentId: string, prompt: string) {
+  const { ca, agent } = await loadAgent(a0.companyId!, companyAgentId);
+  const a = scopeToAgent(a0, ca);
+  if (!hasData(a)) throw new HttpError(400, `“${ca.name}” has no data tables selected. Edit the agent › Data access to choose which tables it may read.`);
   return withAgentDb(a.companyId!, agent._id, () => agenticReportIn(a, ca, agent, prompt));
 }
 async function agenticReportIn(a: AuthCtx, ca: any, agent: any, prompt: string) {
@@ -121,10 +133,15 @@ const LOOP_RULES = `Each turn reply with ONLY one JSON object:
 - {"action": "answer", "text": "<markdown answer>"}
 Prefer one well-aimed query. Never invent numbers.`;
 
-export async function assistantChat(a: AuthCtx, messages: Msg[]) {
-  const { ca, agent } = await loadAgent(a.companyId!, undefined, true);
+export async function assistantChat(a0: AuthCtx, messages: Msg[]) {
+  const { ca, agent } = await loadAgent(a0.companyId!, undefined, true);
+  const a = scopeToAgent(a0, ca);
   return withAgentDb(a.companyId!, agent._id, async () => {
     const kb = await knowledge(ca);
+    if (!hasData(a)) {
+      const r = await complete({ agent, companyId: a.companyId!, system: agentSystem(ca, kb, `You are the in-app assistant for ${a.companyName}, talking to ${a.name}. ${NO_DATA}`), messages: messages.slice(-12), purpose: "assistant", userId: a.userId, companyAgentId: ca._id });
+      return { text: r.text, usage: r.usage, agent: ca.name };
+    }
     const system = agentSystem(
       ca,
       kb,
@@ -154,11 +171,18 @@ export async function endpointChat(ep: any, company: { _id: any; name: string },
     ca = { _id: null, name: ep.name, systemPrompt: ep.instructions, knowledge: [] };
   }
   if (!agent) throw new HttpError(400, "The AI model behind this endpoint is unavailable");
-  const a: AuthCtx = { userId: "", scope: "company", companyId, companyName: company.name, name: `Endpoint ${ep.name}`, email: "", isOwner: false, perms: { leads: { create: false, read: true, update: false, delete: false }, ai_agents: { create: false, read: true, update: false, delete: false } } } as any;
+  const ro = { create: false, read: true, update: false, delete: false };
+  let a: AuthCtx = { userId: "", scope: "company", companyId, companyName: company.name, name: `Endpoint ${ep.name}`, email: "", isOwner: false, perms: { leads: ro, ai_agents: ro } } as any;
+  if (Array.isArray(ca?.dataAccess)) {
+    // an agent with explicit Data access: exactly the tables chosen for it (still read-only, still this company only)
+    const perms: any = {};
+    for (const d of DATASETS) if (ca.dataAccess.includes(d.key) && d.scopes.includes("company")) perms[d.module] = ro;
+    a = { ...a, perms, allowedDatasets: ca.dataAccess };
+  }
   return withAgentDb(companyId, agent._id, async () => {
     const kb = ca._id ? await knowledge(ca) : "";
     const extra = ep.instructions && ep.mode === "agent" ? `Additional instructions for this endpoint: ${ep.instructions}` : "";
-    if (ep.dataAccess === "none") {
+    if (ep.dataAccess === "none" || !hasData(a)) {
       const system = agentSystem(ca, kb, `You answer questions sent by an external system on behalf of ${company.name}. ${extra}\nAnswer in plain text, concisely.`);
       const r = await complete({ agent, companyId, system, messages: messages.slice(-12), purpose: "endpoint", companyAgentId: ca._id });
       return { text: r.text, usage: r.usage };
@@ -175,4 +199,15 @@ export async function assistantInfo(companyId: string) {
   const ca = await CompanyAgent.findOne({ companyId, active: true, isAssistant: true }).select("name purpose agentId").lean<any>();
   const model = ca?.agentId && (await AiAgent.exists({ _id: ca.agentId, active: true })) ? await AiAllocation.exists({ companyId, agentId: ca.agentId, allocated: { $ne: false } }) : null;
   return ca ? { enabled: true, ready: !!model, name: ca.name, purpose: ca.purpose } : { enabled: false, ready: false };
+}
+
+/** Settings › AI Agent › Test: the agent answers from its knowledge base and, if granted, its data tables (read-only). */
+export async function testChat(a0: AuthCtx, ca: any, agent: any, messages: Msg[]) {
+  const a = scopeToAgent(a0, ca);
+  if (!hasData(a)) return chat({ agent, companyAgent: ca, companyId: a.companyId!, messages, userId: a.userId });
+  const kb = await knowledge(ca);
+  const system = agentSystem(ca, kb, `You are “${ca.name}” for ${a.companyName}, being tested by ${a.name}. You have READ-ONLY access to this company's data only — just the tables listed below; you cannot create, edit, delete or send anything.
+${SPEC_RULES(a)}
+${LOOP_RULES}`);
+  return dataLoop({ a, agent, ca, system, messages, purpose: "chat" });
 }

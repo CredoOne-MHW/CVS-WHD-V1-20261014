@@ -1,5 +1,6 @@
 import { Router } from "express";
 import multer from "multer";
+import { ctxUpload } from "../../lib/context";
 import bcrypt from "bcryptjs";
 import crypto from "crypto";
 import { z } from "zod";
@@ -26,7 +27,8 @@ import clientRoutes, { businessBody, applyBusiness, safeLead, assertServices } f
 import { promoteClients } from "../../lib/clients";
 import { webhookRoutes, waLogRoutes, activityRoutes, roleRoutes } from "../shared";
 import { reportRoutes } from "../reports";
-import { assistantChat, assistantInfo, withAgentDb, endpointChat } from "../../lib/agentic";
+import { assistantChat, assistantInfo, withAgentDb, endpointChat, testChat } from "../../lib/agentic";
+import { companyTables, countTable } from "../../lib/reports";
 import { rateLimit, invalidate } from "../../lib/cache";
 import { publicBranding } from "../../lib/tenant";
 import { LEAD_STATUSES, LOST_REASONS, LOST_STATUS, WON_STATUS, CONNECTOR_TYPES, normalizePhone } from "../../../shared/constants";
@@ -41,7 +43,7 @@ r.use("/integrations", (req, res, next) => {
 // Vercel caps request bodies at ~4.5 MB; keep uploads under that.
 r.use(clientRoutes); // Client module + service master
 
-const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 4 * 1024 * 1024, files: 10 } });
+const upload = ctxUpload(multer({ storage: multer.memoryStorage(), limits: { fileSize: 4 * 1024 * 1024, files: 10 } }));
 const oid = (s: string) => new mongoose.Types.ObjectId(s);
 
 /* ───────────── Dashboard ───────────── */
@@ -650,6 +652,25 @@ r.get("/ai-agents/models", can("ai_agents", "read"), h(async (req, res) => {
   );
 }));
 
+/**
+ * Data tables an AI agent of THIS company can be given (Edit AI agent › Data access), with live record counts.
+ * Only the signed-in company's own tables — counted in its own database, filtered by its companyId — never another company's.
+ */
+r.get("/ai-agents/data-tables", can("ai_agents", "read"), h(async (req, res) => {
+  const cid = req.auth!.companyId!;
+  const tables = companyTables(req.auth!);
+  const counts = await Promise.all(tables.map((t) => countTable(cid, t.key).catch(() => null)));
+  res.json(tables.map((t, i) => ({ ...t, count: counts[i] })));
+}));
+/** Keep only tables this company (and this user) can actually grant; anything else is refused. */
+function checkDataAccess(req: any, keys?: string[]) {
+  if (keys === undefined) return undefined;
+  const allowed = new Set(companyTables(req.auth!).map((t) => t.key));
+  const bad = keys.filter((k) => !allowed.has(k));
+  if (bad.length) throw badRequest(`These data tables aren't available to your company: ${bad.join(", ")}`);
+  return [...new Set(keys)];
+}
+
 r.get("/ai-agents", can("ai_agents", "read"), h(async (req, res) => {
   res.json(await CompanyAgent.find(tenant(req)).populate("agentId", "name llmVersion provider").sort({ createdAt: -1 }).lean());
 }));
@@ -662,6 +683,7 @@ const caBody = z.object({
   prompts: z.array(z.object({ title: z.string().max(80), text: z.string().max(4000) })).max(20).optional(),
   active: z.boolean().optional(),
   isAssistant: z.boolean().optional(),
+  dataAccess: z.array(z.string().regex(/^[a-z_]{2,40}$/)).max(30).optional(),
 });
 /** Only one agent per company is the floating assistant. */
 async function claimAssistant(companyId: string, id: any, on?: boolean) {
@@ -689,8 +711,9 @@ async function ingest(companyId: string, files: Express.Multer.File[]) {
 r.post("/ai-agents", can("ai_agents", "create"), upload.array("files", 10), h(async (req, res) => {
   const b = parse(caBody, typeof req.body.data === "string" ? JSON.parse(req.body.data) : req.body);
   if (b.agentId && !(await AiAllocation.exists({ ...tenant(req), agentId: b.agentId, allocated: { $ne: false } }))) throw badRequest("This AI model is not allocated to your company");
+  const dataAccess = checkDataAccess(req, b.dataAccess);
   const knowledge = await ingest(req.auth!.companyId!, (req.files as Express.Multer.File[]) || []);
-  const doc = await CompanyAgent.create({ ...b, ...tenant(req), knowledge });
+  const doc = await CompanyAgent.create({ ...b, dataAccess, ...tenant(req), knowledge });
   await claimAssistant(req.auth!.companyId!, doc._id, b.isAssistant);
   res.locals.item = doc.name;
   res.status(201).json(doc);
@@ -703,6 +726,7 @@ r.put("/ai-agents/:id", can("ai_agents", "update"), upload.array("files", 10), h
   if (!doc) throw notFound();
   const { removeKeys, ...rest } = b;
   if (rest.agentId && !(await AiAllocation.exists({ ...tenant(req), agentId: rest.agentId, allocated: { $ne: false } }))) throw badRequest("This AI model is not allocated to your company");
+  if (rest.dataAccess !== undefined) rest.dataAccess = checkDataAccess(req, rest.dataAccess);
   doc.set(rest);
   if (removeKeys?.length) {
     for (const k of doc.knowledge.filter((x: any) => removeKeys.includes(x.key))) {
@@ -778,7 +802,7 @@ r.post("/ai-agents/:id/chat", can("ai_agents", "read"), h(async (req, res) => {
   res.locals.logRead = true;
   res.locals.action = "AI chat";
   res.locals.item = ca.name;
-  res.json(await withAgentDb(req.auth!.companyId!, agent._id, () => chat({ agent, companyAgent: ca, companyId: req.auth!.companyId!, messages: b.messages, userId: req.auth!.userId })));
+  res.json(await withAgentDb(req.auth!.companyId!, agent._id, () => testChat(req.auth!, ca, agent, b.messages)));
 }));
 
 /* ───────────── AI Agent › Endpoint (external systems ask questions over HTTPS) ───────────── */
