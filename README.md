@@ -454,11 +454,15 @@ discount ≤ amount / ≤ 100 %), company routes are tenant-scoped, Super Admin 
   page. Service master cached 5 minutes; client dropdown options fetched once per page. Measured locally: lists 6–55 ms.
 
 ### 13.1 Cinematic 3D login (Oct 2026)
-- **Cinematic 3D** (template `cinema`, now the Super Admin login; also selectable per company): a real-time WebGL scene
-  (Three.js) — the logo on a floating white glass tile with rings of light circling it (the aura), lead streams flowing in
-  from every direction, an orbiting constellation of client nodes, and a neural sphere with travelling pulses. It cycles
-  through three chapters (01 Leads from every source → 02 Clients, end to end → 03 AI intelligence) with a matching caption.
-- Colours come from the brand's theme; the logo is drawn in its exact colours, contain-fitted (never cropped).
+- **Cinematic 3D** (template `cinema`, now the Super Admin login; also selectable per company): a real-time WebGL solar
+  system — the logo is the **sun** (a glowing white sphere) with rings of light circling it (the aura), planets on tilted
+  orbits, lead streams flowing in from every direction, a belt of client nodes and a neural sphere with travelling pulses.
+  It cycles through three chapters (01 Leads from every source → 02 Clients, end to end → 03 AI intelligence).
+- Colours come from the brand's theme; the logo is drawn in its exact colours and fitted inside a circle on the sun's face
+  (wide, tall or square — never cropped). A company without a logo shows its initials.
+- **Circular logos everywhere**: one `LogoDisc` component shows every logo (platform and each company) inside a white circle,
+  scaled to the circle's inscribed square so it is never cropped — login pages, sidebar, assistant, lead forms, the support
+  portal and the Super Admin logo upload preview.
 - Performance: Three.js is loaded only on the login page, only on desktop (the panel is hidden on phones), DPR capped,
   paused when the tab is hidden or off-screen, one still frame for "reduce motion", a CSS poster when WebGL is unavailable
   and in the template picker's previews. The login page itself stays ~104 KB.

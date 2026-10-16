@@ -12,6 +12,7 @@ import { api } from "@/lib/api";
 import { Spinner } from "./ui";
 import type { PermMap } from "@shared/constants";
 import { applyTheme, setFavicon } from "@shared/theme";
+import { LogoDisc } from "./LogoDisc";
 
 export interface Branding {
   kind: "platform" | "company";
@@ -56,12 +57,10 @@ const initials = (s: string) =>
 function BrandMark({ b, size = 40 }: { b: Branding; size?: number }) {
   if (b.logoUrl)
     return (
-      <span className="grid shrink-0 place-items-center overflow-hidden rounded-xl bg-white p-1 ring-1 ring-white/20" style={{ width: size, height: size }}>
-        <img src={b.logoUrl} alt="" className="h-full w-full object-contain" />
-      </span>
+      <LogoDisc src={b.logoUrl} name={b.shortName || b.name} size={size} shadow={false} className="ring-white/20" />
     );
   return (
-    <span className="grid shrink-0 place-items-center rounded-xl bg-white/15 font-extrabold text-white ring-1 ring-white/20" style={{ width: size, height: size }}>
+    <span className="grid shrink-0 place-items-center rounded-full bg-white/15 font-extrabold text-white ring-1 ring-white/20" style={{ width: size, height: size }}>
       {initials(b.shortName || b.name)}
     </span>
   );

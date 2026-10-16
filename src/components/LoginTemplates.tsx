@@ -6,6 +6,7 @@
  */
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { AuraLogo } from "./Login3D";
+import { LogoDisc } from "./LogoDisc";
 import { CinematicScene, PreviewCtx } from "./cinema/CinematicScene";
 import { Globe, MessageCircle, Megaphone, Search, Mail, PhoneCall, QrCode, Handshake, FileSpreadsheet, Braces, Sparkles, Zap, BellRing, ShieldCheck, LockKeyhole } from "lucide-react";
 
@@ -59,17 +60,13 @@ const initials = (s: string) =>
     .join("") || "•";
 
 function Logo({ b, size = 56, ring = true, className = "" }: { b: LoginBrand; size?: number; ring?: boolean; className?: string }) {
-  return (
-    <span className={`grid shrink-0 place-items-center overflow-hidden rounded-full bg-white ${ring ? "p-1 shadow-lg shadow-black/15" : ""} ${className}`} style={{ width: size, height: size }}>
-      {b.logoUrl ? <img src={b.logoUrl} alt="" className="max-h-[70%] max-w-[78%] object-contain" draggable={false} /> : <span className="font-extrabold text-hive-700" style={{ fontSize: size * 0.34 }}>{initials(b.shortName || b.name)}</span>}
-    </span>
-  );
+  return <LogoDisc src={b.logoUrl} name={b.shortName || b.name} size={size} shadow={ring} className={className} />;
 }
 function Wordmark({ b, light, size = "md" }: { b: LoginBrand; light?: boolean; size?: "sm" | "md" | "lg" }) {
   const s = size === "lg" ? 64 : size === "sm" ? 40 : 52;
   return (
     <div className="flex min-w-0 items-center gap-3.5">
-      {b.logoUrl && !light ? <img src={b.logoUrl} alt="" className="w-auto max-w-[120px] shrink-0 object-contain" style={{ height: s }} draggable={false} /> : <Logo b={b} size={s} ring={!!light} />}
+      <Logo b={b} size={s} ring />
       <div className="min-w-0">
         <p className={`truncate font-extrabold leading-tight tracking-tight ${size === "lg" ? "text-[26px]" : "text-[21px]"} ${light ? "text-white" : "text-ink-900"}`}>{b.shortName}</p>
         {b.tagline && <p className={`mt-0.5 truncate text-[11px] font-bold uppercase tracking-[.18em] ${light ? "text-white/60" : "text-ink-500"}`}>{b.tagline}</p>}
