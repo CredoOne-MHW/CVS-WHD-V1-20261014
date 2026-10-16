@@ -204,6 +204,13 @@ async function bootstrap() {
       .catch((e) => console.warn("lead name repair:", e?.message));
   }
 
+  // One-time: the Super Admin login moves to the Cinematic 3D design (from the previous defaults / retired CSS-3D designs)
+  if (!(await meta.findOne({ _id: "platform_cinema_v1" }))) {
+    const { PlatformSetting } = await import("../models");
+    await PlatformSetting.updateOne({ _id: "platform_branding", "value.loginTemplate": { $in: ["aurora", "orbit", "depth", "funnel", null] } }, { $set: { "value.loginTemplate": "cinema" } });
+    await meta.updateOne({ _id: "platform_cinema_v1" }, { $set: { at: new Date() } }, { upsert: true });
+  }
+
   // One-time (v2): move existing logos/banners/knowledge files into <Company Name>/logo · /banner · /brain.
   // Runs in the background so the first request isn't delayed; idempotent if an instance stops midway.
   if (process.env.S3_BUCKET && !(await meta.findOne({ _id: "s3_layout_v2" }))) {
