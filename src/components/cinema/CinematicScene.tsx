@@ -20,9 +20,11 @@ function Poster({ logoUrl, name }: { logoUrl?: string; name: string }) {
       <div className="absolute left-1/2 top-[38%] h-[520px] w-[520px] -translate-x-1/2 -translate-y-1/2 rounded-full bg-hive-300/25 blur-3xl" />
       <div className="absolute left-1/2 top-[38%] h-[300px] w-[560px] -translate-x-1/2 -translate-y-1/2 rotate-[-8deg] rounded-[50%] border border-white/30" />
       <div className="absolute left-1/2 top-[38%] h-[250px] w-[480px] -translate-x-1/2 -translate-y-1/2 rotate-[14deg] rounded-[50%] border border-honey-300/40" />
-      <div className="absolute left-1/2 top-[38%] grid h-[150px] w-[225px] -translate-x-1/2 -translate-y-1/2 place-items-center rounded-[30px] bg-[#eceff7] shadow-[0_30px_80px_-20px_rgba(0,0,0,.6)]">
-        {logoUrl ? <img src={logoUrl} alt="" className="max-h-[70%] max-w-[78%] object-contain" /> : <span className="text-5xl font-extrabold text-hive-700">{name.slice(0, 2).toUpperCase()}</span>}
+      <div className="absolute left-1/2 top-[38%] grid h-[230px] w-[230px] -translate-x-1/2 -translate-y-1/2 place-items-center rounded-full shadow-[0_0_80px_10px_rgb(var(--brand-300)/.45),inset_-18px_-22px_50px_rgb(var(--brand-300)/.55)]" style={{ background: "radial-gradient(circle at 42% 38%, #f6f7fb 0%, #eceef6 55%, rgb(var(--brand-200)) 100%)" }}>
+        {logoUrl ? <img src={logoUrl} alt="" className="h-[66%] w-[66%] object-contain" /> : <span className="text-5xl font-extrabold text-hive-700">{name.slice(0, 2).toUpperCase()}</span>}
       </div>
+      <span className="absolute left-[27%] top-[50%] h-5 w-5 rounded-full bg-honey-300 shadow-[0_0_20px_rgb(var(--accent-300)/.8)]" />
+      <span className="absolute left-[70%] top-[27%] h-7 w-7 rounded-full bg-hive-200" />
     </div>
   );
 }

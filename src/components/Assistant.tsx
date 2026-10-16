@@ -37,7 +37,9 @@ export const NO_EXTENSIONS = { "data-gramm": "false", "data-gramm_editor": "fals
 /** Company logo, or a monogram when none is uploaded. Defined at module level so it is not re-created each render. */
 function BrandMark({ logoUrl, monogram, size }: { logoUrl?: string; monogram: string; size: string }) {
   return logoUrl ? (
-    <img src={logoUrl} alt="" className={`${size} rounded-full bg-white object-contain p-0.5`} />
+    <span className={`${size} grid shrink-0 place-items-center overflow-hidden rounded-full bg-white`}>
+      <img src={logoUrl} alt="" className="h-[68%] w-[68%] object-contain" />
+    </span>
   ) : (
     <span className={`${size} grid place-items-center rounded-full bg-white text-[15px] font-extrabold tracking-tight text-hive-800`} aria-hidden>
       {monogram ? <span>{monogram}</span> : <Sparkles className="h-1/2 w-1/2" />}
