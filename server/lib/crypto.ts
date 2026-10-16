@@ -34,6 +34,14 @@ export function hmacValid(secret: string, body: string, signature: string | unde
   const expected = crypto.createHmac("sha256", secret).update(body).digest("hex");
   return sig.length === expected.length && crypto.timingSafeEqual(Buffer.from(sig), Buffer.from(expected));
 }
+/** Shopify / WooCommerce style: base64(HMAC-SHA256(raw body, secret)). */
+export function hmacB64Valid(secret: string, body: string, signature: string | undefined) {
+  if (!secret || !signature) return false;
+  const expected = crypto.createHmac("sha256", secret).update(body, "utf8").digest("base64");
+  const a = Buffer.from(String(signature).trim());
+  const b = Buffer.from(expected);
+  return a.length === b.length && crypto.timingSafeEqual(a, b);
+}
 export function maskSecret(s: string) {
   return s ? `${s.slice(0, 4)}…${s.slice(-4)}` : "";
 }

@@ -123,6 +123,31 @@ export const GUIDES: Record<string, Guide> = {
       { title: "Ask for a test lead", body: "It appears in Leads (source sulekha). If a field lands in the wrong place, map it in Field mapping using Sulekha’s field name." },
     ],
   },
+  shopify: {
+    summary: "Shoppers who abandon checkout, create an account or place an order on your Shopify store become leads instantly — with cart, order value and the ad campaign that brought them.",
+    note: "Pick what to capture in Settings. Abandoned checkouts are the warmest leads: the recovery link is on the lead so your team can send it on WhatsApp.",
+    steps: [
+      { title: "Create this connector", body: "Click Connect and copy the Lead URL (shown once — it contains your private token). Choose what to capture: abandoned checkouts, new customers, orders." },
+      { title: "Add the webhooks in Shopify", body: "Shopify admin → Settings → Notifications → Webhooks → Create webhook. Format JSON, latest API version, URL below. Create one webhook for each event you want: “Checkout creation”, “Checkout update”, “Customer creation”, “Order creation”.", code: "{{pushUrl}}" },
+      { title: "Save the signing key (recommended)", body: "On the same Webhooks page Shopify shows the code your webhooks are signed with. Paste it in this connector’s Settings → “Webhook signing key”. From then on every delivery’s signature is checked and anything unsigned is refused." },
+      { title: "Test", body: "Use “Send test” next to a webhook in Shopify, or start a checkout on your store with your phone number and leave before paying. The lead appears in Leads (source shopify, medium “abandoned checkout”). One person across checkout → order stays one lead with both events in its history." },
+      { title: "Older customers (optional)", body: "Shopify admin → Customers → Export → CSV, then Leads → Import. Webhooks cover everything from now on." },
+    ],
+    links: [{ label: "Shopify: creating webhooks", url: "https://help.shopify.com/en/manual/orders/notifications/webhooks" }],
+  },
+  woocommerce: {
+    summary: "Orders and new customer accounts from your WordPress / WooCommerce shop become leads instantly through signed webhooks, with a 15-minute safety-net fetch.",
+    steps: [
+      { title: "Create this connector", body: "Click Connect. Copy the Delivery URL and the Secret (the secret is shown once — rotate it if you lose it)." },
+      { title: "Add the webhooks in WooCommerce", body: "WordPress admin → WooCommerce → Settings → Advanced → Webhooks → Add webhook. Status: Active · Topic: “Order created” · Delivery URL and Secret below · API version: WP REST API Integration v3 → Save. Repeat with Topic “Customer created”.", code: "Delivery URL: {{endpoint}}\nSecret:       {{secret}}" },
+      { title: "Check it’s connected", body: "On saving, WooCommerce pings the URL; the webhook stays Active. Place a test order — it appears in Leads (source woocommerce). Paid orders can start as Converted; pending / failed ones stay New for follow-up (choose in Settings)." },
+      { title: "Safety net (optional)", body: "WooCommerce switches a webhook off after 5 failed deliveries. To never miss an order, create a Read-only key in WooCommerce → Settings → Advanced → REST API → Add key, and paste the Store URL, Consumer key and Consumer secret in this connector’s Settings. Recent orders are then fetched every 15 minutes; orders already received by webhook are not duplicated." },
+    ],
+    links: [
+      { label: "WooCommerce webhooks", url: "https://woocommerce.com/document/webhooks/" },
+      { label: "WooCommerce REST API keys", url: "https://woocommerce.com/document/woocommerce-rest-api/" },
+    ],
+  },
   email: {
     summary: "Turn enquiry emails into leads with an inbound-parse service — the sender, subject and body become the lead.",
     steps: [

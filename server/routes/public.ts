@@ -2,7 +2,7 @@ import { Router } from "express";
 import { Connector, IntakeEvent, Company, Lead, Webhook, ConnectorKey, EndpointKey, AiEndpoint } from "../models";
 import { endpointChat } from "../lib/agentic";
 import { h, HttpError } from "../lib/http";
-import { decrypt, hmacValid, sha256 } from "../lib/crypto";
+import { decrypt, hmacValid, hmacB64Valid, sha256 } from "../lib/crypto";
 import { processIntake, runEvent } from "../lib/intake";
 import { fireEvent } from "../lib/whatsapp";
 import { cached, rateLimit } from "../lib/cache";
@@ -44,7 +44,7 @@ async function receive(req: any, res: any, c: any, body: any) {
   const result: any = await processIntake(c, body, idem);
   // Platforms that retry on non-200 (and may switch the integration off) always get 200 — our own retry queue
   // (Deliveries tab, every 15 minutes) re-processes anything that failed.
-  if (["meta_leads", "whatsapp", "indiamart", "sulekha"].includes(c.type)) return res.status(200).json({ received: true });
+  if (["meta_leads", "whatsapp", "indiamart", "sulekha", "shopify", "woocommerce"].includes(c.type)) return res.status(200).json({ received: true, ...(result.ignored ? { ignored: result.ignored } : {}) });
   if (c.type === "justdial") return res.status(200).type("text/plain").send("RECEIVED");
   return res.status(result.ok === false ? 202 : 200).json(result);
 }
@@ -71,7 +71,7 @@ r.get(["/intake/:key", "/intake/:key/:token"], h(async (req, res) => {
 /**
  * Unified lead intake.
  * Auth (any one): `x-api-key` header · `x-signature: sha256=<hmac of raw body>` · `?key=` · token path segment
- * (/intake/<key>/<token> — used for IndiaMART, JustDial and Sulekha, which can't send headers) · google_key in body (Google Ads).
+ * (/intake/<key>/<token> — used for IndiaMART, JustDial, Sulekha and Shopify, which can't send headers) · google_key in body (Google Ads).
  * Browser forms (website_form / qr_campaign) may post without a key; they must pass the honeypot.
  * Idempotency: `Idempotency-Key` header, else the platform's lead id, else hash of the body.
  */
@@ -81,9 +81,30 @@ r.post(["/intake/:key", "/intake/:key/:token"], h(async (req, res) => {
   const secret = decrypt(c.secretEnc);
   const body = { ...(req.body || {}), ...(PUSH_PLATFORMS.includes(c.type) && req.body && !Object.keys(req.body).length ? req.query : {}) };
   const isBrowserForm = ["website_form", "qr_campaign"].includes(c.type) && !!req.headers.origin;
+  const tokenOk = !!req.params.token && req.params.token === secret;
+
+  // Shops sign every delivery: base64 HMAC-SHA256 of the raw body.
+  // Shopify: with the store's webhook signing key saved in Settings the signature is required; until then the Lead URL token is.
+  // WooCommerce: the webhook "Secret" is this connector's secret. Saving a webhook sends an unsigned ping {webhook_id} — acknowledged only.
+  if (c.type === "shopify" || c.type === "woocommerce") {
+    const raw = req.rawBody || "";
+    let ok: boolean;
+    if (c.type === "shopify") {
+      const signingKey = decrypt(c.configSecretEnc);
+      ok = signingKey ? hmacB64Valid(signingKey, raw, req.headers["x-shopify-hmac-sha256"] as string) : tokenOk;
+      body._topic = String(req.headers["x-shopify-topic"] || "");
+    } else {
+      const ping = body.webhook_id != null && Object.keys(body).length === 1 && !req.headers["x-wc-webhook-signature"];
+      if (ping) return res.status(200).json({ ok: true, ping: true });
+      ok = hmacB64Valid(secret, raw, req.headers["x-wc-webhook-signature"] as string) || tokenOk;
+      body._topic = String(req.headers["x-wc-webhook-topic"] || "");
+    }
+    if (!ok) throw new HttpError(401, c.type === "shopify" ? "Signature check failed — check the webhook signing key in the connector's Settings" : "Signature check failed — the WooCommerce webhook Secret must be this connector's secret");
+    return receive(req, res, c, body);
+  }
 
   const authed =
-    (req.params.token && req.params.token === secret) ||
+    tokenOk ||
     (req.headers["x-api-key"] && req.headers["x-api-key"] === secret) ||
     req.query.key === secret ||
     (c.type === "google_ads" && body.google_key === secret) ||

@@ -2,6 +2,7 @@ import { Lead, IntakeEvent, Connector, Company } from "../models";
 import { normalizePhone, LEAD_STATUSES } from "../../shared/constants";
 import { sha256, decrypt } from "./crypto";
 import { fireEvent } from "./whatsapp";
+import { shopifyLead, wooLead } from "./shop";
 
 export interface LeadInput {
   name?: string;
@@ -66,7 +67,7 @@ export function mapFields(raw: any, fieldMap: Record<string, string> = {}): Lead
 }
 
 /** Provider adapters → array of LeadInput (one webhook delivery may carry many). Also returns a natural idempotency id. */
-export async function adapt(connector: any, payload: any): Promise<{ leads: LeadInput[]; naturalId?: string }> {
+export async function adapt(connector: any, payload: any): Promise<{ leads: LeadInput[]; naturalId?: string; ignore?: string }> {
   const fm = connector.fieldMap || {};
   switch (connector.type) {
     case "meta_leads": {
@@ -94,6 +95,11 @@ export async function adapt(connector: any, payload: any): Promise<{ leads: Lead
     }
     case "google_ads":
       return googleAdsLead(connector, payload);
+    case "shopify":
+    case "woocommerce": {
+      const r = connector.type === "shopify" ? shopifyLead(payload || {}, connector.config) : wooLead(payload || {}, connector.config);
+      return { ...r, leads: r.leads.map((l) => applyMap(l, payload, fm)) };
+    }
     case "indiamart": {
       const recs = indiamartRecords(payload);
       return { leads: recs.map((r) => indiamartLead(r, fm)), naturalId: recs.map((r) => r.UNIQUE_QUERY_ID).filter(Boolean).join(",") || undefined };
@@ -345,7 +351,13 @@ export async function upsertLead(companyId: string, input: LeadInput, ctx: { con
  * - Failures are stored with backoff; /api/cron/retry re-processes them (max 5 attempts).
  */
 export async function processIntake(connector: any, payload: any, explicitKey?: string) {
-  const { leads, naturalId } = await adapt(connector, payload).catch((e) => ({ leads: [] as LeadInput[], naturalId: undefined, error: e }));
+  const { leads, naturalId, ignore } = await adapt(connector, payload).catch((e) => ({ leads: [] as LeadInput[], naturalId: undefined, ignore: undefined, error: e }));
+  // Events that are deliberately not leads (a shop's product updates, a checkout without contact details yet, a ping):
+  // acknowledged and counted, but not stored or retried.
+  if (ignore && !leads.length) {
+    await Connector.updateOne({ _id: connector._id }, { $inc: { "stats.ignored": 1 }, $set: { "stats.lastAt": new Date() } });
+    return { ok: true, ignored: ignore };
+  }
   const idemKey = explicitKey || naturalId || sha256(JSON.stringify(payload));
 
   let ev;

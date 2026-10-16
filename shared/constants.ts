@@ -101,6 +101,8 @@ export const CONNECTOR_TYPES: ConnectorDef[] = [
   { type: "justdial", label: "JustDial", description: "Every JustDial enquiry pushed to your own lead URL in real time.", icon: "PhoneIncoming", inbound: "push" },
   { type: "tradeindia", label: "TradeIndia", description: "Buyer inquiries pulled every 15 minutes from the My Inquiry API.", icon: "Building", inbound: "pull" },
   { type: "sulekha", label: "Sulekha", description: "Service enquiries pushed by Sulekha to your own lead URL.", icon: "BadgeCheck", inbound: "push" },
+  { type: "shopify", label: "Shopify", description: "Abandoned checkouts, new customers and orders from your Shopify store — instant, signed webhooks.", icon: "ShoppingBag", inbound: "push" },
+  { type: "woocommerce", label: "WooCommerce", description: "Orders and new customers from your WordPress shop — signed webhooks + 15-minute safety-net fetch.", icon: "ShoppingCart", inbound: "push_pull" },
   { type: "mcp", label: "MCP Server (Zapier, Make, HubSpot…)", description: "Pull leads daily from any MCP server tool — CRMs, sheets, forms.", icon: "Cable", inbound: "pull" },
 ];
 
