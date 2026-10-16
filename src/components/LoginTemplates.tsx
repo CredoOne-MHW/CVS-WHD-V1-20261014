@@ -29,7 +29,7 @@ export const LOGIN_TEMPLATES = [
   { key: "photo", name: "Photo Panel", hint: "Your banner fills the brand side" },
   { key: "spotlight", name: "Spotlight Card", hint: "Card centred over full-screen banner" },
   { key: "aurora", name: "Aurora", hint: "Glowing logo halo + channel icons" },
-  { key: "cinema", name: "Cinematic 3D", hint: "Real-time 3D · leads stream in, clients orbit, AI glows" },
+  { key: "cinema", name: "Cinematic 3D", hint: "Real-time 3D neural brain · logo at the core, leads spark in, clients flow out" },
   { key: "minimal", name: "Minimal", hint: "Clean white page, accent hairline" },
   { key: "editorial", name: "Editorial", hint: "Form left, big type headline right" },
   { key: "mesh", name: "Gradient Mesh", hint: "Living colour blobs, glass card" },

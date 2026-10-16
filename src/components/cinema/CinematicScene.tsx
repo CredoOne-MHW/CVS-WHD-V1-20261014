@@ -13,18 +13,35 @@ const webgl = () => {
   }
 };
 
-/** Still poster (previews, no WebGL, while the engine loads): the logo tile with its aura in the brand glow. */
+/** deterministic neuron dots for the poster (a brain-shaped cloud, two lobes) */
+const DOTS = (() => {
+  let seed = 7;
+  const r = () => ((seed = (seed * 16807) % 2147483647) / 2147483647);
+  const out: { x: number; y: number; s: number; o: number }[] = [];
+  while (out.length < 170) {
+    const x = r() * 2 - 1, y = r() * 2 - 1;
+    const lobe = Math.min(((x - 0.36) / 0.62) ** 2 + (y / 0.78) ** 2, ((x + 0.36) / 0.62) ** 2 + (y / 0.78) ** 2);
+    if (lobe > 1 || lobe < 0.55 || Math.hypot(x, y) < 0.42) continue;
+    out.push({ x, y, s: r() < 0.08 ? 5 : 2 + r() * 2, o: 0.35 + r() * 0.6 });
+  }
+  return out;
+})();
+
+/** Still poster (previews, no WebGL, while the engine loads): the neural brain with the logo disc at its core. */
 function Poster({ logoUrl, name }: { logoUrl?: string; name: string }) {
   return (
-    <div aria-hidden className="absolute inset-0 overflow-hidden" style={{ background: "radial-gradient(80% 70% at 50% 38%, rgb(var(--brand-600)) 0%, rgb(var(--brand-800)) 45%, rgb(var(--brand-950)) 100%)" }}>
-      <div className="absolute left-1/2 top-[38%] h-[520px] w-[520px] -translate-x-1/2 -translate-y-1/2 rounded-full bg-hive-300/25 blur-3xl" />
-      <div className="absolute left-1/2 top-[38%] h-[300px] w-[560px] -translate-x-1/2 -translate-y-1/2 rotate-[-8deg] rounded-[50%] border border-white/30" />
-      <div className="absolute left-1/2 top-[38%] h-[250px] w-[480px] -translate-x-1/2 -translate-y-1/2 rotate-[14deg] rounded-[50%] border border-honey-300/40" />
-      <div className="absolute left-1/2 top-[38%] grid h-[230px] w-[230px] -translate-x-1/2 -translate-y-1/2 place-items-center rounded-full shadow-[0_0_80px_10px_rgb(var(--brand-300)/.45),inset_-18px_-22px_50px_rgb(var(--brand-300)/.55)]" style={{ background: "radial-gradient(circle at 42% 38%, #f6f7fb 0%, #eceef6 55%, rgb(var(--brand-200)) 100%)" }}>
-        {logoUrl ? <img src={logoUrl} alt="" className="h-[66%] w-[66%] object-contain" /> : <span className="text-5xl font-extrabold text-hive-700">{name.slice(0, 2).toUpperCase()}</span>}
+    <div aria-hidden className="absolute inset-0 overflow-hidden" style={{ background: "radial-gradient(75% 65% at 50% 36%, rgb(var(--brand-700)) 0%, rgb(var(--brand-900)) 50%, rgb(var(--brand-950)) 100%)" }}>
+      <div className="absolute left-1/2 top-[36%] h-[460px] w-[600px] -translate-x-1/2 -translate-y-1/2">
+        {DOTS.map((d, i) => (
+          <span key={i} className="absolute rounded-full bg-hive-200" style={{ left: `${50 + d.x * 50}%`, top: `${50 + d.y * 50}%`, width: d.s, height: d.s, opacity: d.o, boxShadow: d.s > 4 ? "0 0 10px rgb(var(--brand-200))" : undefined }} />
+        ))}
       </div>
-      <span className="absolute left-[27%] top-[50%] h-5 w-5 rounded-full bg-honey-300 shadow-[0_0_20px_rgb(var(--accent-300)/.8)]" />
-      <span className="absolute left-[70%] top-[27%] h-7 w-7 rounded-full bg-hive-200" />
+      <div className="absolute left-1/2 top-[36%] h-[360px] w-[360px] -translate-x-1/2 -translate-y-1/2 rounded-full bg-hive-300/25 blur-3xl" />
+      <div className="absolute left-1/2 top-[36%] h-[176px] w-[176px] -translate-x-1/2 -translate-y-1/2 rounded-full border border-white/40" />
+      <div className="absolute left-1/2 top-[36%] h-[200px] w-[200px] -translate-x-1/2 -translate-y-1/2 rounded-full border border-honey-300/40" />
+      <div className="absolute left-1/2 top-[36%] grid h-[150px] w-[150px] -translate-x-1/2 -translate-y-1/2 place-items-center rounded-full bg-white shadow-[0_0_60px_8px_rgb(var(--brand-300)/.5)]">
+        {logoUrl ? <img src={logoUrl} alt="" className="h-[68%] w-[68%] object-contain" /> : <span className="text-5xl font-extrabold text-hive-700">{name.slice(0, 2).toUpperCase()}</span>}
+      </div>
     </div>
   );
 }

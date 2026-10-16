@@ -454,12 +454,14 @@ discount ≤ amount / ≤ 100 %), company routes are tenant-scoped, Super Admin 
   page. Service master cached 5 minutes; client dropdown options fetched once per page. Measured locally: lists 6–55 ms.
 
 ### 13.1 Cinematic 3D login (Oct 2026)
-- **Cinematic 3D** (template `cinema`, now the Super Admin login; also selectable per company): a real-time WebGL solar
-  system — the logo is the **sun** (a glowing white sphere) with rings of light circling it (the aura), planets on tilted
-  orbits, lead streams flowing in from every direction, a belt of client nodes and a neural sphere with travelling pulses.
-  It cycles through three chapters (01 Leads from every source → 02 Clients, end to end → 03 AI intelligence).
-- Colours come from the brand's theme; the logo is drawn in its exact colours and fitted inside a circle on the sun's face
-  (wide, tall or square — never cropped). A company without a logo shows its initials.
+- **Cinematic 3D — Neural Brain** (template `cinema`, now the Super Admin login; also selectable per company): a real-time
+  WebGL brain of ~1.9k glowing neurons and their synapses (two hemispheres, folds, cerebellum), turning slowly. The circular
+  logo sits at its core with rings of light (the aura) circling it. Story, every 4.5 s:
+  01 Leads from every source — coloured sparks fly in, land on the cortex and travel along synapses into the core;
+  02 Clients, end to end — gold sparks flow out to a ring of client nodes around the brain;
+  03 AI intelligence — firing waves sweep through the whole network.
+- Colours come from the brand's theme. The logo disc is drawn after the glow pass, so the logo keeps its exact colours and
+  is contain-fitted inside the circle (never cropped); a company without a logo shows its initials.
 - **Circular logos everywhere**: one `LogoDisc` component shows every logo (platform and each company) inside a white circle,
   scaled to the circle's inscribed square so it is never cropped — login pages, sidebar, assistant, lead forms, the support
   portal and the Super Admin logo upload preview.
