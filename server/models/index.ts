@@ -1,5 +1,6 @@
 import mongoose, { Schema, model, models, type Model } from "mongoose";
 import { currentDb } from "../lib/context";
+import { LOGIN_TEMPLATE_KEYS } from "../../shared/constants";
 
 const { ObjectId, Mixed } = Schema.Types;
 const ts = { timestamps: true };
@@ -102,6 +103,7 @@ const CompanySchema = new Schema(
       bannerKey: String,
       faviconKey: String,
       loginLayout: { type: String, enum: ["split", "banner", "centered"], default: "split" },
+      loginTemplate: { type: String, enum: [...LOGIN_TEMPLATE_KEYS] }, // one of 10 designs; unset = derived from loginLayout
       supportEmail: String,
       supportPhone: String,
       updatedAt: Date,
@@ -180,6 +182,7 @@ const LeadSchema = new Schema(
     campaign: String,
     medium: String,
     referral: String,
+    profileUrl: String, // public profile / post link (Public Web Prospecting leads without phone or email)
     status: { type: String, default: "New", index: true },
     lostReason: String,
     lostReasonOther: String,
@@ -199,11 +202,36 @@ const LeadSchema = new Schema(
       default: [],
     },
     customFields: { type: Mixed, default: {} },
+    services: { type: [String], default: undefined }, // from the company's Service master
+    business: {
+      gst: String,
+      tradeLicence: String,
+      pan: String,
+      registeredAddress: String,
+      communicationAddress: String,
+      commSameAsRegistered: Boolean,
+      ownerEmail: String,
+      ownerPhone: String,
+      ownerPan: String,
+      ownerAadhaarEnc: String, // AES-256-GCM; only the last 4 digits are ever shown
+      ownerAadhaarLast4: String,
+    },
+    // Client module: a lead becomes a client when its status turns "Converted / Service Initiated"
+    isClient: Boolean,
+    clientCode: String, // e.g. WHD-C0001 — what the client types on the support page
+    clientSince: Date,
+    serviceStage: String, // Kanban column id
+    stageAt: Date,
     deletedAt: Date,
   },
   ts
 );
 LeadSchema.index({ companyId: 1, createdAt: -1 });
+LeadSchema.index({ companyId: 1, isClient: 1, createdAt: -1 });
+LeadSchema.index({ companyId: 1, isClient: 1, serviceStage: 1, stageAt: -1 });
+LeadSchema.index({ companyId: 1, status: 1, isClient: 1 });
+LeadSchema.index({ companyId: 1, clientCode: 1 }, { unique: true, partialFilterExpression: { clientCode: { $type: "string" } } });
+LeadSchema.index({ companyId: 1, profileUrl: 1 }, { partialFilterExpression: { profileUrl: { $type: "string" } } });
 LeadSchema.index({ companyId: 1, status: 1, updatedAt: -1 });
 LeadSchema.index({ name: "text", email: "text", phone: "text", whatsapp: "text", comments: "text" });
 export const Lead = tm<any>("Lead", LeadSchema);
@@ -227,6 +255,8 @@ const ConnectorSchema = new Schema(
     lastRunAt: Date, // pull connectors (Google Search, MCP): last scheduled / manual run
     lastRun: Mixed, // { ok, found, created, duplicates, error }
     pullCursor: Date, // IndiaMART / TradeIndia: end of the last successfully pulled window
+    prospect: Mixed, // Public Web Prospecting: { queue, seededAt, workedAt, today, log, lockUntil }
+    prospectSeen: { type: [String], default: undefined }, // hashes of pages/posts already read (last 3000)
     active: { type: Boolean, default: true },
     stats: { received: { type: Number, default: 0 }, created: { type: Number, default: 0 }, duplicates: { type: Number, default: 0 }, failed: { type: Number, default: 0 }, ignored: { type: Number, default: 0 }, lastAt: Date },
   },
@@ -252,6 +282,105 @@ const IntakeEventSchema = new Schema(
 IntakeEventSchema.index({ connectorId: 1, idemKey: 1 }, { unique: true });
 IntakeEventSchema.index({ createdAt: 1 }, { expireAfterSeconds: 60 * 60 * 24 * 90 });
 export const IntakeEvent = tm<any>("IntakeEvent", IntakeEventSchema);
+
+/** People removed from Leads who must not be collected again by Public Web Prospecting. Only one-way hashes are kept. */
+const SuppressionSchema = new Schema({ hash: { type: String, required: true }, at: { type: Date, default: Date.now } });
+SuppressionSchema.index({ hash: 1 }, { unique: true });
+export const Suppression = tm<any>("Suppression", SuppressionSchema);
+
+/* ───────────────────────── Clients (Client module) ───────────────────────── */
+
+/** Atomic per-company sequences (client codes, ticket numbers). */
+const CounterSchema = new Schema({ _id: String, seq: { type: Number, default: 0 } });
+export const Counter = tm<any>("Counter", CounterSchema);
+
+/** Service master: one list per company, used by Leads (Service) and client payments (Service Type). */
+const ServiceTypeSchema = new Schema({ companyId: { type: ObjectId, required: true }, name: { type: String, required: true }, key: { type: String, required: true } }, ts);
+ServiceTypeSchema.index({ companyId: 1, key: 1 }, { unique: true });
+export const ServiceType = tm<any>("ServiceType", ServiceTypeSchema);
+
+/** Kanban columns for the client service journey (editable; one document per company). */
+const ClientBoardSchema = new Schema(
+  { companyId: { type: ObjectId, required: true }, columns: { type: [{ id: String, name: String, color: String }], default: [] } },
+  ts
+);
+ClientBoardSchema.index({ companyId: 1 }, { unique: true });
+export const ClientBoard = tm<any>("ClientBoard", ClientBoardSchema);
+
+export const TICKET_STATUSES = ["Open", "In Progress", "On Hold", "Resolved", "Closed"] as const;
+const SupportTicketSchema = new Schema(
+  {
+    companyId: { type: ObjectId, required: true },
+    ticketNo: { type: String, required: true }, // e.g. T-000123
+    clientId: { type: ObjectId, required: true }, // the client's lead id
+    clientCode: String,
+    clientName: String,
+    category: { type: String, enum: ["Support", "Request", "Grievance"], required: true },
+    description: { type: String, required: true },
+    status: { type: String, enum: [...TICKET_STATUSES], default: "Open" },
+    via: { type: String, enum: ["portal", "staff"], default: "portal" },
+    history: { type: [{ at: { type: Date, default: Date.now }, by: String, from: String, to: String, note: String, notified: Boolean }], default: [] },
+    closedAt: Date,
+  },
+  ts
+);
+SupportTicketSchema.index({ companyId: 1, ticketNo: 1 }, { unique: true });
+SupportTicketSchema.index({ companyId: 1, status: 1, updatedAt: -1 });
+SupportTicketSchema.index({ companyId: 1, clientId: 1, createdAt: -1 });
+export const SupportTicket = tm<any>("SupportTicket", SupportTicketSchema);
+
+/** Payment Details: what a client pays for which service, recurring (with frequency) or on-demand (price mapping). */
+const ClientPlanSchema = new Schema(
+  {
+    companyId: { type: ObjectId, required: true },
+    clientId: { type: ObjectId, required: true },
+    clientCode: String,
+    clientName: String,
+    serviceType: { type: String, required: true },
+    amount: { type: Number, required: true, min: 0 },
+    type: { type: String, enum: ["recurring", "on_demand"], required: true },
+    frequency: { type: String, enum: ["on_demand", "weekly", "monthly", "quarterly", "half_yearly", "yearly"], required: true },
+    startDate: Date, // recurring: first due date
+    active: { type: Boolean, default: true },
+    lastReminderAt: Date,
+  },
+  ts
+);
+ClientPlanSchema.index({ companyId: 1, createdAt: -1 });
+ClientPlanSchema.index({ companyId: 1, clientId: 1, serviceType: 1 });
+ClientPlanSchema.index({ companyId: 1, type: 1, active: 1 });
+export const ClientPlan = tm<any>("ClientPlan", ClientPlanSchema);
+
+/** One payment due / received. Recurring dues are generated from Payment Details; on-demand ones are created by staff. */
+const ClientPaymentSchema = new Schema(
+  {
+    companyId: { type: ObjectId, required: true },
+    kind: { type: String, enum: ["recurring", "on_demand"], required: true },
+    planId: ObjectId,
+    clientId: { type: ObjectId, required: true },
+    clientCode: String,
+    clientName: String,
+    services: { type: [String], default: [] },
+    dueDate: { type: Date, required: true },
+    amount: { type: Number, required: true, min: 0 },
+    discountType: { type: String, enum: ["fixed", "percent"], default: "fixed" },
+    discountValue: { type: Number, default: 0 },
+    discountAmount: { type: Number, default: 0 },
+    gross: { type: Number, required: true, min: 0 },
+    status: { type: String, enum: ["unpaid", "overdue", "paid"], default: "unpaid" },
+    paidAt: Date,
+    mode: { type: String, enum: ["NEFT", "CASH", "UPI", "Card", "RTGS"] },
+    txnId: String,
+    remarks: String,
+    lastReminderAt: Date,
+  },
+  ts
+);
+ClientPaymentSchema.index({ companyId: 1, kind: 1, status: 1, dueDate: 1 });
+ClientPaymentSchema.index({ companyId: 1, status: 1, paidAt: -1 });
+ClientPaymentSchema.index({ companyId: 1, clientId: 1, dueDate: -1 });
+ClientPaymentSchema.index({ planId: 1, dueDate: 1 }, { unique: true, partialFilterExpression: { planId: { $type: "objectId" } } });
+export const ClientPayment = tm<any>("ClientPayment", ClientPaymentSchema);
 
 /* ───────────────────────── WhatsApp ───────────────────────── */
 
@@ -557,3 +686,8 @@ const AiEndpointSchema = new Schema(
   ts
 );
 export const AiEndpoint = tm<any>("AiEndpoint", AiEndpointSchema);
+
+/* ───────────────────────── Platform settings (main database) ───────────────────────── */
+/** Small key → value documents, e.g. "platform_branding" (Super Admin › Settings › Platform branding). */
+const PlatformSettingSchema = new Schema({ _id: String, value: { type: Mixed, default: {} } }, { timestamps: true });
+export const PlatformSetting = m<any>("PlatformSetting", PlatformSettingSchema);

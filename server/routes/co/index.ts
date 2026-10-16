@@ -20,6 +20,10 @@ import { splitKeywords } from "../../../shared/text";
 import { assertPublicUrl } from "../../lib/net";
 import { mcpSession } from "../../lib/mcp";
 import { runPull, PULL_TYPES, wooBase } from "../../lib/pull";
+import { suppress, fromProspecting } from "../../lib/suppress";
+import { testProspect, runProspectNow, BLOCKED_SITES } from "../../lib/prospect";
+import clientRoutes, { businessBody, applyBusiness, safeLead, assertServices } from "./clients";
+import { promoteClients } from "../../lib/clients";
 import { webhookRoutes, waLogRoutes, activityRoutes, roleRoutes } from "../shared";
 import { reportRoutes } from "../reports";
 import { assistantChat, assistantInfo, withAgentDb, endpointChat } from "../../lib/agentic";
@@ -35,6 +39,8 @@ r.use("/integrations", (req, res, next) => {
   next();
 });
 // Vercel caps request bodies at ~4.5 MB; keep uploads under that.
+r.use(clientRoutes); // Client module + service master
+
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 4 * 1024 * 1024, files: 10 } });
 const oid = (s: string) => new mongoose.Types.ObjectId(s);
 
@@ -80,14 +86,17 @@ const leadBody = z.object({
   source: z.string().max(60).optional(),
   campaign: z.string().max(120).optional(),
   medium: z.string().max(60).optional(),
-  referral: z.string().max(120).optional(),
+  referral: z.string().max(500).optional(),
   status: z.enum(LEAD_STATUSES).optional(),
   nextFollowUpAt: z.coerce.date().optional().nullable(),
   consentWhatsapp: z.boolean().optional(),
+  services: z.array(z.string().max(80)).max(30).optional(),
+  business: businessBody.optional(),
 });
 
 function leadQuery(req: any) {
-  const q: any = { ...tenant(req), deletedAt: null, ...dateRange(req.query) };
+  const q: any = { ...tenant(req), deletedAt: null, isClient: { $ne: true }, ...dateRange(req.query) }; // clients live in the Client module
+  if (req.query.service) q.services = String(req.query.service);
   if (req.query.status) q.status = { $in: String(req.query.status).split(",") };
   if (req.query.source) q.source = { $in: String(req.query.source).split(",") };
   if (req.query.campaign) q.campaign = req.query.campaign;
@@ -109,9 +118,9 @@ r.get("/leads", can("leads", "read"), h(async (req, res) => {
   const q = leadQuery(req);
   const sort: any = req.query.sort === "score" ? { score: -1 } : req.query.sort === "updated" ? { updatedAt: -1 } : { createdAt: -1 };
   const [items, total, counts] = await Promise.all([
-    Lead.find(q).sort(sort).skip(skip).limit(limit).select("-attribution.raw -remarks").lean(),
+    Lead.find(q).sort(sort).skip(skip).limit(limit).select("-attribution.raw -remarks -business.ownerAadhaarEnc").lean(),
     Lead.countDocuments(q),
-    Lead.aggregate([{ $match: { companyId: oid(req.auth!.companyId!), deletedAt: null } }, { $group: { _id: "$status", n: { $sum: 1 } } }]),
+    Lead.aggregate([{ $match: { companyId: oid(req.auth!.companyId!), deletedAt: null, isClient: { $ne: true } } }, { $group: { _id: "$status", n: { $sum: 1 } } }]),
   ]);
   res.json({ items, total, page, limit, counts: Object.fromEntries(counts.map((c: any) => [c._id, c.n])) });
 }));
@@ -126,7 +135,7 @@ r.get("/leads/template.:fmt", can("leads", "create"), (req, res) => {
 r.get("/leads/export.csv", can("leads", "read"), h(async (req, res) => {
   const rows = await Lead.find(leadQuery(req)).sort({ createdAt: -1 }).limit(50_000).lean();
   const data = rows.map((l: any) => ({
-    Name: l.name, "WhatsApp No": l.whatsapp, "Phone No": l.phone, Email: l.email, Address: l.address, Comments: l.comments, Source: l.source, Campaign: l.campaign, Medium: l.medium, Referral: l.referral, Status: l.status, "Lost reason": l.lostReasonOther || l.lostReason, Score: l.score, "Created (IST)": new Date(l.createdAt).toLocaleString("en-IN", { timeZone: "Asia/Kolkata" }),
+    Name: l.name || "NA", "WhatsApp No": l.whatsapp || "NA", "Phone No": l.phone || "NA", Email: l.email || "NA", Address: l.address || "NA", Comments: l.comments || "NA", Source: l.source, Campaign: l.campaign || "NA", Medium: l.medium || "NA", Referral: l.referral || "NA", "Profile / post": l.profileUrl || "NA", Status: l.status, "Lost reason": l.lostReasonOther || l.lostReason, Score: l.score, Service: (l.services || []).join(", ") || "NA", "Company GST": l.business?.gst || "NA", "Trade licence": l.business?.tradeLicence || "NA", "Company PAN": l.business?.pan || "NA", "Registered address": l.business?.registeredAddress || "NA", "Communication address": l.business?.communicationAddress || "NA", "Owner email": l.business?.ownerEmail || "NA", "Owner number": l.business?.ownerPhone || "NA", "Owner PAN": l.business?.ownerPan || "NA", "Owner Aadhaar": l.business?.ownerAadhaarLast4 ? `XXXX XXXX ${l.business.ownerAadhaarLast4}` : "NA", "Created (IST)": new Date(l.createdAt).toLocaleString("en-IN", { timeZone: "Asia/Kolkata" }),
   }));
   res.locals.logRead = true;
   res.locals.action = "Export";
@@ -138,14 +147,22 @@ r.get("/leads/export.csv", can("leads", "read"), h(async (req, res) => {
 r.get("/leads/:id", can("leads", "read"), h(async (req, res) => {
   const lead = await Lead.findOne({ _id: req.params.id, ...tenant(req), deletedAt: null }).lean();
   if (!lead) throw notFound();
-  res.json(lead);
+  res.json(safeLead(lead));
 }));
 
 r.post("/leads", can("leads", "create"), h(async (req, res) => {
   const b = parse(leadBody, req.body);
-  const { lead, created } = await upsertLead(req.auth!.companyId!, { ...b, source: b.source || "manual", consent: b.consentWhatsapp != null ? { whatsapp: b.consentWhatsapp, text: "Recorded by staff" } : undefined } as any, { by: req.auth!.name });
+  const { business, services, ...rest } = b;
+  const svc = services ? await assertServices(req.auth!.companyId, services) : undefined; // validate before saving anything
+  const { lead, created } = await upsertLead(req.auth!.companyId!, { ...rest, source: b.source || "manual", consent: b.consentWhatsapp != null ? { whatsapp: b.consentWhatsapp, text: "Recorded by staff" } : undefined } as any, { by: req.auth!.name });
+  if (business || services) {
+    if (svc) lead.services = svc;
+    applyBusiness(lead, business);
+    await lead.save();
+  }
+  const moved = lead.status === WON_STATUS ? await promoteClients(lead.companyId, [lead._id]) : [];
   res.locals.item = lead.name || lead.phone;
-  res.status(created ? 201 : 200).json({ lead, created });
+  res.status(created ? 201 : 200).json({ lead: safeLead(lead), created, client: moved[0] });
 }));
 
 /** Edit, including status change with mandatory lost reason + remark trail. */
@@ -158,10 +175,14 @@ r.put("/leads/:id", can("leads", "update"), h(async (req, res) => {
     if (!b.lostReason) throw badRequest("Select a lost reason");
     if (b.lostReason === "Other" && !b.lostReasonOther?.trim()) throw badRequest("Describe the reason");
   }
-  const { remark, consentWhatsapp, ...fields } = b;
+  const { remark, consentWhatsapp, business, services, ...fields } = b;
+  // a partial update (e.g. the Status dropdown sends only { status }) must not blank fields it didn't send
+  for (const k of Object.keys(fields)) if (!(k in (req.body || {}))) delete (fields as any)[k];
   if (fields.phone) fields.phone = normalizePhone(fields.phone);
   if (fields.whatsapp) fields.whatsapp = normalizePhone(fields.whatsapp);
   lead.set(fields);
+  if (services) lead.services = await assertServices(lead.companyId, services);
+  applyBusiness(lead, business);
   if (b.status && b.status !== LOST_STATUS) lead.set({ lostReason: undefined, lostReasonOther: undefined });
   if (consentWhatsapp != null) lead.consent = { ...(lead.consent || {}), whatsapp: consentWhatsapp, text: "Updated by staff", capturedAt: new Date() };
   if (remark || (b.status && b.status !== from)) {
@@ -169,11 +190,13 @@ r.put("/leads/:id", can("leads", "update"), h(async (req, res) => {
   }
   await lead.save();
   res.locals.item = lead.name || lead.phone;
-  if (b.status && b.status !== from && lead.whatsapp) {
+  if (b.status && b.status !== from && lead.whatsapp && lead.consent?.whatsapp !== false) { // never message someone who hasn't opted in
     const c = await Company.findById(lead.companyId).lean<any>();
     fireEvent("company", req.auth!.companyId, "lead_status_changed", { phone: lead.whatsapp, name: lead.name, company: c?.name, message: `Hi ${lead.name || ""}, your request with ${c?.name} is now: ${b.status}.`, params: { status: b.status, previous: from } }).catch(() => undefined);
   }
-  res.json(lead);
+  // "Converted / Service Initiated" → the lead moves to the Client module with a Client ID
+  const moved = b.status === WON_STATUS && !lead.isClient ? await promoteClients(lead.companyId, [lead._id]) : [];
+  res.json({ ...safeLead(lead), ...(moved[0] ? { isClient: true, clientCode: moved[0].clientCode, movedToClients: true } : {}) });
 }));
 
 r.post("/leads/bulk-status", can("leads", "update"), h(async (req, res) => {
@@ -183,8 +206,9 @@ r.post("/leads/bulk-status", can("leads", "update"), h(async (req, res) => {
     { _id: { $in: b.ids }, ...tenant(req), deletedAt: null },
     { $set: { status: b.status, lostReason: b.lostReason, lostReasonOther: b.lostReasonOther }, $push: { remarks: { at: new Date(), by: req.auth!.name, text: "Bulk status update", statusTo: b.status } } }
   );
+  const moved = b.status === WON_STATUS ? await promoteClients(req.auth!.companyId, b.ids.filter((x) => mongoose.isValidObjectId(x))) : [];
   res.locals.item = `${r2.modifiedCount} leads`;
-  res.json({ updated: r2.modifiedCount });
+  res.json({ updated: r2.modifiedCount, movedToClients: moved.length });
 }));
 
 r.post("/leads/:id/reminder", can("leads", "update"), h(async (req, res) => {
@@ -240,6 +264,7 @@ r.post("/leads/:id/delete-confirm", can("leads", "delete"), h(async (req, res) =
   await rec.deleteOne();
   const lead = await Lead.findOneAndUpdate({ _id: req.params.id, ...tenant(req), deletedAt: null }, { deletedAt: new Date() });
   if (!lead) throw notFound();
+  if (fromProspecting(lead)) await suppress(req.auth!.companyId, lead); // never collected again by Public Web Prospecting
   res.locals.action = "Delete (OTP verified)";
   res.locals.item = lead.name || lead.phone;
   res.json({ ok: true });
@@ -278,6 +303,8 @@ const baseUrl = (req: any) => process.env.APP_BASE_URL || `${req.headers["x-forw
 const serializeConnector = (c: any, req: any) => ({
   ...c,
   secretEnc: undefined,
+  prospectSeen: undefined,
+  prospect: c.prospect ? { queued: c.prospect.queue?.length || 0, seededAt: c.prospect.seededAt, workedAt: c.prospect.workedAt, today: c.prospect.today, log: c.prospect.log || [] } : undefined,
   secretMasked: maskSecret(decrypt(c.secretEnc)),
   endpoint: `${baseUrl(req)}/api/intake/${c.key}`,
   formUrl: c.type === "qr_campaign" ? `${baseUrl(req)}/f/${c.key}` : undefined,
@@ -323,6 +350,26 @@ const wooCfg = z
     ordersAsConverted: z.boolean().default(true),
   })
   .refine((c) => !c.consumerKey || !!c.siteUrl, { message: "Enter your store URL to use the REST API keys", path: ["siteUrl"] });
+const domain = z.string().trim().toLowerCase().regex(/^(?:www\.)?[a-z0-9-]+(\.[a-z0-9-]+)+$/, "Enter a domain like example.com");
+const prospectCfg = z
+  .object({
+    keywords: z.array(z.string().trim().min(2).max(80)).min(1, "Add at least one keyword").max(20),
+    location: z.string().trim().max(80).optional().or(z.literal("")),
+    sources: z.object({ web: z.boolean().default(false), feeds: z.boolean().default(false), bluesky: z.boolean().default(false) }),
+    searchProvider: z.enum(["brave", "serpapi"]).default("brave"),
+    freshness: z.enum(["day", "week"]).default("day"),
+    feedUrls: z.array(z.string().trim().url().max(500)).max(30).default([]),
+    blueskyHandle: z.string().trim().transform((v) => v.replace(/^@/, "")).pipe(z.string().max(120)).optional().or(z.literal("")),
+    excludeDomains: z.array(domain).max(50).default([]),
+    aiAgentId: z.string().regex(/^[a-f0-9]{24}$/, "Choose the AI model"),
+    minIntent: z.enum(["high", "medium", "low"]).default("medium"),
+    maxPerRun: z.number().int().min(5).max(100).default(30),
+    requireContact: z.boolean().default(false),
+    retentionDays: z.number().int().min(0).max(730).default(90),
+  })
+  .refine((c) => c.sources.web || c.sources.feeds || c.sources.bluesky, { message: "Switch on at least one source", path: ["sources"] })
+  .refine((c) => !c.sources.feeds || c.feedUrls.length > 0, { message: "Add at least one feed or page URL", path: ["feedUrls"] })
+  .refine((c) => !c.sources.bluesky || !!c.blueskyHandle, { message: "Enter your Bluesky handle", path: ["blueskyHandle"] });
 const mcpCfg = z.object({
   serverUrl: z.string().url().max(500),
   toolName: z.string().min(1).max(120),
@@ -334,6 +381,14 @@ async function connectorConfig(type: string, cfg: any) {
   if (type === "tradeindia") return parse(tradeIndiaCfg, cfg || {});
   if (type === "google_ads") return cfg ? parse(googleAdsCfg, cfg) : undefined;
   if (type === "shopify") return parse(shopifyCfg, cfg || {});
+  if (type === "web_prospect") {
+    const c = parse(prospectCfg, cfg || {});
+    for (const u of c.feedUrls || []) {
+      if (BLOCKED_SITES.some((d) => new URL(u).hostname.toLowerCase().replace(/^www\./, "").endsWith(d))) throw badRequest(`${new URL(u).hostname} doesn't allow automated collection — remove it`);
+      await assertPublicUrl(u);
+    }
+    return c;
+  }
   if (type === "woocommerce") {
     const c = parse(wooCfg, cfg || {});
     if (c.siteUrl) {
@@ -355,7 +410,8 @@ r.post("/integrations", can("integrations", "create"), h(async (req, res) => {
   const b = parse(connectorBody, req.body);
   if (b.type === "tradeindia" && !b.platformKey) throw badRequest("Enter your TradeIndia Key (My Inquiry API)");
   const config = await connectorConfig(b.type, b.config);
-  const secret = b.secret || (b.type === "mcp" ? "" : randomKey(24));
+  if (b.type === "web_prospect") await assertModelAllocated(req, b.config?.aiAgentId);
+  const secret = b.secret || (["mcp", "web_prospect"].includes(b.type) ? "" : randomKey(24));
   const doc = await Connector.create({ ...b, config, secret: undefined, platformKey: undefined, configSecretEnc: b.platformKey ? encrypt(b.platformKey) : undefined, ...tenant(req), key: `${b.type.slice(0, 3)}_${randomKey(10)}`, secretEnc: secret ? encrypt(secret) : undefined, verifyToken: b.type === "meta_leads" ? randomKey(12) : undefined });
   await ConnectorKey.create({ key: doc.key, companyId: doc.companyId, db: currentDb(), type: doc.type, active: doc.active !== false });
   res.locals.item = doc.name;
@@ -376,6 +432,7 @@ r.put("/integrations/:id", can("integrations", "update"), h(async (req, res) => 
     set.lastRun = null; // new credentials → fresh status
   }
   if (b.config !== undefined) set.config = await connectorConfig(cur.type, b.config);
+  if (cur.type === "web_prospect" && set.config) await assertModelAllocated(req, set.config.aiAgentId);
   const doc = await Connector.findOneAndUpdate({ _id: req.params.id, ...tenant(req) }, { $set: set }, { new: true }).lean<any>();
   if (!doc) throw notFound();
   if (b.active !== undefined) await ConnectorKey.updateOne({ key: doc.key }, { $set: { active: b.active } });
@@ -402,10 +459,33 @@ r.delete("/integrations/:id", can("integrations", "delete"), h(async (req, res) 
   res.json({ ok: true });
 }));
 
+async function assertModelAllocated(req: any, agentId?: string) {
+  if (!agentId) throw badRequest("Choose the AI model");
+  const ok = await AiAllocation.exists({ companyId: req.auth!.companyId, agentId, allocated: { $ne: false } });
+  if (!ok) throw badRequest("That AI model isn't allocated to your company");
+}
+
+/** Public Web Prospecting — Test Now: dry run on a few pages/posts; nothing is saved. */
+r.post("/integrations/:id/test", can("integrations", "update"), h(async (req, res) => {
+  const c = await Connector.findOne({ _id: req.params.id, ...tenant(req) }).lean<any>();
+  if (!c) throw notFound();
+  if (c.type !== "web_prospect") throw badRequest("Test Now is for Public Web Prospecting connectors");
+  if (!(await rateLimit(`ptest:${c._id}`, 5, 600))) throw new HttpError(429, "Up to 5 tests every 10 minutes — please wait a little");
+  res.locals.action = "Test now";
+  res.locals.item = c.name;
+  res.json(await testProspect(c));
+}));
+
 /** Pull connectors: run now (otherwise daily at 02:00 IST). */
 r.post("/integrations/:id/run", can("integrations", "update"), h(async (req, res) => {
   const c = await Connector.findOne({ _id: req.params.id, ...tenant(req) }).lean<any>();
   if (!c) throw notFound();
+  if (c.type === "web_prospect") {
+    if (!(await rateLimit(`pull:${c._id}`, 1, 120))) throw new HttpError(429, "Please wait two minutes before running again");
+    res.locals.action = "Run now";
+    res.locals.item = c.name;
+    return res.json(await runProspectNow(c));
+  }
   if (!PULL.includes(c.type)) throw badRequest("This connector receives leads by push — nothing to run");
   // IndiaMART allows one Pull call per 5 minutes per key
   if (!(await rateLimit(`pull:${c._id}`, 1, c.type === "indiamart" ? 300 : 60))) throw new HttpError(429, c.type === "indiamart" ? "IndiaMART allows one fetch every 5 minutes — try again shortly" : "Please wait a minute before running again");

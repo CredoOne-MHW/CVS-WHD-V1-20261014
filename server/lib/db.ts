@@ -148,6 +148,62 @@ async function bootstrap() {
     await meta.updateOne({ _id: "gsearch_off_v2" }, { $set: { at: new Date() } }, { upsert: true });
   }
 
+  // One-time: new Lead index (public profile link) in every company database — background, idempotent
+  if (!(await meta.findOne({ _id: "lead_profile_idx_v1" }))) {
+    import("./tenantdb")
+      .then(async ({ forEachCompanyDb, provisionDb }) => {
+        await forEachCompanyDb(async (c) => (c.db ? provisionDb(c.db) : null), { concurrency: 4 });
+        await meta.updateOne({ _id: "lead_profile_idx_v1" }, { $set: { at: new Date() } }, { upsert: true });
+      })
+      .catch((e) => console.warn("lead index:", e?.message));
+  }
+
+  // One-time: the do-not-collect list (Suppression) needs its unique index in every existing company database
+  if (!(await meta.findOne({ _id: "suppression_idx_v1" }))) {
+    const { tenantModelFor } = await import("../models");
+    const { forEachCompanyDb } = await import("./tenantdb");
+    await forEachCompanyDb(async (c) => (c.db ? tenantModelFor("Suppression", c.db).collection.createIndex({ hash: 1 }, { unique: true }).catch(() => undefined) : null), { includeDeleted: true });
+    await meta.updateOne({ _id: "suppression_idx_v1" }, { $set: { at: new Date() } }, { upsert: true });
+  }
+
+  // Company databases get every collection + index added since they were created (Client module, support tickets, payments).
+  // Runs in the background; idempotent (existing indexes are left as they are). Bump the version when models gain indexes.
+  if (!(await meta.findOne({ _id: "tenant_indexes_v2" }))) {
+    import("./tenantdb")
+      .then(async ({ forEachCompanyDb, provisionDb }) => {
+        await forEachCompanyDb(async (c) => (c.db ? provisionDb(c.db).catch((e: any) => console.warn(`indexes for ${c.db}:`, e?.message)) : null), { includeDeleted: true, concurrency: 3 });
+        await meta.updateOne({ _id: "tenant_indexes_v2" }, { $set: { at: new Date() } }, { upsert: true });
+      })
+      .catch((e) => console.warn("tenant indexes:", e?.message));
+  }
+
+  // One-time repair: a partial lead update (the Status dropdown) used to blank the lead's name. Where the original
+  // channel payload is still stored on the lead, the name is recovered from it. Runs in the background.
+  if (!(await meta.findOne({ _id: "lead_name_repair_v1" }))) {
+    Promise.all([import("./tenantdb"), import("../models"), import("./intake")])
+      .then(async ([{ forEachCompanyDb }, { Lead }, { mapFields }]) => {
+        const nameIn = (raw: any): string => {
+          if (!raw || typeof raw !== "object") return "";
+          const ga = Array.isArray(raw.user_column_data) ? raw.user_column_data.find((c: any) => c.column_id === "FULL_NAME")?.string_value : "";
+          const im = raw.RESPONSE?.SENDER_NAME || raw.body?.RESPONSE?.SENDER_NAME || raw.SENDER_NAME;
+          const cands = [ga, im, raw.prospect?.name, mapFields(raw).name, raw.billing && [raw.billing.first_name, raw.billing.last_name].filter(Boolean).join(" "), raw.customer && [raw.customer.first_name, raw.customer.last_name].filter(Boolean).join(" ")];
+          return String(cands.find((x) => x && String(x).trim() && String(x).trim() !== "NA") || "").trim().slice(0, 150);
+        };
+        let fixed = 0;
+        await forEachCompanyDb(async (c) => {
+          if (!c.db) return;
+          const rows = await Lead.find({ companyId: c._id, name: "", deletedAt: null, "attribution.raw": { $exists: true } }).select("attribution.raw").limit(20000).lean<any[]>();
+          for (const l of rows) {
+            const name = (l.attribution || []).map((a: any) => nameIn(a.raw)).find(Boolean);
+            if (name) fixed += (await Lead.updateOne({ _id: l._id, name: "" }, { $set: { name } })).modifiedCount;
+          }
+        }, { concurrency: 3 });
+        await meta.updateOne({ _id: "lead_name_repair_v1" }, { $set: { at: new Date(), fixed } }, { upsert: true });
+        if (fixed) console.log(`lead names restored: ${fixed}`);
+      })
+      .catch((e) => console.warn("lead name repair:", e?.message));
+  }
+
   // One-time (v2): move existing logos/banners/knowledge files into <Company Name>/logo · /banner · /brain.
   // Runs in the background so the first request isn't delayed; idempotent if an instance stops midway.
   if (process.env.S3_BUCKET && !(await meta.findOne({ _id: "s3_layout_v2" }))) {

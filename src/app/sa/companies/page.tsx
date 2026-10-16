@@ -7,6 +7,9 @@ import { usePerm } from "@/components/Shell";
 import { Tabs } from "@/components/Logs";
 import { DnsModal } from "@/components/DnsPanel";
 import { themeVars, THEME_PRESETS } from "@shared/theme";
+import { TemplatePicker } from "@/components/TemplatePicker";
+import { TemplateThumb, templateOf, LOGIN_TEMPLATES, type LoginBrand } from "@/components/LoginTemplates";
+import { LayoutTemplate } from "lucide-react";
 
 const BLANK_BRANDING = {
   shortName: "",
@@ -17,6 +20,7 @@ const BLANK_BRANDING = {
   themeColor: "#2f5c24",
   accentColor: "#d9b52a",
   loginLayout: "split",
+  loginTemplate: "classic",
   supportEmail: "",
   supportPhone: "",
 };
@@ -59,7 +63,7 @@ export default function Companies() {
     setSlugTouched(!!c);
     if (c) {
       api(`/sa/companies/${c._id}`).then((d) => {
-        setForm({ ...BLANK, ...d, password: "", loginEmail: d.loginEmail || "", customDomain: d.customDomain || "", slug: d.slug || "", branding: { ...BLANK_BRANDING, ...(d.branding || {}) } });
+        setForm({ ...BLANK, ...d, password: "", loginEmail: d.loginEmail || "", customDomain: d.customDomain || "", slug: d.slug || "", branding: { ...BLANK_BRANDING, ...(d.branding || {}), loginTemplate: templateOf({ ...(d.branding || {}), kind: "company" }) } });
         setPreviews({ logo: d.brandingPublic?.logoUrl, banner: d.brandingPublic?.bannerUrl, favicon: d.branding?.faviconKey ? d.brandingPublic?.faviconUrl : undefined });
       });
     } else {
@@ -124,6 +128,25 @@ export default function Companies() {
     }
   }
 
+  const previewBrand = useMemo<LoginBrand | null>(
+    () =>
+      form
+        ? {
+            kind: "company",
+            name: form.name || "Company",
+            shortName: form.branding.shortName || form.name || "Company",
+            tagline: form.branding.tagline,
+            headline: form.branding.headline,
+            subheadline: form.branding.subheadline,
+            footerText: form.branding.footerText,
+            logoUrl: previews.logo,
+            bannerUrl: previews.banner,
+            supportEmail: form.branding.supportEmail,
+            supportPhone: form.branding.supportPhone,
+          }
+        : null,
+    [form, previews]
+  );
   const previewVars = useMemo(() => (form ? themeVars(form.branding.themeColor || "#2f5c24", form.branding.accentColor || "#d9b52a") : {}), [form?.branding.themeColor, form?.branding.accentColor]); // eslint-disable-line react-hooks/exhaustive-deps
 
   return (
@@ -440,14 +463,15 @@ export default function Companies() {
                           <input className="input font-mono" value={form.branding.accentColor} onChange={(e) => setB("accentColor", e.target.value)} />
                         </div>
                       </Field>
-                      <Field label="Login layout">
-                        <select className="input" value={form.branding.loginLayout} onChange={(e) => setB("loginLayout", e.target.value)}>
-                          <option value="split">Split — brand panel + form</option>
-                          <option value="banner">Banner — photo fills the brand panel</option>
-                          <option value="centered">Centered — card over full-screen banner</option>
-                        </select>
-                      </Field>
                     </div>
+                  </section>
+
+                  <section>
+                    <h3 className="mb-1 flex items-center gap-2 font-bold">
+                      <LayoutTemplate className="h-4 w-4 text-hive-700" /> Login page design
+                    </h3>
+                    <p className="mb-3 text-xs text-ink-500">10 designs, each shown with this company’s logo, colours and texts. The company’s login page uses the one you pick.</p>
+                    <TemplatePicker value={form.branding.loginTemplate} onChange={(k) => setB("loginTemplate", k)} brand={previewBrand!} vars={previewVars as any} />
                   </section>
 
                   <section>
@@ -480,43 +504,11 @@ export default function Companies() {
                   </section>
                 </div>
 
-                {/* Live preview of the company login, themed with the chosen colors */}
+                {/* Live preview of the company login: the chosen design, themed with the chosen colours */}
                 <div className="lg:sticky lg:top-0 lg:self-start">
-                  <p className="label">Live preview · login page</p>
+                  <p className="label">Live preview · {LOGIN_TEMPLATES.find((t) => t.key === form.branding.loginTemplate)?.name || "login page"}</p>
                   <div style={previewVars as any} className="overflow-hidden rounded-2xl border border-ink-400/15 shadow-lift">
-                    <div className="flex h-[300px]">
-                      <div className="relative flex w-[55%] flex-col justify-between overflow-hidden bg-hive-800 p-4 text-white">
-                        {previews.banner && form.branding.loginLayout !== "split" ? (
-                          <>
-                            <img src={previews.banner} alt="" className="absolute inset-0 h-full w-full object-cover" />
-                            <div className="absolute inset-0 bg-gradient-to-t from-hive-950/90 to-hive-900/30" />
-                          </>
-                        ) : (
-                          <svg aria-hidden viewBox="0 0 100 100" className="absolute -right-6 -top-6 h-40 w-40 fill-none stroke-honey-300 opacity-20" strokeWidth="3">
-                            <polygon points="25,5 45,16 45,39 25,50 5,39 5,16" />
-                            <polygon points="65,5 85,16 85,39 65,50 45,39 45,16" />
-                            <polygon points="45,40 65,51 65,74 45,85 25,74 25,51" />
-                          </svg>
-                        )}
-                        <div className="relative flex items-center gap-2">
-                          <span className="grid h-8 w-8 place-items-center overflow-hidden rounded-full bg-white p-0.5">{previews.logo ? <img src={previews.logo} alt="" className="h-full w-full rounded-full object-contain" /> : <span className="text-[10px] font-bold text-hive-700">{(form.branding.shortName || form.name || "Co").slice(0, 2).toUpperCase()}</span>}</span>
-                          <span className="truncate text-[12px] font-extrabold">{form.branding.shortName || form.name || "Company"}</span>
-                        </div>
-                        <p className="relative line-clamp-4 text-[15px] font-extrabold leading-tight">{form.branding.headline}</p>
-                        <p className="relative truncate text-[9px] text-white/70">{form.branding.tagline}</p>
-                      </div>
-                      <div className="flex flex-1 flex-col justify-center gap-2 bg-[#f6f7f5] p-4">
-                        <p className="text-[15px] font-extrabold">Sign in</p>
-                        <span className="h-6 rounded-md border border-ink-400/20 bg-white" />
-                        <span className="h-6 rounded-md border border-ink-400/20 bg-white" />
-                        <span className="mt-1 grid h-7 place-items-center rounded-md bg-gradient-to-b from-hive-600 to-hive-700 text-[10px] font-bold text-white">Sign in</span>
-                      </div>
-                    </div>
-                    <div className="flex items-center gap-2 border-t border-ink-400/10 bg-white px-3 py-2.5">
-                      <span className="h-5 w-5 rounded-md bg-hive-900" />
-                      <span className="h-2 w-16 rounded bg-hive-200" />
-                      <span className="ml-auto rounded-full bg-honey-100 px-2 py-0.5 text-[9px] font-bold text-honey-700">Accent</span>
-                    </div>
+                    <TemplateThumb template={form.branding.loginTemplate} b={previewBrand!} />
                   </div>
                   <p className="mt-3 break-all font-mono text-xs text-ink-500">
                     https://{form.customDomain || `${form.slug || "short-name"}.${base || "base-domain"}`}

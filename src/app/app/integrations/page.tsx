@@ -1,8 +1,8 @@
 "use client";
 import { useEffect, useState } from "react";
 import Link from "next/link";
-import { Check, Copy as CopyIcon, Plus, Power, KeyRound, Trash2, BookOpen, Play, ExternalLink, EyeOff } from "lucide-react";
-import { GuideSteps, McpForm, blankMcp, IndiaMartForm, TradeIndiaForm, GoogleAdsForm, ShopifyForm, WooForm, blankTradeIndia, blankGoogleAds, blankShopify, blankWoo } from "@/components/ConnectorGuide";
+import { Check, Copy as CopyIcon, Plus, Power, KeyRound, Trash2, BookOpen, Play, ExternalLink, EyeOff, FlaskConical } from "lucide-react";
+import { GuideSteps, McpForm, blankMcp, IndiaMartForm, TradeIndiaForm, GoogleAdsForm, ShopifyForm, WooForm, ProspectForm, blankTradeIndia, blankGoogleAds, blankShopify, blankWoo, blankProspect } from "@/components/ConnectorGuide";
 import { GUIDES } from "@/lib/guides";
 import { icon } from "@/components/icons";
 import { api, fmtDate } from "@/lib/api";
@@ -67,12 +67,12 @@ const HELP: Record<string, string> = {
   partner: "Give each partner their own connector. Every lead is credited via the referral field and attribution history.",
 };
 
-const PULL_ONLY = ["mcp", "tradeindia"]; // nothing to paste anywhere — we fetch
-const HAS_PULL = ["mcp", "tradeindia", "indiamart", "woocommerce"];
-const HAS_SETTINGS = ["mcp", "tradeindia", "indiamart", "google_ads", "shopify", "woocommerce"];
+const PULL_ONLY = ["mcp", "tradeindia", "web_prospect"]; // nothing to paste anywhere — we fetch
+const HAS_PULL = ["mcp", "tradeindia", "indiamart", "woocommerce", "web_prospect"];
+const HAS_SETTINGS = ["mcp", "tradeindia", "indiamart", "google_ads", "shopify", "woocommerce", "web_prospect"];
 const PUSH_PLATFORMS = ["indiamart", "justdial", "sulekha", "shopify"]; // one self-authenticating Lead URL
 const blankCfg = (t: string) =>
-  t === "mcp" ? { ...blankMcp } : t === "tradeindia" ? { ...blankTradeIndia } : t === "google_ads" ? { ...blankGoogleAds } : t === "shopify" ? { ...blankShopify } : t === "woocommerce" ? { ...blankWoo } : undefined;
+  t === "mcp" ? { ...blankMcp } : t === "tradeindia" ? { ...blankTradeIndia } : t === "google_ads" ? { ...blankGoogleAds } : t === "shopify" ? { ...blankShopify } : t === "woocommerce" ? { ...blankWoo } : t === "web_prospect" ? { ...blankProspect, sources: { ...blankProspect.sources } } : undefined;
 /** Pull connectors whose fetch is optional (works by push without keys). */
 const pullReady = (c: any) => (c.type === "indiamart" ? !!c.platformKeyMasked : c.type === "woocommerce" ? !!(c.platformKeyMasked && c.config?.consumerKey && c.config?.siteUrl) : true);
 
@@ -224,6 +224,18 @@ export default function Integrations() {
                 <WooForm cfg={create.config} set={(v) => setCreate((c: any) => ({ ...c, config: v }))} platformKey={create.platformKey} setPlatformKey={(v) => setCreate((c: any) => ({ ...c, platformKey: v }))} />
               </div>
             )}
+            {create.type === "web_prospect" && (
+              <div className="sm:col-span-2">
+                <ProspectForm
+                  cfg={create.config}
+                  set={(v) => setCreate((c: any) => ({ ...c, config: v }))}
+                  searchKey={create.platformKey}
+                  setSearchKey={(v) => setCreate((c: any) => ({ ...c, platformKey: v }))}
+                  bskyPass={create.secret}
+                  setBskyPass={(v) => setCreate((c: any) => ({ ...c, secret: v }))}
+                />
+              </div>
+            )}
             {create.type === "mcp" && (
               <div className="sm:col-span-2">
                 <McpForm cfg={create.config} set={(v) => setCreate((c: any) => ({ ...c, config: v }))} secret={create.secret} setSecret={(v) => setCreate((c: any) => ({ ...c, secret: v }))} />
@@ -315,7 +327,8 @@ function ConnectorDrawer({ c, onClose, onChanged }: { c: any; onClose: () => voi
           { key: "deliveries" as const, label: "Deliveries" },
         ]}
       />
-      {tab === "setup" && HAS_PULL.includes(c.type) && (
+      {tab === "setup" && c.type === "web_prospect" && <ProspectPanel c={c} onChanged={onChanged} />}
+      {tab === "setup" && HAS_PULL.includes(c.type) && c.type !== "web_prospect" && (
         <div className="mb-4 space-y-4">
           <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-ink-400/15 p-4">
             <div>
@@ -365,6 +378,9 @@ function ConnectorDrawer({ c, onClose, onChanged }: { c: any; onClose: () => voi
           {c.type === "tradeindia" && <TradeIndiaForm cfg={cfg} set={setCfg} platformKey={platformKey} setPlatformKey={setPlatformKey} editing masked={c.platformKeyMasked} />}
           {c.type === "google_ads" && <GoogleAdsForm cfg={cfg} set={setCfg} />}
           {c.type === "shopify" && <ShopifyForm cfg={cfg} set={setCfg} platformKey={platformKey} setPlatformKey={setPlatformKey} editing masked={c.platformKeyMasked} />}
+          {c.type === "web_prospect" && (
+            <ProspectForm cfg={cfg} set={setCfg} searchKey={platformKey} setSearchKey={setPlatformKey} bskyPass={newSecret} setBskyPass={setNewSecret} editing searchKeyMasked={c.platformKeyMasked} bskyPassSaved={!!c.secretMasked} />
+          )}
           {c.type === "woocommerce" && <WooForm cfg={cfg} set={setCfg} platformKey={platformKey} setPlatformKey={setPlatformKey} editing masked={c.platformKeyMasked} />}
           {perm.update && (
             <Btn
@@ -555,5 +571,161 @@ function ConnectorDrawer({ c, onClose, onChanged }: { c: any; onClose: () => voi
         }}
       />
     </Modal>
+  );
+}
+
+/* ───────────── Public Web Prospecting: schedule, Test Now, Run now, activity ───────────── */
+const na = (v: any) => (v == null || v === "" ? "NA" : String(v));
+const INTENT_TONE: Record<string, string> = { high: "bg-hive-100 text-hive-900", medium: "bg-honey-100 text-amber-900", low: "bg-ink-400/10 text-ink-700" };
+
+function ProspectPanel({ c, onChanged }: { c: any; onChanged: () => void }) {
+  const perm = usePerm("integrations");
+  const toast = useToast();
+  const [testing, setTesting] = useState(false);
+  const [running, setRunning] = useState(false);
+  const [result, setResult] = useState<any>(null);
+  const [state, setState] = useState<any>(c.prospect || {});
+  const [lastRun, setLastRun] = useState<any>(c.lastRun ? { ...c.lastRun, at: c.lastRunAt } : null);
+  useEffect(() => {
+    setState(c.prospect || {});
+    setLastRun(c.lastRun ? { ...c.lastRun, at: c.lastRunAt } : null);
+  }, [c]);
+  const t = state.today || {};
+
+  async function test() {
+    setTesting(true);
+    try {
+      setResult(await api(`/co/integrations/${c._id}/test`, { method: "POST" }));
+    } catch (e: any) {
+      toast("err", e.message);
+    } finally {
+      setTesting(false);
+    }
+  }
+  async function run() {
+    setRunning(true);
+    try {
+      const r = await api(`/co/integrations/${c._id}/run`, { method: "POST" });
+      if (r.ok === false) toast("err", r.error || "Run failed");
+      else toast("ok", `${r.created ?? 0} new lead(s) · ${r.duplicates ?? 0} already in Leads${r.remaining ? ` · ${r.remaining} more being read in the background` : ""}`);
+      setLastRun({ ...r, at: new Date().toISOString() });
+      setState((s: any) => ({ ...s, queued: r.remaining ?? 0, seededAt: new Date().toISOString(), today: { found: r.found, created: r.created, duplicates: r.duplicates, skipped: r.skipped, failed: r.failed }, log: [...(s.log || []), ...(r.log || [])].slice(-40) }));
+      onChanged();
+    } catch (e: any) {
+      toast("err", e.message);
+    } finally {
+      setRunning(false);
+    }
+  }
+
+  return (
+    <div className="mb-4 space-y-4">
+      <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-ink-400/15 p-4">
+        <div className="min-w-0">
+          <p className="text-sm font-semibold">Runs every day at 2:00 AM IST</p>
+          <p className="text-xs text-ink-500">
+            {state.seededAt ? `Last started ${fmtDate(state.seededAt)}` : "Not run yet"}
+            {state.seededAt && ` · ${t.created ?? 0} new · ${t.duplicates ?? 0} already in Leads · ${t.skipped ?? 0} skipped`}
+            {state.queued ? ` · ${state.queued} still to read (continues automatically every 15 min)` : ""}
+          </p>
+          {lastRun?.ok === false && lastRun.error && <p className="mt-1 text-xs text-red-700">{lastRun.error}</p>}
+        </div>
+        {perm.update && (
+          <div className="flex gap-2">
+            <Btn variant="secondary" loading={testing} onClick={test}>
+              <FlaskConical className="h-4 w-4" /> Test Now
+            </Btn>
+            <Btn loading={running} onClick={run}>
+              <Play className="h-4 w-4" /> Run now
+            </Btn>
+          </div>
+        )}
+      </div>
+      {state.log?.length > 0 && (
+        <details className="rounded-2xl border border-ink-400/15 p-4">
+          <summary className="cursor-pointer text-sm font-bold">Recent activity</summary>
+          <ul className="mt-3 max-h-48 space-y-1 overflow-y-auto text-xs text-ink-700">
+            {[...state.log].reverse().map((l: any, i: number) => (
+              <li key={i}>
+                <span className="text-ink-400">{fmtDate(l.at)}</span> · {l.msg}
+              </li>
+            ))}
+          </ul>
+        </details>
+      )}
+
+      <Modal open={!!result} onClose={() => setResult(null)} title="Test Now — preview" size="xl">
+        {result && (
+          <div className="space-y-4">
+            <p className="rounded-xl bg-hive-50 px-3 py-2 text-sm text-ink-700">
+              Dry run: nothing was saved. Checked {result.candidates} page(s)/post(s), read {result.read}, found <b>{result.rows.length}</b> lead(s). Missing details show as NA. AI credits were used for the pages that were read.
+            </p>
+            {result.rows.length ? (
+              <div className="overflow-x-auto rounded-xl border border-ink-400/15">
+                <table className="w-full min-w-[960px] text-sm">
+                  <thead>
+                    <tr>
+                      {["Name", "Phone", "Email", "WhatsApp", "Profile / post", "Location", "Organisation", "Looking for", "Intent", "Source"].map((h) => (
+                        <th key={h} className="th">
+                          {h}
+                        </th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {result.rows.map((r: any, i: number) => (
+                      <tr key={i} className="align-top">
+                        <td className="td font-semibold">{na(r.name)}</td>
+                        <td className="td mono">{na(r.phone)}</td>
+                        <td className="td">{na(r.email)}</td>
+                        <td className="td mono">{na(r.whatsapp)}</td>
+                        <td className="td max-w-[160px] truncate">
+                          {r.profileUrl ? (
+                            <a href={r.profileUrl} target="_blank" rel="noreferrer noopener" className="text-hive-700 underline">
+                              {r.profileUrl.replace(/^https?:\/\//, "")}
+                            </a>
+                          ) : (
+                            "NA"
+                          )}
+                        </td>
+                        <td className="td">{na(r.location)}</td>
+                        <td className="td">{na(r.organisation)}</td>
+                        <td className="td max-w-[200px]">
+                          {na(r.requirement)}
+                          {r.quote && <p className="mt-1 text-xs italic text-ink-500">“{r.quote}”</p>}
+                        </td>
+                        <td className="td">
+                          <span className={`rounded-full px-2 py-0.5 text-xs font-semibold ${INTENT_TONE[r.intent] || ""}`}>{r.intent}</span>
+                        </td>
+                        <td className="td max-w-[180px]">
+                          <a href={r.sourceUrl} target="_blank" rel="noreferrer noopener" className="inline-flex items-center gap-1 text-hive-700 underline">
+                            <span className="truncate">{r.sourceTitle}</span> <ExternalLink className="h-3 w-3 shrink-0" />
+                          </a>
+                          <p className="text-xs text-ink-400">
+                            {r.sourceKind} · {r.keyword}
+                          </p>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            ) : (
+              <p className="rounded-xl border border-dashed border-ink-400/30 p-6 text-center text-sm text-ink-500">No one matching your keywords was found in this sample. Try other wording people would use, a wider look-back, or more sources.</p>
+            )}
+            {result.log?.length > 0 && (
+              <details open={!result.rows.length}>
+                <summary className="cursor-pointer text-sm font-bold">What was checked</summary>
+                <ul className="mt-2 space-y-1 text-xs text-ink-700">
+                  {result.log.map((l: any, i: number) => (
+                    <li key={i}>• {l.msg}</li>
+                  ))}
+                </ul>
+              </details>
+            )}
+          </div>
+        )}
+      </Modal>
+    </div>
   );
 }

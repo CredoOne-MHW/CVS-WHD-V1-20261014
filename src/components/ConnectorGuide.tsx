@@ -1,9 +1,10 @@
 "use client";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Check, Copy, ExternalLink, Info, PlugZap, Search } from "lucide-react";
 import { GUIDES, fillGuide } from "@/lib/guides";
 import { api } from "@/lib/api";
 import { Field, Btn, useToast } from "./ui";
+import { splitKeywords } from "../../shared/text";
 
 function CodeBlock({ code }: { code: string }) {
   const [ok, setOk] = useState(false);
@@ -76,6 +77,21 @@ export function GuideSteps({ type, c, compact }: { type: string; c?: any; compac
 export const blankMcp = { serverUrl: "", toolName: "", toolArgs: {} as any, itemsPath: "", defaultSource: "" };
 export const blankTradeIndia = { userId: "", profileId: "" };
 export const blankGoogleAds = { campaignNames: {} as Record<string, string> };
+export const blankProspect = {
+  keywords: [] as string[],
+  location: "",
+  sources: { web: true, feeds: false, bluesky: false },
+  searchProvider: "brave",
+  freshness: "day",
+  feedUrls: [] as string[],
+  blueskyHandle: "",
+  excludeDomains: [] as string[],
+  aiAgentId: "",
+  minIntent: "medium",
+  maxPerRun: 30,
+  requireContact: false,
+  retentionDays: 90,
+};
 export const blankShopify = { events: ["checkouts", "customers", "orders"] as string[], ordersAsConverted: true };
 export const blankWoo = { siteUrl: "", consumerKey: "", events: ["customers", "orders"] as string[], ordersAsConverted: true };
 
@@ -216,6 +232,163 @@ export function GoogleAdsForm({ cfg, set }: { cfg: any; set: (v: any) => void })
           )}
         </div>
       ))}
+    </div>
+  );
+}
+
+/* ───────────── Public Web Prospecting ───────────── */
+const lines = (a: string[] | undefined) => (a || []).join("\n");
+const urlsOf = (t: string) => [...new Set(t.split(/[\s,]+/).map((x) => x.trim()).filter((x) => /^https?:\/\//i.test(x)))].slice(0, 30);
+const domainsOf = (t: string) => [...new Set(t.split(/[\s,]+/).map((x) => x.trim().toLowerCase().replace(/^https?:\/\//, "").replace(/\/.*$/, "")).filter(Boolean))].slice(0, 50);
+
+function Toggle({ on, set, title, hint, children }: { on: boolean; set: (v: boolean) => void; title: string; hint: string; children?: React.ReactNode }) {
+  return (
+    <div className={`rounded-xl border p-3 transition-colors ${on ? "border-hive-300 bg-hive-50/50" : "border-ink-400/15"}`}>
+      <label className="flex cursor-pointer items-start gap-2.5">
+        <input type="checkbox" className="mt-0.5 h-4 w-4 accent-hive-700" checked={on} onChange={(e) => set(e.target.checked)} />
+        <span>
+          <span className="text-sm font-semibold text-ink-900">{title}</span>
+          <span className="block text-xs text-ink-500">{hint}</span>
+        </span>
+      </label>
+      {on && children && <div className="mt-3 grid gap-3 sm:grid-cols-2">{children}</div>}
+    </div>
+  );
+}
+
+/** Keywords, sources (with their own credentials), AI model and limits. Secrets: search API key → platformKey, Bluesky App Password → secret. */
+export function ProspectForm(p: {
+  cfg: any;
+  set: (v: any) => void;
+  searchKey: string;
+  setSearchKey: (v: string) => void;
+  bskyPass: string;
+  setBskyPass: (v: string) => void;
+  editing?: boolean;
+  searchKeyMasked?: string;
+  bskyPassSaved?: boolean;
+}) {
+  const { cfg, set } = p;
+  const [kw, setKw] = useState(lines(cfg.keywords));
+  const [feeds, setFeeds] = useState(lines(cfg.feedUrls));
+  const [excl, setExcl] = useState(lines(cfg.excludeDomains));
+  const [models, setModels] = useState<any[] | null>(null);
+  useEffect(() => {
+    api("/co/ai-agents/models")
+      .then((m: any[]) => setModels(m))
+      .catch(() => setModels([]));
+  }, []);
+  const src = cfg.sources || {};
+  const setSrc = (k: string, v: boolean) => set({ ...cfg, sources: { ...src, [k]: v } });
+  return (
+    <div className="space-y-4">
+      <Field label="Keywords" required hint="One per line — what people would write when they need you, e.g. “home blood test”, “need a pathology lab”">
+        <textarea
+          rows={3}
+          className="input"
+          value={kw}
+          onChange={(e) => {
+            setKw(e.target.value);
+            set({ ...cfg, keywords: splitKeywords(e.target.value) });
+          }}
+          placeholder={"home blood test\nfull body checkup at home"}
+        />
+      </Field>
+      <div className="grid gap-4 sm:grid-cols-3">
+        <Field label="Location (optional)" hint="Added to searches">
+          <input className="input" value={cfg.location || ""} onChange={(e) => set({ ...cfg, location: e.target.value })} placeholder="Kolkata" />
+        </Field>
+        <Field label="Look back">
+          <select className="input" value={cfg.freshness} onChange={(e) => set({ ...cfg, freshness: e.target.value })}>
+            <option value="day">Last 24 hours</option>
+            <option value="week">Last 7 days</option>
+          </select>
+        </Field>
+        <Field label="Minimum intent">
+          <select className="input" value={cfg.minIntent} onChange={(e) => set({ ...cfg, minIntent: e.target.value })}>
+            <option value="high">High — asking to buy now</option>
+            <option value="medium">Medium — asking for options/prices</option>
+            <option value="low">Low — any interest</option>
+          </select>
+        </Field>
+      </div>
+
+      <div className="space-y-2">
+        <p className="label">Sources</p>
+        <Toggle on={!!src.web} set={(v) => setSrc("web", v)} title="Web pages & blogs" hint="Found through your own search API key. Pages that block crawlers in robots.txt are skipped.">
+          <Field label="Search provider">
+            <select className="input" value={cfg.searchProvider} onChange={(e) => set({ ...cfg, searchProvider: e.target.value })}>
+              <option value="brave">Brave Search API</option>
+              <option value="serpapi">SerpAPI (Google results)</option>
+            </select>
+          </Field>
+          <Field label="Search API key" hint={p.editing && p.searchKeyMasked ? `Saved: ${p.searchKeyMasked} — paste to replace` : "Stored encrypted"}>
+            <input className="input mono" type="password" autoComplete="off" value={p.searchKey} onChange={(e) => p.setSearchKey(e.target.value.trim())} />
+          </Field>
+        </Toggle>
+        <Toggle on={!!src.feeds} set={(v) => setSrc("feeds", v)} title="Feeds & pages you choose" hint="RSS/Atom feeds of blogs and forums, or public pages such as a community board — read every day.">
+          <Field label="Feed or page URLs (one per line)" className="sm:col-span-2">
+            <textarea
+              rows={3}
+              className="input mono text-xs"
+              value={feeds}
+              onChange={(e) => {
+                setFeeds(e.target.value);
+                set({ ...cfg, feedUrls: urlsOf(e.target.value) });
+              }}
+              placeholder={"https://example-forum.in/feed/\nhttps://blog.example.com/rss"}
+            />
+          </Field>
+        </Toggle>
+        <Toggle on={!!src.bluesky} set={(v) => setSrc("bluesky", v)} title="Bluesky" hint="Public posts through Bluesky’s official API — sign in with an App Password (not your main password).">
+          <Field label="Bluesky handle">
+            <input className="input" value={cfg.blueskyHandle || ""} onChange={(e) => set({ ...cfg, blueskyHandle: e.target.value.trim() })} placeholder="yourbrand.bsky.social" />
+          </Field>
+          <Field label="App Password" hint={p.editing && p.bskyPassSaved ? "Saved — paste to replace" : "Bluesky › Settings › Privacy and security › App passwords"}>
+            <input className="input mono" type="password" autoComplete="off" value={p.bskyPass} onChange={(e) => p.setBskyPass(e.target.value.trim())} placeholder="xxxx-xxxx-xxxx-xxxx" />
+          </Field>
+        </Toggle>
+        <p className="text-xs text-ink-500">Not available by design: LinkedIn, Facebook, Instagram, X, Quora, Reddit and WhatsApp/Telegram groups. Their terms prohibit automated collection or identifying users, or they need a login.</p>
+      </div>
+
+      <div className="grid gap-4 sm:grid-cols-2">
+        <Field label="AI model" required hint="Structures what it reads into lead fields — uses this model’s credits">
+          <select className="input" value={cfg.aiAgentId} onChange={(e) => set({ ...cfg, aiAgentId: e.target.value })}>
+            <option value="">{models === null ? "Loading…" : models.length ? "Choose a model…" : "No AI model allocated yet"}</option>
+            {(models || []).map((m) => (
+              <option key={m._id} value={m._id}>
+                {m.name} · {Number(m.remaining).toLocaleString("en-IN")} credits left
+              </option>
+            ))}
+          </select>
+        </Field>
+        <Field label="Pages / posts per day" hint="5–100 · each one read costs a little AI credit">
+          <input type="number" min={5} max={100} className="input" value={cfg.maxPerRun} onChange={(e) => set({ ...cfg, maxPerRun: Math.max(5, Math.min(100, Number(e.target.value) || 30)) })} />
+        </Field>
+        <Field label="Skip these sites (optional)" hint="One domain per line, e.g. competitor.com">
+          <textarea
+            rows={2}
+            className="input mono text-xs"
+            value={excl}
+            onChange={(e) => {
+              setExcl(e.target.value);
+              set({ ...cfg, excludeDomains: domainsOf(e.target.value) });
+            }}
+          />
+        </Field>
+        <Field label="Delete untouched leads after" hint="Leads still “New” with no remarks are removed — data you don’t use, you don’t keep">
+          <select className="input" value={cfg.retentionDays} onChange={(e) => set({ ...cfg, retentionDays: Number(e.target.value) })}>
+            <option value={30}>30 days</option>
+            <option value={90}>90 days</option>
+            <option value={180}>180 days</option>
+            <option value={0}>Keep</option>
+          </select>
+        </Field>
+      </div>
+      <label className="flex cursor-pointer items-start gap-2.5 text-sm text-ink-700">
+        <input type="checkbox" className="mt-0.5 h-4 w-4 accent-hive-700" checked={!!cfg.requireContact} onChange={(e) => set({ ...cfg, requireContact: e.target.checked })} />
+        <span>Only save people who published a phone number or email (otherwise a public profile or post link is enough; other missing details show as NA)</span>
+      </label>
     </div>
   );
 }

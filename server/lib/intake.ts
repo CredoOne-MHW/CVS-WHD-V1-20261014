@@ -16,6 +16,7 @@ export interface LeadInput {
   campaign?: string;
   medium?: string;
   referral?: string;
+  profileUrl?: string;
   utm?: Record<string, string>;
   consent?: { whatsapp?: boolean; email?: boolean; text?: string; ip?: string };
   customFields?: Record<string, any>;
@@ -95,6 +96,34 @@ export async function adapt(connector: any, payload: any): Promise<{ leads: Lead
     }
     case "google_ads":
       return googleAdsLead(connector, payload);
+    case "web_prospect": {
+      // Structured by the AI from a public source (see lib/prospect.ts); missing values are already "NA"
+      const p = payload?.prospect || {};
+      const na = (v: any) => (v == null || v === "" ? "NA" : String(v));
+      return {
+        leads: [
+          applyMap(
+            {
+              name: na(p.name),
+              phone: p.phone || undefined,
+              whatsapp: p.whatsapp || undefined,
+              email: p.email || undefined,
+              profileUrl: p.profileUrl || undefined,
+              address: na(p.location),
+              comments: [`Looking for: ${na(p.requirement)}`, `Intent: ${na(p.intent)}`, p.quote ? `Said: “${p.quote}”` : "", `Found on: ${p.sourceUrl}`].filter(Boolean).join("\n"),
+              campaign: p.keyword || undefined,
+              medium: p.sourceKind === "bluesky" ? "bluesky" : p.sourceKind === "web" ? "web search" : "blog / feed",
+              referral: p.sourceUrl,
+              source: "web_prospect",
+              consent: { whatsapp: false, email: false, text: "No consent — collected from a public source. Do not message on WhatsApp without the person's opt-in." },
+              customFields: { organisation: na(p.organisation), role: na(p.role), intent: na(p.intent), source_url: p.sourceUrl, source_title: na(p.sourceTitle), captured_at: payload?.capturedAt, legal_basis: "Published by the person on a public page (DPDP Act s.3(c)(ii))" },
+            },
+            payload,
+            fm
+          ),
+        ],
+      };
+    }
     case "shopify":
     case "woocommerce": {
       const r = connector.type === "shopify" ? shopifyLead(payload || {}, connector.config) : wooLead(payload || {}, connector.config);
@@ -271,7 +300,7 @@ function scoreLead(l: any) {
   let s = 0;
   if (l.phone || l.whatsapp) s += 30;
   if (l.email) s += 10;
-  if (l.name) s += 10;
+  if (l.name && l.name !== "NA") s += 10;
   if (l.comments && l.comments.length > 15) s += 15;
   if (l.consent?.whatsapp) s += 10;
   if (["google_ads", "facebook", "instagram", "partner", "referral"].includes(l.source)) s += 10;
@@ -288,23 +317,27 @@ export async function upsertLead(companyId: string, input: LeadInput, ctx: { con
   const phone = input.phone ? normalizePhone(input.phone) : undefined;
   const whatsapp = input.whatsapp ? normalizePhone(input.whatsapp) : phone;
   const email = input.email?.toLowerCase().trim() || undefined;
-  if (!phone && !whatsapp && !email) throw new Error("Lead needs at least a phone, WhatsApp number or email");
+  const profileUrl = input.profileUrl?.trim() || undefined;
+  if (!phone && !whatsapp && !email && !profileUrl) throw new Error("Lead needs at least a phone, WhatsApp number or email");
 
   const or: any[] = [];
   if (phone) or.push({ phone }, { whatsapp: phone });
   if (whatsapp) or.push({ whatsapp }, { phone: whatsapp });
   if (email) or.push({ email });
+  if (profileUrl) or.push({ profileUrl });
   const touch = { at: new Date(), source: input.source || "manual", connectorId: ctx.connectorId, campaign: input.campaign, medium: input.medium, referral: input.referral, utm: input.utm, raw: ctx.raw };
 
   const existing = await Lead.findOne({ companyId, deletedAt: null, $or: or });
   if (existing) {
     existing.attribution.push(touch);
-    for (const f of ["name", "email", "address", "whatsapp", "phone"] as const) {
+    for (const f of ["name", "email", "address", "whatsapp", "phone", "profileUrl"] as const) {
       const val = f === "phone" ? phone : f === "whatsapp" ? whatsapp : f === "email" ? email : (input as any)[f];
-      if (!existing[f] && val) existing[f] = val;
+      if ((!existing[f] || existing[f] === "NA") && val && val !== "NA") existing[f] = val; // "NA" = not known yet
     }
     if (input.comments) existing.comments = [existing.comments, `[${new Date().toLocaleDateString("en-IN")} · ${touch.source}] ${input.comments}`].filter(Boolean).join("\n");
-    if (input.consent) existing.consent = { ...existing.consent, ...input.consent, capturedAt: new Date() };
+    // never downgrade consent the person already gave (e.g. a public-web touch on an opted-in customer)
+    const downgrade = input.consent && ((existing.consent?.whatsapp && input.consent.whatsapp === false) || (existing.consent?.email && input.consent.email === false));
+    if (input.consent && !downgrade) existing.consent = { ...existing.consent, ...input.consent, capturedAt: new Date() };
     existing.score = scoreLead(existing);
     await existing.save();
     return { lead: existing, created: false };
@@ -325,6 +358,7 @@ export async function upsertLead(companyId: string, input: LeadInput, ctx: { con
     referral: input.referral,
     status,
     consent: input.consent ? { ...input.consent, capturedAt: new Date() } : undefined,
+    profileUrl,
     attribution: [touch],
     customFields: input.customFields,
     remarks: [{ by: ctx.by || "system", text: `Lead captured via ${touch.source}`, statusTo: status }],
@@ -383,7 +417,7 @@ export async function runEvent(connector: any, eventId: any, payload: any, pre?:
     let leadId;
     let created = false;
     for (const l of leads) {
-      const r = await upsertLead(String(connector.companyId), { ...l, source: l.source || connector.defaultSource || connector.type, campaign: l.campaign || connector.defaultCampaign, medium: l.medium || connector.defaultMedium }, { connectorId: String(connector._id), raw: payload, by: connector.name });
+      const r = await upsertLead(String(connector.companyId), { ...l, source: l.source || connector.defaultSource || connector.type, campaign: l.campaign || connector.defaultCampaign, medium: l.medium || connector.defaultMedium }, { connectorId: String(connector._id), raw: payload, by: connector.name, notify: connector.type !== "web_prospect" }); // no WhatsApp to people who never opted in
       leadId = r.lead._id;
       created = created || r.created;
     }
