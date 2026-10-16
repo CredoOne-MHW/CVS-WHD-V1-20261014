@@ -1,12 +1,16 @@
 /**
- * Cinematic login scene (Three.js, WebGL). Loaded on demand — never part of the app bundle.
+ * Cinematic login scene — "Neural Brain" (Three.js, WebGL). Loaded on demand — never part of the app bundle.
  *
- * Story, cycling every few seconds:  01 Leads stream in from every source → 02 Clients orbit, managed end to end →
- * 03 AI intelligence pulses through a neural sphere. The logo floats in the middle on a glass tile with rings of light
- * (the "aura") circling it. Colours come from the brand's CSS variables, so every company's scene is its own.
+ * A glowing 3D brain of neurons and synapses turns slowly; the brand's circular logo sits at its core with rings of
+ * light (the "aura") circling it. The story cycles every few seconds:
+ *   01 Leads from every source — sparks fly in from outside, land on the cortex and travel along synapses to the core.
+ *   02 Clients, end to end      — client sparks flow back out of the core to a ring of client nodes around the brain.
+ *   03 AI intelligence          — firing waves sweep through the whole network.
+ * Colours come from the brand's CSS variables, so every company's scene is its own. The logo disc is drawn after the
+ * bloom pass, so it keeps its exact colours and is never blurred or cropped (contain-fitted inside the circle).
  *
- * Performance: one draw call per layer (points / instanced meshes / shaders), DPR capped, rendering pauses when the
- * tab is hidden or the panel is off-screen, and a single still frame is drawn for prefers-reduced-motion.
+ * Performance: ~1.3k neurons + ~2k synapses in 2 draw calls, sparks in 1 draw call (CPU-updated, ~1k points), DPR
+ * capped, paused when hidden / off-screen, one still frame for prefers-reduced-motion.
  */
 import * as THREE from "three";
 import { EffectComposer } from "three/examples/jsm/postprocessing/EffectComposer.js";
@@ -19,7 +23,7 @@ export type CinemaOptions = { logoUrl?: string; name: string; onPhase?: (i: numb
 const cssColor = (el: Element, v: string, fallback: string) => {
   const raw = getComputedStyle(el).getPropertyValue(v).trim(); // "r g b"
   const p = raw.split(/\s+/).map(Number);
-  return p.length === 3 && p.every((n) => !isNaN(n)) ? new THREE.Color(p[0] / 255, p[1] / 255, p[2] / 255) : new THREE.Color(fallback);
+  return p.length === 3 && p.every((n) => !isNaN(n)) ? new THREE.Color().setRGB(p[0] / 255, p[1] / 255, p[2] / 255, THREE.SRGBColorSpace) : new THREE.Color(fallback);
 };
 const initials = (s: string) =>
   s
@@ -29,6 +33,17 @@ const initials = (s: string) =>
     .slice(0, 2)
     .map((w) => w[0].toUpperCase())
     .join("") || "•";
+
+/** deterministic random, so the brain is the same shape on every visit */
+function rng(seed: number) {
+  return () => {
+    seed |= 0;
+    seed = (seed + 0x6d2b79f5) | 0;
+    let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
 
 function radialTexture(inner: string, outer: string, size = 256) {
   const c = document.createElement("canvas");
@@ -44,395 +59,524 @@ function radialTexture(inner: string, outer: string, size = 256) {
   return t;
 }
 
+/* shared GLSL: the AI firing wave over the network, and the "keep the logo clear" fade for things in front of it */
+const NET_GLSL = /* glsl */ `
+  uniform float uTime; uniform float uAI; uniform vec3 uCoreV;
+  float fireWave(vec3 p){
+    float w1 = sin(dot(p, vec3(0.86, 0.38, 0.33)) * 1.7 - uTime * 2.4);
+    float w2 = sin(length(p) * 2.3 - uTime * 3.0);
+    return pow(max(w1, 0.0), 10.0) * 0.9 + pow(max(w2, 0.0), 16.0) * 0.7;
+  }
+  float coreFade(vec4 mv){
+    float front = step(uCoreV.z, mv.z);
+    float d = length(mv.xy - uCoreV.xy);
+    return mix(1.0, 0.18 + 0.82 * smoothstep(1.2, 2.1, d), front);
+  }`;
 
 const SOFT_POINT_FRAG = /* glsl */ `
   varying vec3 vColor; varying float vAlpha;
   void main() {
     float d = length(gl_PointCoord - 0.5);
     float a = smoothstep(0.5, 0.0, d);
-    gl_FragColor = vec4(vColor * (1.0 + a), a * vAlpha);
+    float core = smoothstep(0.18, 0.0, d);
+    gl_FragColor = vec4(vColor * (0.7 + a * 0.6 + core * 1.2), a * vAlpha);
+    #include <colorspace_fragment>
   }`;
+
+type Spark = {
+  pts: THREE.Vector3[];
+  cum: number[];
+  len: number;
+  s: number;
+  speed: number;
+  color: THREE.Color;
+  alive: boolean;
+  out: boolean;
+  node: number;
+};
 
 export function start(el: HTMLElement, opts: CinemaOptions) {
   const reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  const brand200 = cssColor(el, "--brand-200", "#c9cbff");
   const brand300 = cssColor(el, "--brand-300", "#a5a8ff");
   const brand500 = cssColor(el, "--brand-500", "#5b5fc7");
   const brand700 = cssColor(el, "--brand-700", "#2f3180");
   const brand950 = cssColor(el, "--brand-950", "#111233");
   const accent = cssColor(el, "--accent-300", "#f2d27a");
+  const white = new THREE.Color(1, 1, 1);
   const hex = (c: THREE.Color) => `#${c.getHexString()}`;
-  const brand800lite = () => brand700.clone().lerp(brand950, 0.55);
+  const rgba = (c: THREE.Color, a: number) => {
+    const s = c.clone().convertLinearToSRGB();
+    return `rgba(${(s.r * 255) | 0},${(s.g * 255) | 0},${(s.b * 255) | 0},${a})`;
+  };
 
-  /* ── renderer / scene / camera ── */
+  /* ── renderer / scenes / camera ── */
   const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: "high-performance" });
-  renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.75));
+  const PR = Math.min(window.devicePixelRatio || 1, 1.75);
+  renderer.setPixelRatio(PR);
   renderer.outputColorSpace = THREE.SRGBColorSpace;
-  renderer.toneMapping = THREE.NoToneMapping; // logo and tile keep their exact colours
+  renderer.toneMapping = THREE.NoToneMapping;
   const canvas = renderer.domElement;
   canvas.style.cssText = "position:absolute;inset:0;width:100%;height:100%;display:block";
   canvas.setAttribute("aria-hidden", "true");
   el.appendChild(canvas);
 
   const scene = new THREE.Scene();
-  scene.background = radialTexture(hex(brand800lite()), hex(brand950.clone().multiplyScalar(0.45)), 512);
+  const bgInner = brand700.clone().lerp(brand950, 0.35);
+  const bgOuter = brand950.clone().multiplyScalar(0.35);
+  scene.background = radialTexture(hex(bgInner), hex(bgOuter), 512);
+  const overlay = new THREE.Scene(); // drawn after bloom: the logo disc, crisp and in its exact colours
   const camera = new THREE.PerspectiveCamera(30, 1, 0.1, 100);
   camera.position.set(0, 0, 17);
 
-  scene.add(new THREE.AmbientLight(0xffffff, 0.55));
-  const key = new THREE.DirectionalLight(0xffffff, 0.9);
-  key.position.set(-4, 6, 8);
-  scene.add(key);
-  const rim = new THREE.PointLight(brand300, 30, 20);
-  rim.position.set(3, -2, -3);
-  scene.add(rim);
-
   const world = new THREE.Group();
-  world.position.y = 1.55; // leave room for the headline below
+  world.position.y = 1.45; // leave room for the headline below
   scene.add(world);
   const disposables: { dispose: () => void }[] = [];
   const track = <T extends { dispose: () => void }>(x: T) => (disposables.push(x), x);
 
-  /* ── 0. the sun: a glowing sphere with the logo on its face, centre of the system ── */
-  const tile = new THREE.Group(); // the sun group (floats and follows the pointer)
-  world.add(tile);
-  const SUN_R = 1.55;
-  const TW = SUN_R * 1.8; // lead streams land around the sun's rim
-  const TH = SUN_R * 1.7;
-  const sunUniforms = {
-    uLogo: { value: null as THREE.Texture | null },
-    uHasLogo: { value: 0 },
-    uLogoSize: { value: new THREE.Vector2(0.6, 0.35) },
-    uCore: { value: new THREE.Color(0.86, 0.87, 0.91) },
-    uEdge: { value: brand300.clone().lerp(new THREE.Color(1, 1, 1), 0.15).multiplyScalar(0.8) },
-    uRim: { value: brand300.clone().lerp(accent, 0.25) },
-    uTime: { value: 0 },
+  const brain = new THREE.Group();
+  brain.rotation.set(0.2, 0.55, 0);
+  brain.scale.setScalar(1.22);
+  world.add(brain);
+
+  /* ── 1. neurons: a brain-shaped cloud — two hemispheres with folds, a fissure, a cerebellum and a stem ── */
+  const R = rng(20261016);
+  const N = 1900;
+  const pos: THREE.Vector3[] = [];
+  const sizes: number[] = [];
+  const seeds: number[] = [];
+  const ell = (x: number, y: number, z: number, cx: number, cy: number, cz: number, ax: number, ay: number, az: number) =>
+    ((x - cx) / ax) ** 2 + ((y - cy) / ay) ** 2 + ((z - cz) / az) ** 2;
+  const shape = (x: number, y: number, z: number) => {
+    const ay = y < 0.15 ? 1.45 : 1.9; // flatter underside
+    const hemi = Math.min(ell(x, y, z, 0.95, 0.15, 0.1, 1.6, ay, 2.75), ell(x, y, z, -0.95, 0.15, 0.1, 1.6, ay, 2.75));
+    const fold = 0.075 * Math.sin(x * 4.3 + 1.3) * Math.sin(y * 3.9) * Math.sin(z * 4.6 + 0.7) + 0.03 * Math.sin(z * 9.0 + y * 6.0);
+    const cere = ell(x, y, z, 0, -1.25, -2.0, 1.35, 0.68, 0.9);
+    return { hemi: hemi + fold, cere: cere + fold * 0.6 };
   };
-  const sunMat = track(
+  let guard = 0;
+  while (pos.length < N && guard++ < 400000) {
+    const x = (R() * 2 - 1) * 2.7;
+    const y = -2.3 + R() * 4.5;
+    const z = (R() * 2 - 1) * 3.0;
+    const r = Math.hypot(x, y, z);
+    if (r < 1.15) continue; // the core cavity, where the logo lives
+    const { hemi, cere } = shape(x, y, z);
+    const fissure = Math.abs(x) < 0.13 && y > 0.1;
+    let ok = false;
+    let big = false;
+    if (!fissure && hemi <= 1 && hemi > 0.8) ok = true; // the cortex shell
+    else if (!fissure && hemi <= 0.8 && R() < 0.035) ok = true; // sparse interior
+    else if (cere <= 1 && cere > 0.6 && R() < 0.75) ok = true;
+    else if (Math.hypot(x, z + 1.0) < 0.32 && y < -1.1 && y > -2.3 && R() < 0.5) ok = true; // stem
+    if (!ok) continue;
+    if (R() < 0.05) big = true;
+    pos.push(new THREE.Vector3(x, y, z));
+    sizes.push(big ? 1.35 + R() * 0.5 : 0.45 + R() * 0.4);
+    seeds.push(R());
+  }
+  const n = pos.length;
+
+  const netUniforms = {
+    uTime: { value: 0 },
+    uAI: { value: 0.3 },
+    uCoreV: { value: new THREE.Vector3() },
+    uScale: { value: 100 },
+    uBase: { value: brand300.clone().lerp(white, 0.15) },
+    uHot: { value: white.clone().lerp(accent, 0.25) },
+    uSynA: { value: 0.12 },
+  };
+  const nGeo = track(new THREE.BufferGeometry());
+  nGeo.setAttribute("position", new THREE.Float32BufferAttribute(pos.flatMap((p) => [p.x, p.y, p.z]), 3));
+  nGeo.setAttribute("aSize", new THREE.Float32BufferAttribute(sizes, 1));
+  nGeo.setAttribute("aSeed", new THREE.Float32BufferAttribute(seeds, 1));
+  const neuronMat = track(
     new THREE.ShaderMaterial({
-      uniforms: sunUniforms,
+      uniforms: netUniforms,
+      transparent: true,
+      depthWrite: false,
+      blending: THREE.AdditiveBlending,
       vertexShader: /* glsl */ `
-        varying vec3 vN; varying vec3 vPos;
-        void main(){ vN = normalize(normalMatrix * normal); vec4 mv = modelViewMatrix * vec4(position, 1.0); vPos = mv.xyz; gl_Position = projectionMatrix * mv; }`,
-      fragmentShader: /* glsl */ `
-        uniform sampler2D uLogo; uniform float uHasLogo; uniform vec2 uLogoSize;
-        uniform vec3 uCore; uniform vec3 uEdge; uniform vec3 uRim; uniform float uTime;
-        varying vec3 vN; varying vec3 vPos;
+        ${NET_GLSL}
+        uniform float uScale; uniform vec3 uBase; uniform vec3 uHot;
+        attribute float aSize; attribute float aSeed;
+        varying vec3 vColor; varying float vAlpha;
         void main(){
-          vec3 n = normalize(vN);
-          vec3 v = normalize(-vPos);
-          float ndv = clamp(dot(n, v), 0.0, 1.0);
-          // pearl body: bright core, brand-tinted limb, soft key light from the top-left
-          vec3 col = mix(uEdge, uCore, smoothstep(0.0, 0.55, ndv));
-          float l = clamp(dot(n, normalize(vec3(-0.45, 0.6, 0.7))), 0.0, 1.0);
-          col *= 0.84 + 0.18 * l;
-          // slow shimmer near the limb (the sun's surface)
-          float sh = sin(n.x * 9.0 + uTime * 0.7) * sin(n.y * 7.0 - uTime * 0.5);
-          col += uEdge * 0.05 * sh * (1.0 - ndv);
-          // the logo, printed on the face: always faces the viewer and follows the curvature (never cropped)
-          vec2 uv = n.xy / uLogoSize * 0.5 + 0.5;
-          if (uHasLogo > 0.5 && n.z > 0.0 && uv.x > 0.0 && uv.x < 1.0 && uv.y > 0.0 && uv.y < 1.0) {
-            vec4 lg = texture2D(uLogo, uv);
-            col = mix(col, lg.rgb, lg.a);
-          }
-          // corona at the rim (this part glows)
-          float fres = pow(1.0 - ndv, 4.0);
-          col += uRim * fres * 1.5;
-          gl_FragColor = vec4(col, 1.0);
+          vec4 mv = modelViewMatrix * vec4(position, 1.0);
+          float twinkle = pow(max(sin(uTime * 1.1 + aSeed * 60.0), 0.0), 24.0) * 0.9;
+          float fire = clamp(fireWave(position) * uAI + twinkle, 0.0, 1.6);
+          vColor = mix(uBase, uHot, clamp(fire, 0.0, 1.0)) * (0.5 + fire * 0.8);
+          float depth = smoothstep(-22.0, -13.0, mv.z); // farther = dimmer
+          vAlpha = (0.38 + 0.62 * depth + fire * 0.6) * coreFade(mv);
+          gl_PointSize = aSize * uScale * (1.0 + fire * 0.8) / -mv.z;
+          gl_Position = projectionMatrix * mv;
         }`,
+      fragmentShader: SOFT_POINT_FRAG,
     })
   );
-  const sun = new THREE.Mesh(track(new THREE.SphereGeometry(SUN_R, 96, 96)), sunMat);
-  tile.add(sun);
-  const halo = new THREE.Sprite(track(new THREE.SpriteMaterial({ map: track(radialTexture(`rgba(${brand300.r * 255 | 0},${brand300.g * 255 | 0},${brand300.b * 255 | 0},0.9)`, "rgba(0,0,0,0)")), blending: THREE.AdditiveBlending, depthWrite: false, transparent: true, toneMapped: false })));
-  halo.scale.set(SUN_R * 4.6, SUN_R * 4.6, 1);
-  halo.position.z = -0.6;
-  halo.material.opacity = 0.42;
-  tile.add(halo);
-  const corona = new THREE.Sprite(track(new THREE.SpriteMaterial({ map: track(radialTexture(`rgba(${accent.r * 255 | 0},${accent.g * 255 | 0},${accent.b * 255 | 0},0.55)`, "rgba(0,0,0,0)")), blending: THREE.AdditiveBlending, depthWrite: false, transparent: true, toneMapped: false })));
-  corona.scale.set(SUN_R * 3.0, SUN_R * 3.0, 1);
-  corona.material.opacity = 0.35;
-  corona.position.z = -0.4;
-  tile.add(corona);
-  // the sun lights the planets
-  const sunLight = new THREE.PointLight(0xfff4e6, 45, 0, 2);
-  tile.add(sunLight);
+  const neurons = new THREE.Points(nGeo, neuronMat);
+  neurons.frustumCulled = false;
+  brain.add(neurons);
 
-  /** fit the logo inside a circle on the sun's face (any aspect ratio; its corners touch the circle at most) */
-  const fitLogo = (aspect: number) => {
-    const rho = 0.68;
-    const a = Math.max(0.1, aspect);
-    const d = Math.sqrt(1 + a * a);
-    sunUniforms.uLogoSize.value.set((rho * a) / d, rho / d);
-  };
-  const setTexture = (tex: THREE.Texture, aspect: number) => {
-    tex.colorSpace = THREE.SRGBColorSpace;
-    tex.anisotropy = renderer.capabilities.getMaxAnisotropy();
-    sunUniforms.uLogo.value = track(tex);
-    sunUniforms.uHasLogo.value = 1;
-    fitLogo(aspect);
-  };
-  const initialsTexture = () => {
-    const c = document.createElement("canvas");
-    c.width = 512;
-    c.height = 256;
-    const g = c.getContext("2d")!;
-    g.fillStyle = hex(brand700);
-    g.font = "800 150px 'Plus Jakarta Sans', system-ui, sans-serif";
-    g.textAlign = "center";
-    g.textBaseline = "middle";
-    g.fillText(initials(opts.name), 256, 136);
-    setTexture(new THREE.CanvasTexture(c), 2);
-  };
-  if (opts.logoUrl) {
-    new THREE.TextureLoader().load(
-      opts.logoUrl,
-      (t) => setTexture(t, (t.image as any).width / (t.image as any).height || 1.6),
-      undefined,
-      initialsTexture
-    );
-  } else initialsTexture();
+  /* ── 2. synapses: each neuron to its nearest neighbours ── */
+  const adj: number[][] = Array.from({ length: n }, () => []);
+  const K = 3;
+  const MAXD2 = 0.85 * 0.85;
+  const seg: number[] = [];
+  for (let i = 0; i < n; i++) {
+    const best: [number, number][] = [];
+    const a = pos[i];
+    for (let j = 0; j < n; j++) {
+      if (j === i) continue;
+      const d2 = a.distanceToSquared(pos[j]);
+      if (d2 > MAXD2) continue;
+      if (best.length < K) best.push([d2, j]);
+      else {
+        let w = 0;
+        for (let q = 1; q < K; q++) if (best[q][0] > best[w][0]) w = q;
+        if (d2 < best[w][0]) best[w] = [d2, j];
+      }
+    }
+    for (const [, j] of best) {
+      if (adj[i].includes(j)) continue;
+      adj[i].push(j);
+      adj[j].push(i);
+      seg.push(a.x, a.y, a.z, pos[j].x, pos[j].y, pos[j].z);
+    }
+  }
+  // a few long axons from the inner neurons to the core
+  const inner = pos.map((p, i) => [p.length(), i] as [number, number]).sort((a, b) => a[0] - b[0]).slice(0, 36).map(([, i]) => i);
+  for (const i of inner) seg.push(pos[i].x, pos[i].y, pos[i].z, pos[i].x * 0.55, pos[i].y * 0.55, pos[i].z * 0.55);
+  const sGeo = track(new THREE.BufferGeometry());
+  sGeo.setAttribute("position", new THREE.Float32BufferAttribute(seg, 3));
+  const synMat = track(
+    new THREE.ShaderMaterial({
+      uniforms: netUniforms,
+      transparent: true,
+      depthWrite: false,
+      blending: THREE.AdditiveBlending,
+      vertexShader: /* glsl */ `
+        ${NET_GLSL}
+        uniform vec3 uBase; uniform vec3 uHot; uniform float uSynA;
+        varying vec3 vColor; varying float vAlpha;
+        void main(){
+          vec4 mv = modelViewMatrix * vec4(position, 1.0);
+          float fire = clamp(fireWave(position) * uAI, 0.0, 1.2);
+          vColor = mix(uBase, uHot, clamp(fire, 0.0, 1.0)) * (0.6 + fire);
+          float depth = smoothstep(-22.0, -13.0, mv.z);
+          vAlpha = (uSynA * (0.45 + 0.55 * depth) + fire * 0.35) * coreFade(mv);
+          gl_Position = projectionMatrix * mv;
+        }`,
+      fragmentShader: /* glsl */ `varying vec3 vColor; varying float vAlpha; void main(){ gl_FragColor = vec4(vColor, vAlpha);
+#include <colorspace_fragment>
+}`,
+    })
+  );
+  const synapses = new THREE.LineSegments(sGeo, synMat);
+  synapses.frustumCulled = false;
+  brain.add(synapses);
 
-  /* ── aura: two thin rings of light with a travelling comet, circling the sun ── */
+  /* ── 3. the client ring: client nodes orbiting the brain ── */
+  const ring = new THREE.Group();
+  ring.position.y = -0.35;
+  brain.add(ring);
+  const CN = 26;
+  const RING_R = 3.25;
+  const clientPos: THREE.Vector3[] = [];
+  for (let i = 0; i < CN; i++) {
+    const a = (i / CN) * Math.PI * 2 + (R() - 0.5) * 0.12;
+    clientPos.push(new THREE.Vector3(Math.cos(a) * RING_R, (R() - 0.5) * 0.25, Math.sin(a) * RING_R));
+  }
+  const cGeo = track(new THREE.BufferGeometry());
+  cGeo.setAttribute("position", new THREE.Float32BufferAttribute(clientPos.flatMap((p) => [p.x, p.y, p.z]), 3));
+  const clientFlash = new Float32Array(CN);
+  cGeo.setAttribute("aFlash", new THREE.BufferAttribute(clientFlash, 1));
+  const clientMat = track(
+    new THREE.ShaderMaterial({
+      uniforms: { uScale: netUniforms.uScale, uI: { value: 0.5 }, uColor: { value: accent.clone() } },
+      transparent: true,
+      depthWrite: false,
+      blending: THREE.AdditiveBlending,
+      vertexShader: /* glsl */ `
+        uniform float uScale; uniform float uI; uniform vec3 uColor; attribute float aFlash;
+        varying vec3 vColor; varying float vAlpha;
+        void main(){
+          vec4 mv = modelViewMatrix * vec4(position, 1.0);
+          vColor = mix(uColor, vec3(1.0), aFlash * 0.6) * (0.7 + aFlash);
+          float depth = smoothstep(-24.0, -12.0, mv.z);
+          vAlpha = (0.25 + 0.75 * uI) * (0.35 + 0.65 * depth) + aFlash;
+          gl_PointSize = (2.4 + aFlash * 2.2) * uScale / -mv.z;
+          gl_Position = projectionMatrix * mv;
+        }`,
+      fragmentShader: SOFT_POINT_FRAG,
+    })
+  );
+  const clients = new THREE.Points(cGeo, clientMat);
+  clients.frustumCulled = false;
+  ring.add(clients);
+  const orbitMat = track(new THREE.LineBasicMaterial({ color: accent, transparent: true, opacity: 0.12, blending: THREE.AdditiveBlending, depthWrite: false }));
+  const orbit = new THREE.LineLoop(
+    track(new THREE.BufferGeometry().setFromPoints(Array.from({ length: 160 }, (_, i) => new THREE.Vector3(Math.cos((i / 160) * Math.PI * 2) * RING_R, 0, Math.sin((i / 160) * Math.PI * 2) * RING_R)))),
+    orbitMat
+  );
+  ring.add(orbit);
+
+  /* ── 4. dust: a deep starfield for parallax ── */
+  const dust: number[] = [];
+  for (let i = 0; i < 700; i++) dust.push((R() * 2 - 1) * 16, (R() * 2 - 1) * 11, -4 - R() * 12);
+  const dGeo = track(new THREE.BufferGeometry());
+  dGeo.setAttribute("position", new THREE.Float32BufferAttribute(dust, 3));
+  const dustMat = track(new THREE.PointsMaterial({ color: brand200, size: 0.035, transparent: true, opacity: 0.45, depthWrite: false, blending: THREE.AdditiveBlending }));
+  const dustPts = new THREE.Points(dGeo, dustMat);
+  scene.add(dustPts);
+
+  /* ── 5. the core: logo disc (overlay), halo, glowing rim, aura comets and arrival ripples ── */
+  const DISC_R = 1.05;
+  const core = new THREE.Group();
+  world.add(core);
+  const halo = new THREE.Sprite(track(new THREE.SpriteMaterial({ map: track(radialTexture(rgba(brand300, 0.45), "rgba(0,0,0,0)")), blending: THREE.AdditiveBlending, depthWrite: false, depthTest: false, transparent: true })));
+  halo.scale.set(DISC_R * 3.6, DISC_R * 3.6, 1);
+  halo.material.opacity = 0.55;
+  halo.renderOrder = 5;
+  core.add(halo);
+  const rimGlow = new THREE.Mesh(
+    track(new THREE.TorusGeometry(DISC_R * 1.01, 0.02, 12, 160)),
+    track(new THREE.MeshBasicMaterial({ color: brand300.clone().lerp(white, 0.4), transparent: true, opacity: 0.55, blending: THREE.AdditiveBlending, depthTest: false, depthWrite: false }))
+  );
+  rimGlow.renderOrder = 6;
+  core.add(rimGlow);
   const auraMat = (speed: number, color: THREE.Color) =>
     track(
       new THREE.ShaderMaterial({
         transparent: true,
         depthWrite: false,
+        depthTest: false,
         blending: THREE.AdditiveBlending,
-        toneMapped: false,
         uniforms: { uTime: { value: 0 }, uSpeed: { value: speed }, uColor: { value: color } },
         vertexShader: `varying vec2 vUv; void main(){ vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position,1.0); }`,
         fragmentShader: `uniform float uTime; uniform float uSpeed; uniform vec3 uColor; varying vec2 vUv;
-          void main(){ float f = fract(vUv.x - uTime * uSpeed); float head = pow(f, 12.0) * 4.0 + pow(f, 3.0) * 0.6; float a = 0.09 + head;
-          gl_FragColor = vec4(uColor * (0.6 + head * 1.6), a); }`,
+          void main(){ float f = fract(vUv.x - uTime * uSpeed); float head = pow(f, 14.0) * 2.4 + pow(f, 3.0) * 0.45; float a = 0.08 + head;
+          gl_FragColor = vec4(uColor * (0.6 + head * 1.6), a);
+#include <colorspace_fragment>
+}`,
       })
     );
-  const auraA = new THREE.Mesh(track(new THREE.TorusGeometry(SUN_R * 1.2, 0.016, 8, 360)), auraMat(0.11, new THREE.Color(1, 1, 1).lerp(brand300, 0.35)));
-  auraA.rotation.set(1.18, 0.12, 0);
-  const auraB = new THREE.Mesh(track(new THREE.TorusGeometry(SUN_R * 1.33, 0.011, 8, 360)), auraMat(-0.075, accent.clone()));
-  auraB.rotation.set(1.42, -0.42, 0.3);
-  tile.add(auraA, auraB);
-
-  /* ── the planets: tilted orbits around the sun (lit by it) ── */
-  const system = new THREE.Group();
-  system.rotation.set(1.22, 0, -0.18); // same plane as the client belt
-  world.add(system);
-  const orbitLine = (r: number, opacity: number) => {
-    const pts: THREE.Vector3[] = [];
-    for (let i = 0; i <= 200; i++) pts.push(new THREE.Vector3(Math.cos((i / 200) * Math.PI * 2) * r, Math.sin((i / 200) * Math.PI * 2) * r, 0));
-    const line = new THREE.Line(track(new THREE.BufferGeometry().setFromPoints(pts)), track(new THREE.LineBasicMaterial({ color: brand300, transparent: true, opacity, toneMapped: false })));
-    system.add(line);
-  };
-  type Planet = { mesh: THREE.Object3D; r: number; speed: number; phase: number; spin: number };
-  const planets: Planet[] = [];
-  const planet = (r: number, size: number, color: THREE.Color, speed: number, phase: number, extras?: (g: THREE.Group) => void) => {
-    orbitLine(r, 0.12);
-    const g = new THREE.Group();
-    const m = new THREE.Mesh(track(new THREE.SphereGeometry(size, 40, 40)), track(new THREE.MeshStandardMaterial({ color, roughness: 0.55, metalness: 0.15, emissive: color.clone().multiplyScalar(0.12) })));
-    g.add(m);
-    extras?.(g);
-    system.add(g);
-    planets.push({ mesh: g, r, speed, phase, spin: 0.4 + Math.random() * 0.6 });
-  };
-  planet(SUN_R * 1.65, 0.15, brand300.clone(), 0.42, 0.6);
-  planet(SUN_R * 2.15, 0.21, accent.clone(), 0.27, 2.4, (g) => {
-    const moon = new THREE.Mesh(track(new THREE.SphereGeometry(0.06, 20, 20)), track(new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.7 })));
-    moon.position.set(0.42, 0, 0.1);
-    moon.name = "moon";
-    g.add(moon);
+  const auraA = new THREE.Mesh(track(new THREE.TorusGeometry(DISC_R * 1.2, 0.017, 8, 320)), auraMat(0.12, white.clone().lerp(brand300, 0.3)));
+  auraA.rotation.set(0.42, 0.18, 0);
+  const auraB = new THREE.Mesh(track(new THREE.TorusGeometry(DISC_R * 1.36, 0.012, 8, 320)), auraMat(-0.08, accent.clone()));
+  auraB.rotation.set(-0.35, -0.4, 0.3);
+  auraA.renderOrder = auraB.renderOrder = 7;
+  core.add(auraA, auraB);
+  const ripples = Array.from({ length: 4 }, () => {
+    const m = new THREE.Mesh(
+      track(new THREE.RingGeometry(DISC_R * 0.995, DISC_R * 1.015, 128)),
+      track(new THREE.MeshBasicMaterial({ color: brand200, transparent: true, opacity: 0, blending: THREE.AdditiveBlending, depthTest: false, depthWrite: false }))
+    );
+    m.renderOrder = 6;
+    core.add(m);
+    return { m, age: 99 };
   });
-  planet(SUN_R * 3.05, 0.26, brand500.clone().lerp(new THREE.Color(1, 1, 1), 0.2), 0.15, 4.2, (g) => {
-    const ring = new THREE.Mesh(track(new THREE.RingGeometry(0.42, 0.62, 64)), track(new THREE.MeshBasicMaterial({ color: accent.clone().lerp(new THREE.Color(1, 1, 1), 0.4), transparent: true, opacity: 0.55, side: THREE.DoubleSide, toneMapped: false })));
-    ring.rotation.set(0.35, 0.5, 0);
-    g.add(ring);
-  });
-  planet(SUN_R * 3.6, 0.12, new THREE.Color(1, 1, 1).lerp(brand300, 0.6), 0.1, 1.1);
+  let rippleIdx = 0;
+  let lastRipple = 0;
 
-  /* ── 01 leads: particle streams flowing from sources into the logo ── */
-  const SOURCES = 8;
-  const N = 1800;
-  const anchors: THREE.Vector3[] = [];
-  for (let i = 0; i < SOURCES; i++) {
-    const a = (i / SOURCES) * Math.PI * 2 + 0.3;
-    anchors.push(new THREE.Vector3(Math.cos(a) * 8.2, Math.sin(a) * 4.6 + (i % 2 ? 0.6 : -0.6), -2.5 + (i % 3) * 1.4));
-  }
-  const aStart = new Float32Array(N * 3);
-  const aCtrl = new Float32Array(N * 3);
-  const aEnd = new Float32Array(N * 3);
-  const aOff = new Float32Array(N);
-  const aSpd = new Float32Array(N);
-  const aSize = new Float32Array(N);
-  for (let i = 0; i < N; i++) {
-    const s = anchors[i % SOURCES];
-    const j = () => (Math.random() - 0.5) * 0.9;
-    aStart.set([s.x + j(), s.y + j(), s.z + j()], i * 3);
-    const perp = new THREE.Vector3(-s.y, s.x, 0).normalize().multiplyScalar(1.6 + Math.random() * 1.2);
-    aCtrl.set([s.x * 0.45 + perp.x + j(), s.y * 0.45 + perp.y + j(), Math.min(s.z * 0.4 - 0.6 + j(), -0.4)], i * 3);
-    const ea = Math.random() * Math.PI * 2;
-    aEnd.set([Math.cos(ea) * (TW * 0.56 + Math.random() * 0.25), Math.sin(ea) * (TH * 0.6 + Math.random() * 0.2), -0.35], i * 3);
-    aOff[i] = Math.random();
-    aSpd[i] = 0.07 + Math.random() * 0.07;
-    aSize[i] = 0.6 + Math.random() * 1.2;
-  }
-  const leadGeo = track(new THREE.BufferGeometry());
-  leadGeo.setAttribute("position", new THREE.BufferAttribute(aStart, 3));
-  leadGeo.setAttribute("aStart", new THREE.BufferAttribute(aStart, 3));
-  leadGeo.setAttribute("aCtrl", new THREE.BufferAttribute(aCtrl, 3));
-  leadGeo.setAttribute("aEnd", new THREE.BufferAttribute(aEnd, 3));
-  leadGeo.setAttribute("aOff", new THREE.BufferAttribute(aOff, 1));
-  leadGeo.setAttribute("aSpd", new THREE.BufferAttribute(aSpd, 1));
-  leadGeo.setAttribute("aSize", new THREE.BufferAttribute(aSize, 1));
-  const leadMat = track(
+  // the logo disc — white glass circle, logo contain-fitted inside it
+  const discUniforms = {
+    uLogo: { value: null as THREE.Texture | null },
+    uHasLogo: { value: 0 },
+    uLogoSize: { value: new THREE.Vector2(0.3, 0.2) },
+    uEdge: { value: brand200.clone().lerp(white, 0.35) },
+    uTime: { value: 0 },
+  };
+  const disc = new THREE.Mesh(
+    track(new THREE.CircleGeometry(DISC_R, 128)),
+    track(
+      new THREE.ShaderMaterial({
+        uniforms: discUniforms,
+        transparent: true,
+        depthTest: false,
+        depthWrite: false,
+        vertexShader: `varying vec2 vUv; void main(){ vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position,1.0); }`,
+        fragmentShader: /* glsl */ `
+          uniform sampler2D uLogo; uniform float uHasLogo; uniform vec2 uLogoSize; uniform vec3 uEdge; uniform float uTime;
+          varying vec2 vUv;
+          void main(){
+            vec2 p = vUv - 0.5;
+            float r = length(p) * 2.0;
+            vec3 col = mix(vec3(1.0), uEdge, smoothstep(0.55, 1.0, r) * 0.85);
+            col += 0.05 * smoothstep(0.5, 0.0, length(p - vec2(-0.16, 0.2))); // glass highlight
+            float sweep = smoothstep(0.06, 0.0, abs(p.x + p.y * 0.6 - mod(uTime * 0.18, 2.4) + 1.2)) * 0.05;
+            col += sweep;
+            if (uHasLogo > 0.5) {
+              vec2 luv = p / uLogoSize * 0.5 + 0.5;
+              if (luv.x >= 0.0 && luv.x <= 1.0 && luv.y >= 0.0 && luv.y <= 1.0) {
+                vec4 lg = texture2D(uLogo, luv);
+                col = mix(col, lg.rgb, lg.a);
+              }
+            }
+            float a = smoothstep(1.0, 0.985, r);
+            gl_FragColor = vec4(col, a);
+            #include <colorspace_fragment>
+          }`,
+      })
+    )
+  );
+  const discGroup = new THREE.Group();
+  discGroup.add(disc);
+  overlay.add(discGroup);
+
+  /** contain-fit the logo inside the circle (any aspect ratio; its corners touch at most 68% of the radius) */
+  const fitLogo = (aspect: number) => {
+    const rho = 0.68;
+    const a = Math.max(0.1, aspect);
+    const d = Math.sqrt(1 + a * a);
+    discUniforms.uLogoSize.value.set(((rho * a) / d) * 0.5, (rho / d) * 0.5);
+  };
+  const setTexture = (tex: THREE.Texture, aspect: number) => {
+    tex.colorSpace = THREE.SRGBColorSpace;
+    tex.anisotropy = renderer.capabilities.getMaxAnisotropy();
+    tex.minFilter = THREE.LinearMipmapLinearFilter;
+    discUniforms.uLogo.value = track(tex);
+    discUniforms.uHasLogo.value = 1;
+    fitLogo(aspect);
+  };
+  const initialsTexture = () => {
+    const c = document.createElement("canvas");
+    c.width = c.height = 512;
+    const g = c.getContext("2d")!;
+    g.fillStyle = hex(brand700);
+    g.font = "800 230px 'Plus Jakarta Sans', system-ui, sans-serif";
+    g.textAlign = "center";
+    g.textBaseline = "middle";
+    g.fillText(initials(opts.name), 256, 272);
+    setTexture(new THREE.CanvasTexture(c), 1);
+  };
+  if (opts.logoUrl) {
+    new THREE.TextureLoader().load(opts.logoUrl, (t) => setTexture(t, (t.image as any).width / (t.image as any).height || 1), undefined, initialsTexture);
+  } else initialsTexture();
+
+  /* ── 6. sparks: leads fly in → cortex → synapses → core; clients flow core → out → client ring ── */
+  const SOURCES = [white.clone().lerp(brand300, 0.2), accent.clone(), new THREE.Color("#7dd3fc"), new THREE.Color("#86efac"), new THREE.Color("#f0abfc"), brand300.clone()];
+  const POOL = 150;
+  const TRAIL = 8;
+  const TSTEP = 0.085;
+  const sparks: Spark[] = Array.from({ length: POOL }, () => ({ pts: [], cum: [], len: 0, s: 0, speed: 1, color: new THREE.Color(), alive: false, out: false, node: -1 }));
+  const spPos = new Float32Array(POOL * TRAIL * 3);
+  const spCol = new Float32Array(POOL * TRAIL * 3);
+  const spAlpha = new Float32Array(POOL * TRAIL);
+  const spSize = new Float32Array(POOL * TRAIL);
+  const spGeo = track(new THREE.BufferGeometry());
+  spGeo.setAttribute("position", new THREE.BufferAttribute(spPos, 3).setUsage(THREE.DynamicDrawUsage));
+  spGeo.setAttribute("aColor", new THREE.BufferAttribute(spCol, 3).setUsage(THREE.DynamicDrawUsage));
+  spGeo.setAttribute("aAlpha", new THREE.BufferAttribute(spAlpha, 1).setUsage(THREE.DynamicDrawUsage));
+  spGeo.setAttribute("aSize", new THREE.BufferAttribute(spSize, 1).setUsage(THREE.DynamicDrawUsage));
+  const sparkMat = track(
     new THREE.ShaderMaterial({
+      uniforms: { uScale: netUniforms.uScale },
       transparent: true,
       depthWrite: false,
       blending: THREE.AdditiveBlending,
-      toneMapped: false,
-      uniforms: { uTime: { value: 0 }, uI: { value: 1 }, uA: { value: brand300.clone().multiplyScalar(1.3) }, uB: { value: new THREE.Color(1.25, 1.25, 1.3) }, uPx: { value: renderer.getPixelRatio() } },
       vertexShader: /* glsl */ `
-        attribute vec3 aStart; attribute vec3 aCtrl; attribute vec3 aEnd; attribute float aOff; attribute float aSpd; attribute float aSize;
-        uniform float uTime; uniform float uI; uniform vec3 uA; uniform vec3 uB; uniform float uPx;
+        uniform float uScale; attribute vec3 aColor; attribute float aAlpha; attribute float aSize;
         varying vec3 vColor; varying float vAlpha;
-        void main(){
-          float t = fract(uTime * aSpd + aOff);
-          float e = t * t * (3.0 - 2.0 * t);
-          vec3 p = mix(mix(aStart, aCtrl, e), mix(aCtrl, aEnd, e), e);
-          vec4 mv = modelViewMatrix * vec4(p, 1.0);
-          gl_Position = projectionMatrix * mv;
-          gl_PointSize = aSize * uPx * (40.0 / -mv.z) * (0.6 + 0.7 * (1.0 - t));
-          vColor = mix(uA, uB, t);
-          vAlpha = smoothstep(0.0, 0.18, t) * (1.0 - smoothstep(0.78, 1.0, t)) * uI * 0.95;
-        }`,
+        void main(){ vec4 mv = modelViewMatrix * vec4(position, 1.0); vColor = aColor * 1.15; vAlpha = aAlpha;
+          gl_PointSize = aSize * uScale / -mv.z; gl_Position = projectionMatrix * mv; }`,
       fragmentShader: SOFT_POINT_FRAG,
     })
   );
-  const leadPts = new THREE.Points(leadGeo, leadMat);
-  leadPts.frustumCulled = false; // positions are computed in the shader
-  world.add(leadPts);
-  const beaconTex = track(radialTexture("rgba(255,255,255,1)", "rgba(255,255,255,0)", 128));
+  const sparkPts = new THREE.Points(spGeo, sparkMat);
+  sparkPts.frustumCulled = false;
+  brain.add(sparkPts);
 
-  /* ── 02 clients: an orbiting constellation (journey ring) with stage nodes ── */
-  const clients = new THREE.Group();
-  clients.rotation.set(1.22, 0, -0.18);
-  world.add(clients);
-  const CN = 40;
-  const R2 = SUN_R * 2.5;
-  const nodeGeo = track(new THREE.SphereGeometry(0.032, 10, 10));
-  const nodeMat = track(new THREE.MeshBasicMaterial({ color: new THREE.Color(1, 1, 1).lerp(brand300, 0.45).multiplyScalar(1.15), toneMapped: false, transparent: true, opacity: 0.9 }));
-  const nodes = new THREE.InstancedMesh(nodeGeo, nodeMat, CN);
-  const m4 = new THREE.Matrix4();
-  for (let i = 0; i < CN; i++) {
-    const a = (i / CN) * Math.PI * 2;
-    const big = i % 8 === 0;
-    m4.makeScale(big ? 1.8 : 1, big ? 1.8 : 1, big ? 1.8 : 1).setPosition(Math.cos(a) * R2, Math.sin(a) * R2, 0);
-    nodes.setMatrixAt(i, m4);
-  }
-  clients.add(nodes);
-  const stageMat = track(new THREE.MeshBasicMaterial({ color: accent.clone().multiplyScalar(1.5), toneMapped: false, transparent: true, opacity: 0.95 }));
-  const stages = new THREE.InstancedMesh(track(new THREE.SphereGeometry(0.075, 16, 16)), stageMat, 5);
-  for (let i = 0; i < 5; i++) {
-    const a = (i / 5) * Math.PI * 2 + 0.2;
-    m4.makeTranslation(Math.cos(a) * R2, Math.sin(a) * R2, 0);
-    stages.setMatrixAt(i, m4);
-  }
-  clients.add(stages);
-  const ringPts: THREE.Vector3[] = [];
-  for (let i = 0; i <= 256; i++) {
-    const a = (i / 256) * Math.PI * 2;
-    ringPts.push(new THREE.Vector3(Math.cos(a) * R2, Math.sin(a) * R2, 0));
-  }
-  const ringMat = track(new THREE.LineBasicMaterial({ color: brand300, transparent: true, opacity: 0.28, toneMapped: false }));
-  clients.add(new THREE.Line(track(new THREE.BufferGeometry().setFromPoints(ringPts)), ringMat));
-  // a highlight travelling the journey ring
-  const runner = new THREE.Sprite(track(new THREE.SpriteMaterial({ map: beaconTex, color: accent.clone().multiplyScalar(1.6), blending: THREE.AdditiveBlending, depthWrite: false, transparent: true, toneMapped: false })));
-  runner.scale.setScalar(0.45);
-  clients.add(runner);
+  const setPath = (sp: Spark, pts: THREE.Vector3[]) => {
+    sp.pts = pts;
+    sp.cum = [0];
+    for (let i = 1; i < pts.length; i++) sp.cum.push(sp.cum[i - 1] + pts[i].distanceTo(pts[i - 1]));
+    sp.len = sp.cum[sp.cum.length - 1];
+    sp.s = 0;
+    sp.alive = true;
+  };
+  const at = (sp: Spark, d: number, out: THREE.Vector3) => {
+    if (d <= 0) return out.copy(sp.pts[0]);
+    if (d >= sp.len) return out.copy(sp.pts[sp.pts.length - 1]);
+    let i = 1;
+    while (i < sp.cum.length - 1 && sp.cum[i] < d) i++;
+    const a = sp.cum[i - 1];
+    const k = (d - a) / (sp.cum[i] - a || 1);
+    return out.copy(sp.pts[i - 1]).lerp(sp.pts[i], k);
+  };
+  const surface = pos.map((p, i) => [p.length(), i] as [number, number]).filter(([l]) => l > 1.9).map(([, i]) => i);
+  const free = () => sparks.find((s) => !s.alive);
+  const chainIn = (start: number) => {
+    const path = [start];
+    let cur = start;
+    for (let step = 0; step < 14; step++) {
+      const l = pos[cur].length();
+      if (l < 1.6) break;
+      const opts2 = adj[cur].filter((j) => pos[j].length() < l - 0.04).sort((a, b) => pos[a].length() - pos[b].length());
+      if (!opts2.length) break;
+      cur = opts2[Math.min(opts2.length - 1, (R() * 2) | 0)];
+      path.push(cur);
+    }
+    return path;
+  };
+  const spawnLead = () => {
+    const sp = free();
+    if (!sp) return;
+    const target = surface[(R() * surface.length) | 0];
+    const tp = pos[target];
+    // fly in from far outside, roughly from the target's side, on a gentle curve
+    const dir = tp.clone().normalize();
+    dir.x += (R() - 0.5) * 0.9;
+    dir.y += (R() - 0.5) * 0.9;
+    dir.normalize();
+    const from = dir.clone().multiplyScalar(9 + R() * 3);
+    const ctrl = from.clone().lerp(tp, 0.5).add(new THREE.Vector3((R() - 0.5) * 3, (R() - 0.5) * 3, (R() - 0.5) * 3));
+    const curve = new THREE.QuadraticBezierCurve3(from, ctrl, tp.clone());
+    const pts = curve.getPoints(14);
+    for (const i of chainIn(target).slice(1)) pts.push(pos[i].clone());
+    pts.push(new THREE.Vector3(0, 0, 0));
+    setPath(sp, pts);
+    sp.out = false;
+    sp.node = -1;
+    sp.speed = 3.6 + R() * 1.6;
+    sp.color.copy(SOURCES[(R() * SOURCES.length) | 0]);
+  };
+  const _v = new THREE.Vector3();
+  const clientLocal = (i: number, out: THREE.Vector3) => out.copy(clientPos[i]).applyMatrix4(ring.matrix); // ring → brain space
+  const spawnClient = () => {
+    const sp = free();
+    if (!sp) return;
+    const startN = inner[(R() * inner.length) | 0];
+    const path = [startN];
+    let cur = startN;
+    for (let step = 0; step < 14; step++) {
+      const l = pos[cur].length();
+      const nx = adj[cur].filter((j) => pos[j].length() > l + 0.04).sort((a, b) => pos[b].length() - pos[a].length());
+      if (!nx.length) break;
+      cur = nx[Math.min(nx.length - 1, (R() * 2) | 0)];
+      path.push(cur);
+    }
+    const node = (R() * CN) | 0;
+    const pts = [new THREE.Vector3(0, 0, 0), ...path.map((i) => pos[i].clone()), clientLocal(node, new THREE.Vector3())];
+    setPath(sp, pts);
+    sp.out = true;
+    sp.node = node;
+    sp.speed = 3.0 + R() * 1.2;
+    sp.color.copy(accent).lerp(white, R() * 0.3);
+  };
+  const ripple = () => {
+    const r = ripples[rippleIdx++ % ripples.length];
+    r.age = 0;
+  };
 
-  /* ── 03 AI: neural sphere (fibonacci points + nearest-neighbour synapses + pulses) ── */
-  const ai = new THREE.Group();
-  world.add(ai);
-  const AN = 150;
-  const R3 = 6.1;
-  const pts: THREE.Vector3[] = [];
-  for (let i = 0; i < AN; i++) {
-    const y = 1 - (i / (AN - 1)) * 2;
-    const r = Math.sqrt(1 - y * y);
-    const th = i * Math.PI * (3 - Math.sqrt(5));
-    pts.push(new THREE.Vector3(Math.cos(th) * r * R3, y * R3 * 0.72, Math.sin(th) * r * R3));
-  }
-  const edges: [number, number][] = [];
-  const seen = new Set<string>();
-  pts.forEach((p, i) => {
-    pts
-      .map((q, j) => ({ j, d: p.distanceToSquared(q) }))
-      .filter((x) => x.j !== i)
-      .sort((a, b) => a.d - b.d)
-      .slice(0, 3)
-      .forEach(({ j }) => {
-        const k = i < j ? `${i}-${j}` : `${j}-${i}`;
-        if (!seen.has(k)) {
-          seen.add(k);
-          edges.push([i, j]);
-        }
-      });
-  });
-  const lineArr = new Float32Array(edges.length * 6);
-  edges.forEach(([a, b], i) => lineArr.set([pts[a].x, pts[a].y, pts[a].z, pts[b].x, pts[b].y, pts[b].z], i * 6));
-  const synGeo = track(new THREE.BufferGeometry());
-  synGeo.setAttribute("position", new THREE.BufferAttribute(lineArr, 3));
-  const synMat = track(new THREE.LineBasicMaterial({ color: brand300, transparent: true, opacity: 0.1, toneMapped: false, depthWrite: false }));
-  ai.add(new THREE.LineSegments(synGeo, synMat));
-  const neuGeo = track(new THREE.BufferGeometry().setFromPoints(pts));
-  const neuMat = track(new THREE.PointsMaterial({ color: new THREE.Color(1, 1, 1).lerp(brand300, 0.5), size: 0.045, transparent: true, opacity: 0.45, depthWrite: false, toneMapped: false }));
-  ai.add(new THREE.Points(neuGeo, neuMat));
-  // pulses along synapses
-  const PN = 260;
-  const pA = new Float32Array(PN * 3);
-  const pB = new Float32Array(PN * 3);
-  const pOff = new Float32Array(PN);
-  for (let i = 0; i < PN; i++) {
-    const [a, b] = edges[(Math.random() * edges.length) | 0];
-    pA.set([pts[a].x, pts[a].y, pts[a].z], i * 3);
-    pB.set([pts[b].x, pts[b].y, pts[b].z], i * 3);
-    pOff[i] = Math.random();
-  }
-  const pulseGeo = track(new THREE.BufferGeometry());
-  pulseGeo.setAttribute("position", new THREE.BufferAttribute(pA, 3));
-  pulseGeo.setAttribute("aA", new THREE.BufferAttribute(pA, 3));
-  pulseGeo.setAttribute("aB", new THREE.BufferAttribute(pB, 3));
-  pulseGeo.setAttribute("aOff", new THREE.BufferAttribute(pOff, 1));
-  const pulseMat = track(
-    new THREE.ShaderMaterial({
-      transparent: true,
-      depthWrite: false,
-      blending: THREE.AdditiveBlending,
-      toneMapped: false,
-      uniforms: { uTime: { value: 0 }, uI: { value: 0.5 }, uC: { value: accent.clone().lerp(new THREE.Color(1, 1, 1), 0.3) }, uPx: { value: renderer.getPixelRatio() } },
-      vertexShader: /* glsl */ `
-        attribute vec3 aA; attribute vec3 aB; attribute float aOff; uniform float uTime; uniform float uI; uniform vec3 uC; uniform float uPx;
-        varying vec3 vColor; varying float vAlpha;
-        void main(){
-          float t = fract(uTime * 0.35 + aOff);
-          vec4 mv = modelViewMatrix * vec4(mix(aA, aB, t), 1.0);
-          gl_Position = projectionMatrix * mv;
-          gl_PointSize = uPx * (30.0 / -mv.z);
-          vColor = uC; vAlpha = sin(t * 3.14159) * uI;
-        }`,
-      fragmentShader: SOFT_POINT_FRAG,
-    })
-  );
-  const pulsePts = new THREE.Points(pulseGeo, pulseMat);
-  pulsePts.frustumCulled = false;
-  ai.add(pulsePts);
-
-  /* ── post-processing: bloom for the lights only (threshold keeps the sun's face and logo crisp) ── */
+  /* ── post-processing ── */
   const composer = new EffectComposer(renderer);
   composer.addPass(new RenderPass(scene, camera));
-  const bloom = new UnrealBloomPass(new THREE.Vector2(256, 256), 0.62, 0.38, 0.97);
+  const bloom = new UnrealBloomPass(new THREE.Vector2(256, 256), 0.7, 0.45, 0.72);
   composer.addPass(bloom);
   composer.addPass(new OutputPass());
 
-  /* ── sizing, pointer, visibility ── */
   let w = 0;
   let h = 0;
   const resize = () => {
@@ -442,9 +586,9 @@ export function start(el: HTMLElement, opts: CinemaOptions) {
     renderer.setSize(w, h, false);
     composer.setSize(w, h);
     camera.aspect = w / h;
-    // keep the whole composition in frame on narrow / short panels
-    camera.position.z = Math.max(15.5, 17 * Math.max(1, 0.82 / camera.aspect));
+    camera.position.z = Math.max(16, 17 * Math.max(1, 0.86 / camera.aspect));
     camera.updateProjectionMatrix();
+    netUniforms.uScale.value = 0.12 * h * PR;
   };
   const ro = new ResizeObserver(resize);
   ro.observe(el);
@@ -467,85 +611,161 @@ export function start(el: HTMLElement, opts: CinemaOptions) {
   const io = new IntersectionObserver(([e]) => (visible = e.isIntersecting));
   io.observe(el);
 
-  /* ── the story: 3 phases, each layer takes the stage in turn ── */
+  /* ── the story ── */
   const PHASE = opts.phaseSeconds || 4.5;
   let lastPhase = -1;
   const lerp = (a: number, b: number, k: number) => a + (b - a) * k;
-  const focus = { leads: 1, clients: 0.5, ai: 0.5 };
+  const focus = { leads: 1, clients: 0.4, ai: 0.3 };
   const clock = new THREE.Clock();
-  let t = reduce ? 6.5 : 0;
+  let t = 0;
+  let leadAcc = 0;
+  let clientAcc = 0;
+  const coreW = new THREE.Vector3();
 
-  const frame = () => {
-    if (!w || !h) resize();
-    if (!w || !h) return;
-    const dt = Math.min(clock.getDelta(), 0.25);
-    if (!reduce) t += dt;
-    const phase = Math.floor(t / PHASE) % 3;
+  let wall = 0; // captions follow real time even when frames are slow
+  const update = (dt: number, real = dt) => {
+    t += dt;
+    wall += real;
+    const phase = Math.floor(wall / PHASE) % 3;
     if (phase !== lastPhase) {
       lastPhase = phase;
       opts.onPhase?.(phase);
     }
-    const k = 1 - Math.pow(0.0015, dt); // frame-rate independent easing
-    focus.leads = lerp(focus.leads, phase === 0 ? 1.15 : 0.5, k);
-    focus.clients = lerp(focus.clients, phase === 1 ? 1 : 0.4, k);
-    focus.ai = lerp(focus.ai, phase === 2 ? 1 : 0.35, k);
+    const k = 1 - Math.pow(0.002, dt);
+    focus.leads = lerp(focus.leads, phase === 0 ? 1 : 0.25, k);
+    focus.clients = lerp(focus.clients, phase === 1 ? 1 : 0.25, k);
+    focus.ai = lerp(focus.ai, phase === 2 ? 1 : 0.22, k);
 
-    leadMat.uniforms.uTime.value = t;
-    leadMat.uniforms.uI.value = focus.leads;
+    // brain turns slowly; pointer adds a gentle tilt
+    pointer.x = lerp(pointer.x, pointer.tx, k * 0.5);
+    pointer.y = lerp(pointer.y, pointer.ty, k * 0.5);
+    brain.rotation.y = 0.55 + t * (0.1 + focus.ai * 0.05) + pointer.x * 0.25;
+    brain.rotation.x = 0.2 + pointer.y * 0.12;
+    ring.rotation.y = -t * 0.12;
+    ring.rotation.z = 0.12;
+    brain.updateMatrixWorld();
+
+    // spawn
+    leadAcc += dt * (2.5 + 13 * focus.leads);
+    while (leadAcc > 1) (leadAcc -= 1), spawnLead();
+    clientAcc += dt * (1.2 + 9 * focus.clients);
+    while (clientAcc > 1) (clientAcc -= 1), spawnClient();
+
+    // advance sparks + write the point buffer
+    for (let i = 0; i < POOL; i++) {
+      const sp = sparks[i];
+      if (sp.alive) {
+        if (sp.out && sp.node >= 0) {
+          // follow the moving client node
+          const last = sp.pts.length - 1;
+          clientLocal(sp.node, sp.pts[last]);
+          sp.cum[last] = sp.cum[last - 1] + sp.pts[last].distanceTo(sp.pts[last - 1]);
+          sp.len = sp.cum[last];
+        }
+        sp.s += sp.speed * dt;
+        if (sp.s - TRAIL * TSTEP > sp.len) {
+          sp.alive = false;
+        } else if (sp.s > sp.len && !sp.out && sp.node === -1) {
+          sp.node = -2; // arrived at the core
+          if (t - lastRipple > 0.6) (lastRipple = t), ripple();
+        } else if (sp.s > sp.len && sp.out && sp.node >= 0) {
+          clientFlash[sp.node] = 1;
+          sp.node = -3;
+        }
+      }
+      for (let j = 0; j < TRAIL; j++) {
+        const o = i * TRAIL + j;
+        const d = sp.s - j * TSTEP;
+        if (!sp.alive || d < 0 || d > sp.len) {
+          spAlpha[o] = 0;
+          spSize[o] = 0;
+          continue;
+        }
+        at(sp, d, _v);
+        spPos[o * 3] = _v.x;
+        spPos[o * 3 + 1] = _v.y;
+        spPos[o * 3 + 2] = _v.z;
+        const fall = 1 - j / TRAIL;
+        const fadeIn = Math.min(1, d / 1.2);
+        const fadeOut = sp.out ? 1 : Math.min(1, (sp.len - d) / 0.6 + 0.15);
+        spCol[o * 3] = sp.color.r;
+        spCol[o * 3 + 1] = sp.color.g;
+        spCol[o * 3 + 2] = sp.color.b;
+        spAlpha[o] = fall * fall * fadeIn * fadeOut * (j === 0 ? 1 : 0.75);
+        spSize[o] = (j === 0 ? 1.7 : 1.2) * (0.4 + 0.6 * fall);
+      }
+    }
+    spGeo.attributes.position.needsUpdate = true;
+    spGeo.attributes.aColor.needsUpdate = true;
+    spGeo.attributes.aAlpha.needsUpdate = true;
+    spGeo.attributes.aSize.needsUpdate = true;
+    for (let i = 0; i < CN; i++) clientFlash[i] = Math.max(0, clientFlash[i] - dt * 1.6);
+    cGeo.attributes.aFlash.needsUpdate = true;
+    clientMat.uniforms.uI.value = focus.clients;
+    orbitMat.opacity = 0.05 + 0.16 * focus.clients;
+
+    // the network
+    netUniforms.uTime.value = t;
+    netUniforms.uAI.value = 0.18 + 1.0 * focus.ai;
+    netUniforms.uSynA.value = 0.11 + 0.1 * focus.ai;
+
+    // the core floats a little and faces the viewer; the aura circles it
+    core.position.y = Math.sin(t * 0.8) * 0.06;
+    core.rotation.y = pointer.x * 0.1;
+    core.rotation.x = pointer.y * 0.08;
     (auraA.material as THREE.ShaderMaterial).uniforms.uTime.value = t;
     (auraB.material as THREE.ShaderMaterial).uniforms.uTime.value = t;
     auraA.rotation.z = t * 0.12;
     auraB.rotation.z = -t * 0.09;
-
-    clients.rotation.z = t * 0.06;
-    sunUniforms.uTime.value = t;
-    for (const p of planets) {
-      const a = p.phase + t * p.speed;
-      p.mesh.position.set(Math.cos(a) * p.r, Math.sin(a) * p.r, 0);
-      p.mesh.rotation.z = t * p.spin;
-      const moon = p.mesh.getObjectByName("moon");
-      if (moon) moon.position.set(Math.cos(t * 1.6) * 0.42, Math.sin(t * 1.6) * 0.42, 0.05);
+    discUniforms.uTime.value = t;
+    halo.material.opacity = 0.22 + 0.06 * Math.sin(t * 1.4) + 0.08 * focus.ai;
+    for (const r of ripples) {
+      r.age += dt;
+      const s = 1 + r.age * 1.6;
+      r.m.scale.set(s, s, 1);
+      (r.m.material as THREE.MeshBasicMaterial).opacity = Math.max(0, 0.22 * (1 - r.age / 1.0));
     }
-    nodeMat.opacity = 0.35 + 0.6 * focus.clients;
-    stageMat.opacity = 0.4 + 0.6 * focus.clients;
-    ringMat.opacity = 0.1 + 0.3 * focus.clients;
-    const ra = t * 0.55;
-    runner.position.set(Math.cos(ra) * R2, Math.sin(ra) * R2, 0);
-    (runner.material as THREE.SpriteMaterial).opacity = focus.clients;
+    dustPts.rotation.z = t * 0.004;
+    camera.position.x = Math.sin(t * 0.07) * 0.5;
+    camera.position.y = Math.sin(t * 0.05) * 0.25;
+    camera.lookAt(0, 0.3, 0);
+  };
 
-    ai.rotation.y = t * 0.045;
-    ai.rotation.x = Math.sin(t * 0.1) * 0.08;
-    synMat.opacity = 0.035 + 0.09 * focus.ai;
-    neuMat.opacity = 0.15 + 0.45 * focus.ai;
-    pulseMat.uniforms.uTime.value = t;
-    pulseMat.uniforms.uI.value = 0.25 + 0.9 * focus.ai;
-
-    // tile floats and gently follows the pointer; the camera drifts for a cinematic feel
-    pointer.x = lerp(pointer.x, pointer.tx, k * 0.6);
-    pointer.y = lerp(pointer.y, pointer.ty, k * 0.6);
-    tile.position.y = Math.sin(t * 0.8) * 0.08;
-    tile.rotation.y = pointer.x * 0.12;
-    tile.rotation.x = pointer.y * 0.08;
-    world.rotation.y = pointer.x * 0.08 + Math.sin(t * 0.12) * 0.05;
-    world.rotation.x = pointer.y * 0.05;
-    camera.position.x = Math.sin(t * 0.07) * 0.6;
-    camera.lookAt(0, 0.35, 0);
-
+  const render = () => {
+    if (!w || !h) resize();
+    if (!w || !h) return;
+    // keep neurons in front of the logo faint: the core's view-space position
+    camera.updateMatrixWorld();
+    world.updateMatrixWorld();
+    core.getWorldPosition(coreW);
+    netUniforms.uCoreV.value.copy(coreW).applyMatrix4(camera.matrixWorldInverse);
+    discGroup.position.copy(coreW);
+    discGroup.quaternion.copy(core.getWorldQuaternion(new THREE.Quaternion()));
     composer.render();
+    const ac = renderer.autoClear;
+    renderer.autoClear = false;
+    renderer.clearDepth();
+    renderer.render(overlay, camera);
+    renderer.autoClear = ac;
   };
 
   let running = false;
   const loop = () => {
     if (!visible || document.hidden) return;
-    frame();
+    const raw = Math.min(clock.getDelta(), 1);
+    update(Math.min(raw, 0.1), raw);
+    render();
   };
   if (reduce) {
-    // one still frame, redrawn on resize only
-    frame();
+    // one still frame mid-story (leads in flight, network firing), redrawn on resize only
+    for (let i = 0; i < 160; i++) update(1 / 30);
+    focus.ai = 0.7;
+    netUniforms.uAI.value = 0.9;
+    render();
     ro.disconnect();
     const ro2 = new ResizeObserver(() => {
       resize();
-      frame();
+      render();
     });
     ro2.observe(el);
     disposables.push({ dispose: () => ro2.disconnect() });
