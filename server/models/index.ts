@@ -180,6 +180,7 @@ const LeadSchema = new Schema(
     campaign: String,
     medium: String,
     referral: String,
+    profileUrl: String, // public profile / post link (Public Web Prospecting leads without phone or email)
     status: { type: String, default: "New", index: true },
     lostReason: String,
     lostReasonOther: String,
@@ -204,6 +205,7 @@ const LeadSchema = new Schema(
   ts
 );
 LeadSchema.index({ companyId: 1, createdAt: -1 });
+LeadSchema.index({ companyId: 1, profileUrl: 1 }, { partialFilterExpression: { profileUrl: { $type: "string" } } });
 LeadSchema.index({ companyId: 1, status: 1, updatedAt: -1 });
 LeadSchema.index({ name: "text", email: "text", phone: "text", whatsapp: "text", comments: "text" });
 export const Lead = tm<any>("Lead", LeadSchema);
@@ -227,6 +229,8 @@ const ConnectorSchema = new Schema(
     lastRunAt: Date, // pull connectors (Google Search, MCP): last scheduled / manual run
     lastRun: Mixed, // { ok, found, created, duplicates, error }
     pullCursor: Date, // IndiaMART / TradeIndia: end of the last successfully pulled window
+    prospect: Mixed, // Public Web Prospecting: { queue, seededAt, workedAt, today, log, lockUntil }
+    prospectSeen: { type: [String], default: undefined }, // hashes of pages/posts already read (last 3000)
     active: { type: Boolean, default: true },
     stats: { received: { type: Number, default: 0 }, created: { type: Number, default: 0 }, duplicates: { type: Number, default: 0 }, failed: { type: Number, default: 0 }, ignored: { type: Number, default: 0 }, lastAt: Date },
   },
@@ -252,6 +256,11 @@ const IntakeEventSchema = new Schema(
 IntakeEventSchema.index({ connectorId: 1, idemKey: 1 }, { unique: true });
 IntakeEventSchema.index({ createdAt: 1 }, { expireAfterSeconds: 60 * 60 * 24 * 90 });
 export const IntakeEvent = tm<any>("IntakeEvent", IntakeEventSchema);
+
+/** People removed from Leads who must not be collected again by Public Web Prospecting. Only one-way hashes are kept. */
+const SuppressionSchema = new Schema({ hash: { type: String, required: true }, at: { type: Date, default: Date.now } });
+SuppressionSchema.index({ hash: 1 }, { unique: true });
+export const Suppression = tm<any>("Suppression", SuppressionSchema);
 
 /* ───────────────────────── WhatsApp ───────────────────────── */
 

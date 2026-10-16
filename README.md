@@ -358,6 +358,28 @@ discount ≤ amount / ≤ 100 %), company routes are tenant-scoped, Super Admin 
   tool + JSON arguments + items path → records are pulled daily as leads, idempotent by record id. Server URLs are SSRF-guarded (https,
   no private/internal addresses).
 
+### Company › Integration › Public Web Prospecting (keyword lead discovery)
+- **What it does**: every day from 02:00 IST it finds people who *publicly asked* for what the company offers (keywords + optional
+  location) and the company's allocated AI model structures each into a lead: Name, Phone, Email, WhatsApp, profile/post link,
+  Location, Organisation, Role, Requirement, Intent (high/medium/low), evidence quote and source link. Anything missing is stored and
+  shown as **NA** (phone/email/WhatsApp stay empty in the database so duplicate matching still works; screens and exports show NA).
+- **Sources** (each switchable): *Web pages & blogs* via the company's Brave Search API or SerpAPI key; *Feeds & pages* — RSS/Atom feeds
+  and public pages the company lists (local blogs, forums, community boards); *Bluesky* via its official API (handle + App Password).
+  **Not supported by design**: LinkedIn, Facebook, Instagram, X, Threads, Quora, Reddit, WhatsApp/Telegram groups, and marketplace
+  sites (JustDial, IndiaMART, Sulekha, TradeIndia — use their connectors): their terms forbid automated collection or need a login. They
+  are never fetched even if a search returns them, and can't be added as feeds.
+- **Test Now**: a dry run on a small sample showing exactly which leads would be created, plus a log of what was checked and why
+  anything was skipped. Nothing is saved; AI credits are used for the pages read. **Run now** starts a real run.
+- **Schedule**: `/api/cron/prospect` (Vercel cron every 15 minutes) seeds each connector once a day from 02:00 IST, then reads its queue
+  in time-boxed slices (functions are limited to 60 s), fairly across companies. Pages already read are not read again.
+- **Ethics & law** (India DPDP Act s.3(c)(ii) covers personal data a person made public themselves): robots.txt obeyed (user-agent
+  `LeadHiveBot`, info page at `/bot`), pages marked `noai` skipped, no logins/CAPTCHAs/proxies, ≥1 s between requests to a site and
+  ≤5 pages per site per run; only the text around the keywords goes to the AI; the AI keeps only details people published about
+  themselves and every phone/email is re-checked against the source text (nothing invented); no health conditions or other sensitive
+  details are recorded — only the service wanted; these leads never get the automatic WhatsApp welcome (no opt-in); untouched leads are
+  deleted after the retention period; deleting a prospected lead adds salted one-way hashes of its phone/email/profile to a
+  per-company **do-not-collect list** (`Suppression`), so that person is never collected again.
+
 ### Company › AI Agent › Models | Endpoint
 - **Endpoint**: an HTTPS endpoint for external systems — `POST /api/ai/v1/chat` with `Authorization: Bearer ep_live_…` and
   `{ "question", "history"? }` → `{ "answer", "usage" }`. Answer with an existing AI agent, or a new endpoint on an allocated model with

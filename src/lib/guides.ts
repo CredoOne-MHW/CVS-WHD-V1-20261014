@@ -123,6 +123,23 @@ export const GUIDES: Record<string, Guide> = {
       { title: "Ask for a test lead", body: "It appears in Leads (source sulekha). If a field lands in the wrong place, map it in Field mapping using Sulekha’s field name." },
     ],
   },
+  web_prospect: {
+    summary: "Every day at 2:00 AM IST, finds people who publicly asked for what you offer — on web pages and blogs, feeds you choose, and Bluesky — and AI turns each into a lead. Missing details show as NA.",
+    note: "Ethical by design: robots.txt and “noai” opt-outs are obeyed, only details people published about themselves are kept (every phone/email is checked against the page), no health details are stored, and these leads never receive automatic WhatsApp messages — get their consent first.",
+    steps: [
+      { title: "Choose keywords", body: "Write what people would say when they need you — “need home blood test”, “pathology lab near Salt Lake”. Add a location to focus the search." },
+      { title: "Switch on sources", body: "Web pages & blogs need a search API key: Brave Search API (api-dashboard.search.brave.com) or SerpAPI (serpapi.com). Feeds & pages: paste RSS feeds of local blogs, forums or community boards. Bluesky: your handle and an App Password (Settings › Privacy and security › App passwords)." },
+      { title: "Pick the AI model", body: "The model reads each page and fills Name, Phone, Email, WhatsApp, Location, Organisation, Requirement and Intent. It uses that model’s credits — set “Pages / posts per day” to control spend." },
+      { title: "Test Now", body: "Runs on a small sample and shows the leads it would create — nothing is saved. Adjust keywords until the results look right." },
+      { title: "Let it run", body: "From 2:00 AM IST each day it searches, then reads pages in the background every 15 minutes until done. New people appear in Leads with source “web_prospect”, the evidence quote and a link to where they posted. Run now starts a run immediately." },
+      { title: "Follow up the right way", body: "Reply where the person posted or use the contact they published. Untouched leads are deleted after the period you choose. If someone asks to be removed, delete their lead — they go on a do-not-collect list and are never collected again. Site owners can block the reader with “User-agent: LeadHiveBot / Disallow: /” in robots.txt." },
+    ],
+    links: [
+      { label: "Brave Search API", url: "https://brave.com/search/api/" },
+      { label: "SerpAPI", url: "https://serpapi.com/" },
+      { label: "Bluesky app passwords", url: "https://bsky.app/settings/app-passwords" },
+    ],
+  },
   shopify: {
     summary: "Shoppers who abandon checkout, create an account or place an order on your Shopify store become leads instantly — with cart, order value and the ad campaign that brought them.",
     note: "Pick what to capture in Settings. Abandoned checkouts are the warmest leads: the recovery link is on the lead so your team can send it on WhatsApp.",

@@ -148,6 +148,24 @@ async function bootstrap() {
     await meta.updateOne({ _id: "gsearch_off_v2" }, { $set: { at: new Date() } }, { upsert: true });
   }
 
+  // One-time: new Lead index (public profile link) in every company database — background, idempotent
+  if (!(await meta.findOne({ _id: "lead_profile_idx_v1" }))) {
+    import("./tenantdb")
+      .then(async ({ forEachCompanyDb, provisionDb }) => {
+        await forEachCompanyDb(async (c) => (c.db ? provisionDb(c.db) : null), { concurrency: 4 });
+        await meta.updateOne({ _id: "lead_profile_idx_v1" }, { $set: { at: new Date() } }, { upsert: true });
+      })
+      .catch((e) => console.warn("lead index:", e?.message));
+  }
+
+  // One-time: the do-not-collect list (Suppression) needs its unique index in every existing company database
+  if (!(await meta.findOne({ _id: "suppression_idx_v1" }))) {
+    const { tenantModelFor } = await import("../models");
+    const { forEachCompanyDb } = await import("./tenantdb");
+    await forEachCompanyDb(async (c) => (c.db ? tenantModelFor("Suppression", c.db).collection.createIndex({ hash: 1 }, { unique: true }).catch(() => undefined) : null), { includeDeleted: true });
+    await meta.updateOne({ _id: "suppression_idx_v1" }, { $set: { at: new Date() } }, { upsert: true });
+  }
+
   // One-time (v2): move existing logos/banners/knowledge files into <Company Name>/logo · /banner · /brain.
   // Runs in the background so the first request isn't delayed; idempotent if an instance stops midway.
   if (process.env.S3_BUCKET && !(await meta.findOne({ _id: "s3_layout_v2" }))) {

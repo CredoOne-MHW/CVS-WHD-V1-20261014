@@ -103,6 +103,7 @@ export const CONNECTOR_TYPES: ConnectorDef[] = [
   { type: "sulekha", label: "Sulekha", description: "Service enquiries pushed by Sulekha to your own lead URL.", icon: "BadgeCheck", inbound: "push" },
   { type: "shopify", label: "Shopify", description: "Abandoned checkouts, new customers and orders from your Shopify store — instant, signed webhooks.", icon: "ShoppingBag", inbound: "push" },
   { type: "woocommerce", label: "WooCommerce", description: "Orders and new customers from your WordPress shop — signed webhooks + 15-minute safety-net fetch.", icon: "ShoppingCart", inbound: "push_pull" },
+  { type: "web_prospect", label: "Public Web Prospecting", description: "Daily 2 AM: people who publicly asked for what you offer — web & blogs, feeds, Bluesky — structured by AI. Test Now included.", icon: "Radar", inbound: "pull" },
   { type: "mcp", label: "MCP Server (Zapier, Make, HubSpot…)", description: "Pull leads daily from any MCP server tool — CRMs, sheets, forms.", icon: "Cable", inbound: "pull" },
 ];
 

@@ -11,6 +11,7 @@ import { runBillingJobs } from "../lib/billing";
 import { setTenantDb } from "../lib/context";
 import { forEachCompanyDb, inCompanyDb, sweepStragglers } from "../lib/tenantdb";
 import { runPullConnectors } from "../lib/pull";
+import { prospectWorker } from "../lib/prospect";
 import { requestHost, resolveHost, baseDomain, publicBranding, platformBranding } from "../lib/tenant";
 import { LOST_STATUS, WON_STATUS } from "../../shared/constants";
 
@@ -227,7 +228,13 @@ r.get("/cron/pull", h(async (req, res) => {
   res.json(await runPullConnectors("daily"));
 }));
 
-/** Every 15 minutes: IndiaMART Pull API and TradeIndia My Inquiry API. */
+/** Every 15 minutes: Public Web Prospecting — seeds each connector daily from 02:00 IST, then reads its queue in time-boxed slices. */
+r.get("/cron/prospect", h(async (req, res) => {
+  cronAuth(req);
+  res.json(await prospectWorker());
+}));
+
+/** Every 15 minutes: IndiaMART Pull API, TradeIndia My Inquiry API, WooCommerce REST safety net. */
 r.get("/cron/pull-frequent", h(async (req, res) => {
   cronAuth(req);
   res.json(await runPullConnectors("frequent"));

@@ -139,19 +139,19 @@ function LeadsInner() {
                 <tr key={l._id} className="hover:bg-hive-50/40">
                   <td className="td">
                     <button className="text-left font-semibold text-ink-900 hover:text-hive-700" onClick={() => api(`/co/leads/${l._id}`).then((x) => setEdit({ ...x, remark: "" }))}>
-                      {l.name || "—"}
+                      {l.name || "NA"}
                     </button>
                     <p className="text-xs text-ink-400">{fmtDate(l.createdAt)}</p>
                   </td>
-                  <td className="td mono">{l.whatsapp || "—"}</td>
-                  <td className="td mono">{l.phone || "—"}</td>
-                  <td className="td max-w-[180px] truncate">{l.email || "—"}</td>
+                  <td className="td mono">{l.whatsapp || "NA"}</td>
+                  <td className="td mono">{l.phone || "NA"}</td>
+                  <td className="td max-w-[180px] truncate">{l.email || "NA"}</td>
                   <td className="td max-w-[160px] truncate" title={l.address}>
-                    {l.address || "—"}
+                    {l.address || "NA"}
                   </td>
                   <td className="td max-w-[220px]">
                     <p className="line-clamp-2 text-ink-700" title={l.comments}>
-                      {l.comments || "—"}
+                      {l.comments || "NA"}
                     </p>
                   </td>
                   <td className="td">
@@ -292,6 +292,23 @@ function LeadsInner() {
                   </p>
                 )}
               </div>
+              {(edit.profileUrl || edit.source === "web_prospect") && (
+                <div className="rounded-2xl border border-amber-200 bg-amber-50 p-4 text-xs text-amber-900">
+                  <p className="mb-1.5 font-bold uppercase tracking-wider">Public source</p>
+                  {edit.profileUrl && (
+                    <a href={edit.profileUrl} target="_blank" rel="noreferrer noopener" className="block truncate font-semibold text-hive-800 underline">
+                      Profile / post: {edit.profileUrl.replace(/^https?:\/\//, "")}
+                    </a>
+                  )}
+                  {edit.referral && /^https?:/.test(edit.referral) && (
+                    <a href={edit.referral} target="_blank" rel="noreferrer noopener" className="mt-1 block truncate text-hive-800 underline">
+                      Found on: {edit.referral.replace(/^https?:\/\//, "")}
+                    </a>
+                  )}
+                  {edit.customFields?.organisation && <p className="mt-1">Organisation: {edit.customFields.organisation} · Role: {edit.customFields.role || "NA"}</p>}
+                  <p className="mt-2">Collected from a public post — no opt-in. Reply where they posted, and get their consent before sending WhatsApp messages.</p>
+                </div>
+              )}
               <div>
                 <p className="mb-2 text-xs font-bold uppercase tracking-wider text-ink-500">Attribution history</p>
                 <ol className="space-y-2">
@@ -489,13 +506,13 @@ function LeadFields({ v, set }: { v: any; set: (x: any) => void }) {
         </select>
       </Field>
       <Field label="WhatsApp No" hint="10 digits, no +91">
-        <input className="input" inputMode="numeric" maxLength={10} value={v.whatsapp || ""} onChange={(e) => u("whatsapp", e.target.value.replace(/\D/g, ""))} />
+        <input className="input" inputMode="numeric" maxLength={10} placeholder={v._id ? "NA" : undefined} value={v.whatsapp || ""} onChange={(e) => u("whatsapp", e.target.value.replace(/\D/g, ""))} />
       </Field>
       <Field label="Phone No">
-        <input className="input" inputMode="numeric" maxLength={10} value={v.phone || ""} onChange={(e) => u("phone", e.target.value.replace(/\D/g, ""))} />
+        <input className="input" inputMode="numeric" maxLength={10} placeholder={v._id ? "NA" : undefined} value={v.phone || ""} onChange={(e) => u("phone", e.target.value.replace(/\D/g, ""))} />
       </Field>
       <Field label="Email ID">
-        <input className="input" type="email" value={v.email || ""} onChange={(e) => u("email", e.target.value)} />
+        <input className="input" type="email" placeholder={v._id ? "NA" : undefined} value={v.email || ""} onChange={(e) => u("email", e.target.value)} />
       </Field>
       <Field label="Source">
         <input className="input" value={v.source || ""} onChange={(e) => u("source", e.target.value)} />
