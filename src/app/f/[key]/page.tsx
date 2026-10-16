@@ -1,5 +1,6 @@
 "use client";
 import { useEffect, useState } from "react";
+import { LogoDisc } from "@/components/LogoDisc";
 import { useParams, useSearchParams } from "next/navigation";
 import { CheckCircle2 } from "lucide-react";
 import { Btn } from "@/components/ui";
@@ -43,7 +44,7 @@ export default function CampaignForm() {
   return (
     <div className="flex min-h-screen items-start justify-center bg-hive-50 px-4 py-10">
       <div className="card w-full max-w-md p-6 sm:p-8">
-        {info?.logoUrl ? <img src={info.logoUrl} alt="" className="mx-auto h-20 w-20 rounded-full object-contain" /> : <div className="mx-auto h-20 w-20 rounded-full bg-hive-100" />}
+        {info?.logoUrl ? <LogoDisc src={info.logoUrl} name={info.company} size={80} className="mx-auto" /> : <div className="mx-auto h-20 w-20 rounded-full bg-hive-100" />}
         <h1 className="mt-4 text-center text-xl font-extrabold">{info?.company || "…"}</h1>
         <p className="text-center text-sm text-ink-500">{info?.campaign || info?.title}</p>
         {done ? (

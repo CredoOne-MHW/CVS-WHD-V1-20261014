@@ -8,6 +8,7 @@ import { Tabs } from "@/components/Logs";
 import { DnsModal } from "@/components/DnsPanel";
 import { themeVars, THEME_PRESETS } from "@shared/theme";
 import { TemplatePicker } from "@/components/TemplatePicker";
+import { LogoDisc } from "@/components/LogoDisc";
 import { TemplateThumb, templateOf, LOGIN_TEMPLATES, type LoginBrand } from "@/components/LoginTemplates";
 import { LayoutTemplate } from "lucide-react";
 
@@ -405,7 +406,7 @@ export default function Companies() {
                     <div className="grid gap-4 sm:grid-cols-3">
                       {(
                         [
-                          ["logo", "Company logo", "Square PNG/SVG, 512 px"],
+                          ["logo", "Company logo", "PNG/SVG · shown in a circle, fitted whole"],
                           ["banner", "Side banner", "1600×1800 JPG/WebP"],
                           ["favicon", "Favicon", "Optional · 64 px"],
                         ] as [Kind, string, string][]
@@ -413,7 +414,9 @@ export default function Companies() {
                         <div key={kind}>
                           <p className="label">{label}</p>
                           <label className="group relative flex aspect-square cursor-pointer flex-col items-center justify-center overflow-hidden rounded-2xl border-2 border-dashed border-ink-400/25 bg-[#fafbf9] text-center transition hover:border-hive-400 hover:bg-hive-50">
-                            {previews[kind] ? (
+                            {previews[kind] && kind === "logo" ? (
+                              <LogoDisc src={previews[kind]} name={form.name} size="72%" />
+                            ) : previews[kind] ? (
                               <img src={previews[kind]} alt="" className={`h-full w-full ${kind === "banner" ? "object-cover" : "object-contain p-4"}`} />
                             ) : (
                               <>

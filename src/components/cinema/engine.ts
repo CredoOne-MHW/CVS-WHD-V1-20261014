@@ -44,21 +44,6 @@ function radialTexture(inner: string, outer: string, size = 256) {
   return t;
 }
 
-function roundedRect(w: number, h: number, r: number) {
-  const s = new THREE.Shape();
-  const x = -w / 2;
-  const y = -h / 2;
-  s.moveTo(x + r, y);
-  s.lineTo(x + w - r, y);
-  s.quadraticCurveTo(x + w, y, x + w, y + r);
-  s.lineTo(x + w, y + h - r);
-  s.quadraticCurveTo(x + w, y + h, x + w - r, y + h);
-  s.lineTo(x + r, y + h);
-  s.quadraticCurveTo(x, y + h, x, y + h - r);
-  s.lineTo(x, y + r);
-  s.quadraticCurveTo(x, y, x + r, y);
-  return s;
-}
 
 const SOFT_POINT_FRAG = /* glsl */ `
   varying vec3 vColor; varying float vAlpha;
@@ -102,80 +87,88 @@ export function start(el: HTMLElement, opts: CinemaOptions) {
   scene.add(rim);
 
   const world = new THREE.Group();
-  world.position.y = 1.15; // leave room for the headline below
+  world.position.y = 1.55; // leave room for the headline below
   scene.add(world);
   const disposables: { dispose: () => void }[] = [];
   const track = <T extends { dispose: () => void }>(x: T) => (disposables.push(x), x);
 
-  /* ── 0. logo on a floating glass tile ── */
-  const tile = new THREE.Group();
+  /* ── 0. the sun: a glowing sphere with the logo on its face, centre of the system ── */
+  const tile = new THREE.Group(); // the sun group (floats and follows the pointer)
   world.add(tile);
-  const TW = 3.3;
-  const TH = 2.2;
-  const depth = 0.16;
-  const panelGeo = track(new THREE.ExtrudeGeometry(roundedRect(TW, TH, 0.5), { depth, bevelEnabled: true, bevelThickness: 0.06, bevelSize: 0.06, bevelSegments: 6, curveSegments: 24 }));
-  panelGeo.translate(0, 0, -depth / 2);
-  const panelMat = track(new THREE.MeshPhysicalMaterial({ color: brand300.clone().lerp(new THREE.Color(1, 1, 1), 0.35).multiplyScalar(0.85), roughness: 0.38, metalness: 0.05, clearcoat: 0.5, clearcoatRoughness: 0.3 }));
-  tile.add(new THREE.Mesh(panelGeo, panelMat));
-  // the face: a soft white-to-pearl gradient with a hairline inner border, exactly as designed (not tone-mapped)
-  const faceTex = (() => {
-    const c = document.createElement("canvas");
-    c.width = 660;
-    c.height = 440;
-    const g = c.getContext("2d")!;
-    const r = 96;
-    const path = (x: number, y: number, w: number, h: number, rr: number) => {
-      g.beginPath();
-      g.moveTo(x + rr, y);
-      g.arcTo(x + w, y, x + w, y + h, rr);
-      g.arcTo(x + w, y + h, x, y + h, rr);
-      g.arcTo(x, y + h, x, y, rr);
-      g.arcTo(x, y, x + w, y, rr);
-      g.closePath();
-    };
-    const grd = g.createLinearGradient(0, 0, 0, c.height);
-    grd.addColorStop(0, "#f2f3f9");
-    grd.addColorStop(1, "#e2e5f0");
-    path(0, 0, c.width, c.height, r);
-    g.fillStyle = grd;
-    g.fill();
-    path(10, 10, c.width - 20, c.height - 20, r - 10);
-    g.strokeStyle = "rgba(255,255,255,.55)";
-    g.lineWidth = 3;
-    g.stroke();
-    const t = new THREE.CanvasTexture(c);
-    t.colorSpace = THREE.SRGBColorSpace;
-    return track(t);
-  })();
-  const face = new THREE.Mesh(track(new THREE.PlaneGeometry(TW, TH)), track(new THREE.MeshBasicMaterial({ map: faceTex, transparent: true, toneMapped: false })));
-  face.position.z = depth / 2 + 0.062;
-  tile.add(face);
-  const halo = new THREE.Sprite(track(new THREE.SpriteMaterial({ map: track(radialTexture(`rgba(${brand300.r * 255 | 0},${brand300.g * 255 | 0},${brand300.b * 255 | 0},0.85)`, "rgba(0,0,0,0)")), blending: THREE.AdditiveBlending, depthWrite: false, transparent: true, toneMapped: false })));
-  halo.scale.set(8, 6, 1);
-  halo.position.z = -0.8;
-  halo.material.opacity = 0.55;
+  const SUN_R = 1.55;
+  const TW = SUN_R * 1.8; // lead streams land around the sun's rim
+  const TH = SUN_R * 1.7;
+  const sunUniforms = {
+    uLogo: { value: null as THREE.Texture | null },
+    uHasLogo: { value: 0 },
+    uLogoSize: { value: new THREE.Vector2(0.6, 0.35) },
+    uCore: { value: new THREE.Color(0.86, 0.87, 0.91) },
+    uEdge: { value: brand300.clone().lerp(new THREE.Color(1, 1, 1), 0.15).multiplyScalar(0.8) },
+    uRim: { value: brand300.clone().lerp(accent, 0.25) },
+    uTime: { value: 0 },
+  };
+  const sunMat = track(
+    new THREE.ShaderMaterial({
+      uniforms: sunUniforms,
+      vertexShader: /* glsl */ `
+        varying vec3 vN; varying vec3 vPos;
+        void main(){ vN = normalize(normalMatrix * normal); vec4 mv = modelViewMatrix * vec4(position, 1.0); vPos = mv.xyz; gl_Position = projectionMatrix * mv; }`,
+      fragmentShader: /* glsl */ `
+        uniform sampler2D uLogo; uniform float uHasLogo; uniform vec2 uLogoSize;
+        uniform vec3 uCore; uniform vec3 uEdge; uniform vec3 uRim; uniform float uTime;
+        varying vec3 vN; varying vec3 vPos;
+        void main(){
+          vec3 n = normalize(vN);
+          vec3 v = normalize(-vPos);
+          float ndv = clamp(dot(n, v), 0.0, 1.0);
+          // pearl body: bright core, brand-tinted limb, soft key light from the top-left
+          vec3 col = mix(uEdge, uCore, smoothstep(0.0, 0.55, ndv));
+          float l = clamp(dot(n, normalize(vec3(-0.45, 0.6, 0.7))), 0.0, 1.0);
+          col *= 0.84 + 0.18 * l;
+          // slow shimmer near the limb (the sun's surface)
+          float sh = sin(n.x * 9.0 + uTime * 0.7) * sin(n.y * 7.0 - uTime * 0.5);
+          col += uEdge * 0.05 * sh * (1.0 - ndv);
+          // the logo, printed on the face: always faces the viewer and follows the curvature (never cropped)
+          vec2 uv = n.xy / uLogoSize * 0.5 + 0.5;
+          if (uHasLogo > 0.5 && n.z > 0.0 && uv.x > 0.0 && uv.x < 1.0 && uv.y > 0.0 && uv.y < 1.0) {
+            vec4 lg = texture2D(uLogo, uv);
+            col = mix(col, lg.rgb, lg.a);
+          }
+          // corona at the rim (this part glows)
+          float fres = pow(1.0 - ndv, 4.0);
+          col += uRim * fres * 1.5;
+          gl_FragColor = vec4(col, 1.0);
+        }`,
+    })
+  );
+  const sun = new THREE.Mesh(track(new THREE.SphereGeometry(SUN_R, 96, 96)), sunMat);
+  tile.add(sun);
+  const halo = new THREE.Sprite(track(new THREE.SpriteMaterial({ map: track(radialTexture(`rgba(${brand300.r * 255 | 0},${brand300.g * 255 | 0},${brand300.b * 255 | 0},0.9)`, "rgba(0,0,0,0)")), blending: THREE.AdditiveBlending, depthWrite: false, transparent: true, toneMapped: false })));
+  halo.scale.set(SUN_R * 4.6, SUN_R * 4.6, 1);
+  halo.position.z = -0.6;
+  halo.material.opacity = 0.42;
   tile.add(halo);
-  const logoMat = track(new THREE.MeshBasicMaterial({ transparent: true, toneMapped: false }));
-  const logoMesh = new THREE.Mesh(track(new THREE.PlaneGeometry(1, 1)), logoMat);
-  logoMesh.position.z = depth / 2 + 0.07;
-  tile.add(logoMesh);
-  /** contain-fit the logo inside the tile's safe area (never cropped, any aspect ratio) */
+  const corona = new THREE.Sprite(track(new THREE.SpriteMaterial({ map: track(radialTexture(`rgba(${accent.r * 255 | 0},${accent.g * 255 | 0},${accent.b * 255 | 0},0.55)`, "rgba(0,0,0,0)")), blending: THREE.AdditiveBlending, depthWrite: false, transparent: true, toneMapped: false })));
+  corona.scale.set(SUN_R * 3.0, SUN_R * 3.0, 1);
+  corona.material.opacity = 0.35;
+  corona.position.z = -0.4;
+  tile.add(corona);
+  // the sun lights the planets
+  const sunLight = new THREE.PointLight(0xfff4e6, 45, 0, 2);
+  tile.add(sunLight);
+
+  /** fit the logo inside a circle on the sun's face (any aspect ratio; its corners touch the circle at most) */
   const fitLogo = (aspect: number) => {
-    const maxW = TW * 0.78;
-    const maxH = TH * 0.7;
-    let w = maxW;
-    let h = w / aspect;
-    if (h > maxH) {
-      h = maxH;
-      w = h * aspect;
-    }
-    logoMesh.scale.set(w, h, 1);
+    const rho = 0.68;
+    const a = Math.max(0.1, aspect);
+    const d = Math.sqrt(1 + a * a);
+    sunUniforms.uLogoSize.value.set((rho * a) / d, rho / d);
   };
   const setTexture = (tex: THREE.Texture, aspect: number) => {
     tex.colorSpace = THREE.SRGBColorSpace;
     tex.anisotropy = renderer.capabilities.getMaxAnisotropy();
-    logoMat.map = track(tex);
-    logoMat.needsUpdate = true;
+    sunUniforms.uLogo.value = track(tex);
+    sunUniforms.uHasLogo.value = 1;
     fitLogo(aspect);
   };
   const initialsTexture = () => {
@@ -199,7 +192,7 @@ export function start(el: HTMLElement, opts: CinemaOptions) {
     );
   } else initialsTexture();
 
-  /* ── aura: two thin rings of light with a travelling comet, circling the tile ── */
+  /* ── aura: two thin rings of light with a travelling comet, circling the sun ── */
   const auraMat = (speed: number, color: THREE.Color) =>
     track(
       new THREE.ShaderMaterial({
@@ -214,11 +207,46 @@ export function start(el: HTMLElement, opts: CinemaOptions) {
           gl_FragColor = vec4(uColor * (0.6 + head * 1.6), a); }`,
       })
     );
-  const auraA = new THREE.Mesh(track(new THREE.TorusGeometry(2.45, 0.018, 8, 360)), auraMat(0.11, new THREE.Color(1, 1, 1).lerp(brand300, 0.35)));
+  const auraA = new THREE.Mesh(track(new THREE.TorusGeometry(SUN_R * 1.2, 0.016, 8, 360)), auraMat(0.11, new THREE.Color(1, 1, 1).lerp(brand300, 0.35)));
   auraA.rotation.set(1.18, 0.12, 0);
-  const auraB = new THREE.Mesh(track(new THREE.TorusGeometry(2.75, 0.012, 8, 360)), auraMat(-0.075, accent.clone()));
+  const auraB = new THREE.Mesh(track(new THREE.TorusGeometry(SUN_R * 1.33, 0.011, 8, 360)), auraMat(-0.075, accent.clone()));
   auraB.rotation.set(1.42, -0.42, 0.3);
   tile.add(auraA, auraB);
+
+  /* ── the planets: tilted orbits around the sun (lit by it) ── */
+  const system = new THREE.Group();
+  system.rotation.set(1.22, 0, -0.18); // same plane as the client belt
+  world.add(system);
+  const orbitLine = (r: number, opacity: number) => {
+    const pts: THREE.Vector3[] = [];
+    for (let i = 0; i <= 200; i++) pts.push(new THREE.Vector3(Math.cos((i / 200) * Math.PI * 2) * r, Math.sin((i / 200) * Math.PI * 2) * r, 0));
+    const line = new THREE.Line(track(new THREE.BufferGeometry().setFromPoints(pts)), track(new THREE.LineBasicMaterial({ color: brand300, transparent: true, opacity, toneMapped: false })));
+    system.add(line);
+  };
+  type Planet = { mesh: THREE.Object3D; r: number; speed: number; phase: number; spin: number };
+  const planets: Planet[] = [];
+  const planet = (r: number, size: number, color: THREE.Color, speed: number, phase: number, extras?: (g: THREE.Group) => void) => {
+    orbitLine(r, 0.12);
+    const g = new THREE.Group();
+    const m = new THREE.Mesh(track(new THREE.SphereGeometry(size, 40, 40)), track(new THREE.MeshStandardMaterial({ color, roughness: 0.55, metalness: 0.15, emissive: color.clone().multiplyScalar(0.12) })));
+    g.add(m);
+    extras?.(g);
+    system.add(g);
+    planets.push({ mesh: g, r, speed, phase, spin: 0.4 + Math.random() * 0.6 });
+  };
+  planet(SUN_R * 1.65, 0.15, brand300.clone(), 0.42, 0.6);
+  planet(SUN_R * 2.15, 0.21, accent.clone(), 0.27, 2.4, (g) => {
+    const moon = new THREE.Mesh(track(new THREE.SphereGeometry(0.06, 20, 20)), track(new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.7 })));
+    moon.position.set(0.42, 0, 0.1);
+    moon.name = "moon";
+    g.add(moon);
+  });
+  planet(SUN_R * 3.05, 0.26, brand500.clone().lerp(new THREE.Color(1, 1, 1), 0.2), 0.15, 4.2, (g) => {
+    const ring = new THREE.Mesh(track(new THREE.RingGeometry(0.42, 0.62, 64)), track(new THREE.MeshBasicMaterial({ color: accent.clone().lerp(new THREE.Color(1, 1, 1), 0.4), transparent: true, opacity: 0.55, side: THREE.DoubleSide, toneMapped: false })));
+    ring.rotation.set(0.35, 0.5, 0);
+    g.add(ring);
+  });
+  planet(SUN_R * 3.6, 0.12, new THREE.Color(1, 1, 1).lerp(brand300, 0.6), 0.1, 1.1);
 
   /* ── 01 leads: particle streams flowing from sources into the logo ── */
   const SOURCES = 8;
@@ -288,7 +316,7 @@ export function start(el: HTMLElement, opts: CinemaOptions) {
   clients.rotation.set(1.22, 0, -0.18);
   world.add(clients);
   const CN = 40;
-  const R2 = 4.3;
+  const R2 = SUN_R * 2.5;
   const nodeGeo = track(new THREE.SphereGeometry(0.032, 10, 10));
   const nodeMat = track(new THREE.MeshBasicMaterial({ color: new THREE.Color(1, 1, 1).lerp(brand300, 0.45).multiplyScalar(1.15), toneMapped: false, transparent: true, opacity: 0.9 }));
   const nodes = new THREE.InstancedMesh(nodeGeo, nodeMat, CN);
@@ -397,7 +425,7 @@ export function start(el: HTMLElement, opts: CinemaOptions) {
   pulsePts.frustumCulled = false;
   ai.add(pulsePts);
 
-  /* ── post-processing: bloom for the lights only (threshold keeps the logo tile crisp) ── */
+  /* ── post-processing: bloom for the lights only (threshold keeps the sun's face and logo crisp) ── */
   const composer = new EffectComposer(renderer);
   composer.addPass(new RenderPass(scene, camera));
   const bloom = new UnrealBloomPass(new THREE.Vector2(256, 256), 0.62, 0.38, 0.97);
@@ -470,6 +498,14 @@ export function start(el: HTMLElement, opts: CinemaOptions) {
     auraB.rotation.z = -t * 0.09;
 
     clients.rotation.z = t * 0.06;
+    sunUniforms.uTime.value = t;
+    for (const p of planets) {
+      const a = p.phase + t * p.speed;
+      p.mesh.position.set(Math.cos(a) * p.r, Math.sin(a) * p.r, 0);
+      p.mesh.rotation.z = t * p.spin;
+      const moon = p.mesh.getObjectByName("moon");
+      if (moon) moon.position.set(Math.cos(t * 1.6) * 0.42, Math.sin(t * 1.6) * 0.42, 0.05);
+    }
     nodeMat.opacity = 0.35 + 0.6 * focus.clients;
     stageMat.opacity = 0.4 + 0.6 * focus.clients;
     ringMat.opacity = 0.1 + 0.3 * focus.clients;
@@ -488,8 +524,8 @@ export function start(el: HTMLElement, opts: CinemaOptions) {
     pointer.x = lerp(pointer.x, pointer.tx, k * 0.6);
     pointer.y = lerp(pointer.y, pointer.ty, k * 0.6);
     tile.position.y = Math.sin(t * 0.8) * 0.08;
-    tile.rotation.y = pointer.x * 0.22 + Math.sin(t * 0.35) * 0.06;
-    tile.rotation.x = pointer.y * 0.16;
+    tile.rotation.y = pointer.x * 0.12;
+    tile.rotation.x = pointer.y * 0.08;
     world.rotation.y = pointer.x * 0.08 + Math.sin(t * 0.12) * 0.05;
     world.rotation.x = pointer.y * 0.05;
     camera.position.x = Math.sin(t * 0.07) * 0.6;

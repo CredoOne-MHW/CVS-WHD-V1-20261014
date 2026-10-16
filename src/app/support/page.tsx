@@ -1,5 +1,6 @@
 "use client";
 import { useCallback, useEffect, useState } from "react";
+import { LogoDisc } from "@/components/LogoDisc";
 import { LifeBuoy, LogOut, RefreshCw, Send, CheckCircle2, Clock3, ChevronDown, AlertTriangle, Phone, Mail, Inbox } from "lucide-react";
 import { applyTheme, setFavicon } from "@shared/theme";
 import { Spinner } from "@/components/ui";
@@ -91,7 +92,7 @@ export default function SupportPortal() {
         <div className="relative mx-auto flex max-w-2xl items-center justify-between gap-3">
           <div className="flex min-w-0 items-center gap-3">
             <span className="grid h-11 w-11 shrink-0 place-items-center overflow-hidden rounded-full bg-white p-0.5 shadow-lg">
-              {info.logoUrl ? <img src={info.logoUrl} alt="" className="h-full w-full rounded-full object-contain" /> : <LifeBuoy className="h-6 w-6 text-hive-700" />}
+              {info.logoUrl ? <LogoDisc src={info.logoUrl} name={info.shortName} size={42} shadow={false} /> : <LifeBuoy className="h-6 w-6 text-hive-700" />}
             </span>
             <div className="min-w-0">
               <p className="truncate text-[17px] font-extrabold leading-tight">{info.shortName}</p>
