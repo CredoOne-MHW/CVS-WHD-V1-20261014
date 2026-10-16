@@ -8,7 +8,7 @@ import { rateLimit } from "../lib/cache";
 import { logActivity } from "../middleware/activity";
 import { h, parse, HttpError } from "../lib/http";
 import { COMPANY_MODULES, SA_MODULES } from "../../shared/constants";
-import { requestHost, resolveHost, publicBranding, platformBranding, tenantUrls } from "../lib/tenant";
+import { requestHost, resolveHost, publicBranding, platformBranding, loadPlatformBranding, tenantUrls } from "../lib/tenant";
 
 const r = Router();
 const SA_BACKUP = "lms_sa_token";
@@ -53,6 +53,7 @@ r.post("/logout", (req, res) => {
 r.get("/me", requireAuth, h(async (req, res) => {
   const a = req.auth!;
   const nav = (a.scope === "super" ? SA_MODULES : COMPANY_MODULES).filter((m) => a.perms[m.key]?.read);
+  if (a.scope === "super") await loadPlatformBranding();
   let branding: any = platformBranding();
   if (a.scope === "company") {
     const c = await Company.findById(a.companyId).lean<any>();

@@ -5,7 +5,8 @@ import { Plus, Upload, Download, Search, BellRing, Pencil, Trash2, FileSpreadshe
 import { api, qs, fmtDate } from "@/lib/api";
 import { PageHeader, Btn, Modal, Field, Badge, Empty, Pager, Spinner, useToast } from "@/components/ui";
 import { usePerm } from "@/components/Shell";
-import { LEAD_STATUSES, LOST_REASONS, LOST_STATUS } from "@shared/constants";
+import { LEAD_STATUSES, LOST_REASONS, LOST_STATUS, WON_STATUS } from "@shared/constants";
+import { BusinessFields, ServiceField, bizFrom, bizPayload, bizError } from "@/components/BusinessFields";
 
 const STATUS_COLOR: Record<string, any> = {
   New: "blue",
@@ -20,7 +21,9 @@ const STATUS_COLOR: Record<string, any> = {
   "Lost / Not Converted": "red",
 };
 
-const BLANK = { name: "", whatsapp: "", phone: "", email: "", address: "", comments: "", source: "manual", campaign: "", status: "New", consentWhatsapp: true };
+const BLANK = { name: "", whatsapp: "", phone: "", email: "", address: "", comments: "", source: "manual", campaign: "", status: "New", consentWhatsapp: true, services: [] as string[], biz: bizFrom() };
+/** Lead from the API → editable form state (business details are edited as a separate block). */
+const toEdit = (x: any) => ({ ...x, remark: "", services: x.services || [], biz: bizFrom(x.business) });
 
 function LeadsInner() {
   const sp = useSearchParams();
@@ -37,6 +40,8 @@ function LeadsInner() {
   const [busy, setBusy] = useState(false);
   const perm = usePerm("leads");
   const toast = useToast();
+  /** "Converted / Service Initiated" moves a lead to the Client module — say so, with a shortcut. */
+  const movedToast = (code?: string) => code && toast("ok", `Moved to Clients · Client ID ${code}`);
 
   const load = useCallback(() => api(`/co/leads${qs(f)}`).then(setData), [f]);
   useEffect(() => {
@@ -50,8 +55,9 @@ function LeadsInner() {
   async function changeStatus(lead: any, status: string) {
     if (status === LOST_STATUS) return setLost({ lead, reason: "", other: "" });
     try {
-      await api(`/co/leads/${lead._id}`, { method: "PUT", body: { status } });
-      toast("ok", `Status → ${status}`);
+      const r = await api(`/co/leads/${lead._id}`, { method: "PUT", body: { status } });
+      if (r.movedToClients) movedToast(r.clientCode);
+      else toast("ok", `Status → ${status}`);
       load();
     } catch (e: any) {
       toast("err", e.message);
@@ -138,7 +144,7 @@ function LeadsInner() {
               {data?.items.map((l: any) => (
                 <tr key={l._id} className="hover:bg-hive-50/40">
                   <td className="td">
-                    <button className="text-left font-semibold text-ink-900 hover:text-hive-700" onClick={() => api(`/co/leads/${l._id}`).then((x) => setEdit({ ...x, remark: "" }))}>
+                    <button className="text-left font-semibold text-ink-900 hover:text-hive-700" onClick={() => api(`/co/leads/${l._id}`).then((x) => setEdit(toEdit(x)))}>
                       {l.name || "NA"}
                     </button>
                     <p className="text-xs text-ink-400">{fmtDate(l.createdAt)}</p>
@@ -180,7 +186,7 @@ function LeadsInner() {
                         </button>
                       )}
                       {perm.update && (
-                        <button className="btn-ghost" title="Edit" aria-label="Edit" onClick={() => api(`/co/leads/${l._id}`).then((x) => setEdit({ ...x, remark: "" }))}>
+                        <button className="btn-ghost" title="Edit" aria-label="Edit" onClick={() => api(`/co/leads/${l._id}`).then((x) => setEdit(toEdit(x)))}>
                           <Pencil className="h-4 w-4" />
                         </button>
                       )}
@@ -219,8 +225,12 @@ function LeadsInner() {
               loading={busy}
               onClick={() =>
                 run(async () => {
-                  const r = await api("/co/leads", { body: add });
-                  toast("ok", r.created ? "Lead added" : "Existing lead found — details merged");
+                  const err = bizError(add.biz);
+                  if (err) throw new Error(err);
+                  const { biz, ...rest } = add;
+                  const r = await api("/co/leads", { body: { ...rest, business: bizPayload(biz) } });
+                  if (r.client) movedToast(r.client.clientCode);
+                  else toast("ok", r.created ? "Lead added" : "Existing lead found — details merged");
                   setAdd(null);
                   load();
                 })
@@ -251,9 +261,12 @@ function LeadsInner() {
                 onClick={() =>
                   run(async () => {
                     if (edit.status === LOST_STATUS && !edit.lostReason) throw new Error("Select a lost reason");
-                    const { _id, name, whatsapp, phone, email, address, comments, source, campaign, status, remark, lostReason, lostReasonOther, nextFollowUpAt } = edit;
-                    await api(`/co/leads/${_id}`, { method: "PUT", body: { name, whatsapp, phone, email, address, comments, source, campaign, status, remark: remark || undefined, lostReason: status === LOST_STATUS ? lostReason : undefined, lostReasonOther, nextFollowUpAt: nextFollowUpAt || null } });
-                    toast("ok", "Lead updated");
+                    const err = bizError(edit.biz);
+                    if (err) throw new Error(err);
+                    const { _id, name, whatsapp, phone, email, address, comments, source, campaign, status, remark, lostReason, lostReasonOther, nextFollowUpAt, services, biz } = edit;
+                    const r = await api(`/co/leads/${_id}`, { method: "PUT", body: { name, whatsapp, phone, email, address, comments, source, campaign, status, remark: remark || undefined, lostReason: status === LOST_STATUS ? lostReason : undefined, lostReasonOther, nextFollowUpAt: nextFollowUpAt || null, services, business: bizPayload(biz) } });
+                    if (r.movedToClients) movedToast(r.clientCode);
+                    else toast("ok", "Lead updated");
                     setEdit(null);
                     load();
                   })
@@ -526,6 +539,9 @@ function LeadFields({ v, set }: { v: any; set: (x: any) => void }) {
       <Field label="Comments" className="sm:col-span-2">
         <textarea className="input min-h-[80px]" value={v.comments || ""} onChange={(e) => u("comments", e.target.value)} />
       </Field>
+      <ServiceField services={v.services || []} onChange={(services) => u("services", services)} />
+      {v.status === WON_STATUS && !v.isClient && <p className="rounded-xl bg-hive-50 px-3 py-2 text-xs font-semibold text-hive-800 sm:col-span-2">On save, this lead moves to the Client module and gets a Client ID.</p>}
+      {v.biz && <BusinessFields v={v.biz} set={(biz) => u("biz", biz)} />}
       {"consentWhatsapp" in v && (
         <label className="flex items-center gap-2 text-sm text-ink-700 sm:col-span-2">
           <input type="checkbox" className="h-4 w-4 accent-hive-700" checked={!!v.consentWhatsapp} onChange={(e) => u("consentWhatsapp", e.target.checked)} />

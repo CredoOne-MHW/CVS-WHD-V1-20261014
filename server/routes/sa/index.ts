@@ -1,7 +1,7 @@
 import { Router } from "express";
 import bcrypt from "bcryptjs";
 import { z } from "zod";
-import { Company, User, Plan, Lead, WaLog, AiAgent, AiAllocation, AiUsage, AiProvider, Connector } from "../../models";
+import { Company, User, Plan, Lead, WaLog, AiAgent, AiAllocation, AiUsage, AiProvider, Connector, PlatformSetting } from "../../models";
 import { cached, invalidate } from "../../lib/cache";
 import { can, requireScope, invalidateAuth } from "../../middleware/auth";
 import { h, parse, notFound, badRequest, paging, escapeRegex, HttpError } from "../../lib/http";
@@ -12,12 +12,12 @@ import { renewAllocations } from "../../lib/billing";
 import { dbNameFromCode, validateDbName, provisionDb, inCompanyDb, forEachCompanyDb, migrateAll, dbOf } from "../../lib/tenantdb";
 import subscriptionRoutes from "./subscriptions";
 import { putObject, deleteObject, folderFor, companyFolder, relayoutCompany, relayoutAll } from "../../lib/s3";
-import { baseDomain, baseSource, configuredBases, tenantUrls, clearTenantCache, publicBranding, platformBranding } from "../../lib/tenant";
-import { vercelSync, vercelVerify, vercelRemove, vercelConfigured, recordsFor, checkRecords, platformRecords, newVerifyToken, cnameTargetFor, VERIFY_LABEL, FALLBACK_A, FALLBACK_CNAME } from "../../lib/domains";
+import { baseDomain, baseSource, configuredBases, tenantUrls, clearTenantCache, publicBranding, platformBranding, loadPlatformBranding, setPlatformBranding } from "../../lib/tenant";
+import { vercelSync, vercelVerify, vercelRemove, vercelConfigured, splitDomain, recordsFor, checkRecords, platformRecords, newVerifyToken, cnameTargetFor, VERIFY_LABEL, FALLBACK_A, FALLBACK_CNAME } from "../../lib/domains";
 import { fireEvent } from "../../lib/whatsapp";
 import { webhookRoutes, waLogRoutes, activityRoutes, roleRoutes } from "../shared";
 import { reportRoutes } from "../reports";
-import { COMPANY_MODULES, PLAN_TIERS, ACTIONS, type PermMap } from "../../../shared/constants";
+import { COMPANY_MODULES, PLAN_TIERS, ACTIONS, type PermMap, LOGIN_TEMPLATE_KEYS } from "../../../shared/constants";
 
 const r = Router();
 r.use(requireScope("super"));
@@ -106,6 +106,7 @@ const companyBody = z.object({
       themeColor: z.string().regex(/^#[0-9a-fA-F]{6}$/, "Theme color must be a hex like #2f5c24").optional(),
       accentColor: z.string().regex(/^#[0-9a-fA-F]{6}$/).optional(),
       loginLayout: z.enum(["split", "banner", "centered"]).optional(),
+      loginTemplate: z.enum(LOGIN_TEMPLATE_KEYS).optional(),
       supportEmail: z.string().email().optional().or(z.literal("")),
       supportPhone: z.string().max(20).optional(),
     })
@@ -138,6 +139,18 @@ async function syncDomain(companyId: any, domain?: string | null) {
   } catch (e: any) {
     await Company.updateOne({ _id: companyId }, { $set: { "domain.lastError": e?.message } });
   }
+}
+
+/** support.<address> for every address the company has (platform sub-domain and own domain). */
+function supportHosts(c: any) {
+  const base = baseDomain();
+  return [c.slug && base ? `support.${c.slug}.${base}` : null, c.customDomain ? `support.${c.customDomain}` : null].filter(Boolean) as string[];
+}
+/** Registers the support portal addresses on Vercel (best effort — the DNS record is still needed). */
+async function syncSupport(c: any, old?: any) {
+  if (!vercelConfigured()) return;
+  for (const d of old ? supportHosts(old).filter((x) => !supportHosts(c).includes(x)) : []) await vercelRemove(d).catch(() => undefined);
+  for (const d of supportHosts(c)) await vercelSync(d).catch(() => undefined);
 }
 
 /** S3 base folder = the company name as typed ("WELLNESSHIVE DIAGNOSTICA LLP"), unique across companies. */
@@ -213,6 +226,7 @@ r.post("/companies", can("companies", "create"), h(async (req, res) => {
     throw e;
   }
   await syncDomain(company._id, customDomain);
+  await syncSupport(company);
   clearTenantCache();
   res.locals.item = company.name;
   const urls = tenantUrls(company);
@@ -226,6 +240,7 @@ r.put("/companies/:id", can("companies", "update"), h(async (req, res) => {
   if (!c) throw notFound();
   const { loginEmail, password, branding, ...rest } = b;
   const oldDomain = c.customDomain;
+  const before = { slug: c.slug, customDomain: c.customDomain };
   const newDomain = rest.customDomain === undefined ? oldDomain : rest.customDomain || undefined;
   await assertDomainFree(String(c._id), rest.slug, newDomain || undefined);
   // the database name is fixed at creation; changing the code later only renames the label
@@ -237,6 +252,7 @@ r.put("/companies/:id", can("companies", "update"), h(async (req, res) => {
     if (oldDomain) await vercelRemove(oldDomain);
     await syncDomain(c._id, newDomain);
   }
+  if (newDomain !== before.customDomain || c.slug !== before.slug) await syncSupport(c, before);
   clearTenantCache();
   const owner = await User.findOne({ companyId: c._id, isOwner: true });
   if (owner) {
@@ -584,6 +600,28 @@ r.delete("/companies/:id/brand-asset/:kind", can("companies", "update"), h(async
   res.json({ ok: true });
 }));
 
+/* ───────────── Platform branding (Super Admin login page) ───────────── */
+const platformBrandingBody = z.object({
+  loginTemplate: z.enum(LOGIN_TEMPLATE_KEYS),
+  themeColor: z.string().regex(/^#[0-9a-fA-F]{6}$/, "Theme color must be a hex like #2b2d72"),
+  accentColor: z.string().regex(/^#[0-9a-fA-F]{6}$/, "Accent color must be a hex like #6c63ff"),
+  tagline: z.string().trim().max(80).optional().or(z.literal("")),
+  headline: z.string().trim().max(140).optional().or(z.literal("")),
+  subheadline: z.string().trim().max(400).optional().or(z.literal("")),
+  footerText: z.string().trim().max(160).optional().or(z.literal("")),
+});
+r.get("/platform-branding", can("branding", "read"), h(async (_req, res) => {
+  await loadPlatformBranding(true);
+  res.json(platformBranding());
+}));
+r.put("/platform-branding", can("branding", "update"), h(async (req, res) => {
+  const b = parse(platformBrandingBody, req.body);
+  await PlatformSetting.updateOne({ _id: "platform_branding" }, { $set: { value: b } }, { upsert: true });
+  setPlatformBranding(b);
+  res.locals.item = `Platform login · ${b.loginTemplate}`;
+  res.json(platformBranding());
+}));
+
 /* ───────────── Domain & DNS for one company ───────────── */
 async function domainReport(c: any, live: boolean) {
   if (c.customDomain && !c.domain?.verifyToken) {
@@ -606,6 +644,24 @@ async function domainReport(c: any, live: boolean) {
     ownershipVerified: live && txt ? txt.status === "ok" : !!c.domain?.ownershipVerified,
     vercel: { configured: vercelConfigured(), added: !!c.domain?.vercelAdded, verified: c.domain?.verified, configuredDns: c.domain?.configured, lastError: c.domain?.lastError, lastCheckedAt: c.domain?.lastCheckedAt },
     ready: !!c.customDomain && required.length > 0 && required.every((x) => x.status === "ok") && (vercelConfigured() ? c.domain?.verified !== false : true),
+    support: await supportReport(c, live),
+  };
+}
+
+/** Client support portal addresses: one CNAME each (support.<address> → Vercel), plus the always-working /support path. */
+async function supportReport(c: any, live: boolean) {
+  const urls = tenantUrls(c);
+  const records = supportHosts(c).map((fqdn) => {
+    const parentIsCustom = !!c.customDomain && fqdn === `support.${c.customDomain}`;
+    const zone = parentIsCustom ? splitDomain(c.customDomain).zone : splitDomain(baseDomain()).zone;
+    const host = zone && fqdn.endsWith(`.${zone}`) ? fqdn.slice(0, -(zone.length + 1)) : fqdn;
+    return { type: "CNAME" as const, host, fqdn, value: FALLBACK_CNAME, ttl: "Auto / 3600", purpose: parentIsCustom ? "Client support portal on the company's own domain" : "Client support portal on the platform address", required: false, zone };
+  });
+  const checked = live ? await checkRecords(records as any) : records;
+  return {
+    urls: supportHosts(c).map((h) => `https://${h}`),
+    fallbackUrl: urls.customUrl ? `${urls.customUrl}/support` : urls.platformUrl ? `${urls.platformUrl}/support` : undefined,
+    records: checked,
   };
 }
 
@@ -621,6 +677,7 @@ r.post("/companies/:id/domain/check", can("companies", "update"), h(async (req, 
   if (!c) throw notFound();
   if (c.customDomain && vercelConfigured()) {
     await syncDomain(c._id, c.customDomain);
+    await syncSupport(c);
     const v = await vercelVerify(c.customDomain);
     if (v?.ok) await Company.updateOne({ _id: c._id }, { $set: { "domain.verified": v.verified } });
     c = await Company.findById(c._id).lean<any>();

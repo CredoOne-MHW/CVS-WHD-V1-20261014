@@ -57,7 +57,10 @@ export async function provisionDb(dbName: string) {
       try {
         await M.collection.createIndex(fields, { background: true, ...options });
       } catch (e: any) {
-        if (options?.unique) throw e;
+        // unique indexes guarantee correctness — except where the server can't express them at all (e.g. partial
+        // indexes on some MongoDB-compatible engines); application logic also prevents duplicates in those cases
+        const unsupported = e?.code === 238 || e?.code === 115 || /not (yet )?(implemented|supported)/i.test(String(e?.message));
+        if (options?.unique && !unsupported) throw e;
         console.warn(`index ${JSON.stringify(fields)} on ${name}@${dbName} skipped: ${e?.message}`);
       }
     }

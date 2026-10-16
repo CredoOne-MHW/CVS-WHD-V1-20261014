@@ -386,3 +386,69 @@ discount ≤ amount / ≤ 100 %), company routes are tenant-scoped, Super Admin 
   instructions. Data access: *Knowledge only*, *Knowledge + company totals* (default — aggregates only, never names/phones/emails), or
   *Full read-only data* (internal systems). Keys are stored as SHA-256 and shown once (rotate anytime); optional website allow-list
   (CORS, enforced server-side); per-endpoint rate limit; calls and credits counted; Test console and copy-paste integration guide.
+
+## 13. Login templates, Client module, support portal, client billing (Oct 2026)
+
+### Login page designs (Super Admin)
+- **10 designs**: Classic Split, Photo Panel, Spotlight Card, Aurora, Minimal, Editorial, Gradient Mesh, Noir Luxe, Showcase,
+  Frosted Glass. Each is rendered with the brand's own logo, banner, colours and texts.
+- **Company › Branding & domain › Login page design**: pick per company; previews are real scaled renders (`TemplateThumb`), and
+  the live preview follows the selection. Older companies keep their look (split → Classic, banner → Photo, centered → Spotlight).
+- **Settings › Platform Branding** (new SA module `branding`): the platform address's login — template, theme/accent colours,
+  tagline, headline, sub-headline, footer. Stored in the main DB (`PlatformSetting` "platform_branding"), refreshed per instance
+  at most once a minute; never blocks the login page (1.5 s cap).
+
+### Leads
+- New fields: **Service** (multi-select from the company's service master — type to add, trash icon deletes from the master),
+  **Company GST** (format-checked), **Trade licence**, **Company PAN**, **Registered address**, **Communication address**
+  ("Same as registered" checkbox), **Owner mail id**, **Owner number**, **Owner PAN**, **Owner Aadhaar**. Aadhaar is
+  checksum-validated (Verhoeff), stored **AES-256-GCM encrypted**, and only `XXXX XXXX 1234` ever leaves the server (API,
+  screens, CSV export). Missing values show as NA.
+- **Converted / Service Initiated → Client**: the lead leaves the Leads list and appears in the Client module with a Client ID
+  (`<COMPANY CODE>-C0001`, per-company sequence). Works from the Status dropdown, the edit form, bulk status, new leads and
+  integrations (e.g. a paid Shopify order); a catch-all promotion runs when the Client module loads.
+- **Fix**: a status-only update (the Status dropdown in the list, the Lost reason pop-up) used to blank the lead's name. Partial
+  updates now change only the fields sent; a one-time background repair (`lead_name_repair_v1`) restores names from the stored
+  channel payload where one exists (manual leads can't be recovered).
+
+### Client module (company sidebar › Client; permission key `clients`)
+- **Clients**: list with Client ID, contact, services, service status, outstanding dues; the profile shows the whole
+  **journey** — lead capture, status changes, notes, service-status moves, tickets, dues and payments — plus editable
+  business details.
+- **Service Board**: Kanban of service status. Drag-drop (HTML5; a "Move to" selector on touch screens), optimistic updates.
+  **Edit columns**: add, rename, recolour, reorder, delete (clients in a deleted column move to the first one). Defaults:
+  Onboarding · In Progress · On Hold · Delivered · Closed.
+- **Support Tickets**: tickets from the support page (or raised by staff), status Open / In Progress / On Hold / Resolved /
+  Closed with an optional note to the client. **Every status update sends WhatsApp** through the company's webhooks for the new
+  events `support_ticket_created` and `support_ticket_updated` (Settings › WhatsApp Webhook shows them when creating a
+  template).
+- **Subscription Management**
+  - *Payment Details*: client (searchable), service type (master), amount, Recurring / On-Demand, frequency (On-demand · Weekly ·
+    Monthly · Quarterly · Half yearly · Yearly), first due date. Edit / Delete / Reminder.
+  - *Payment › Recurring*: dues generated automatically per period (unique per plan + due date, so never duplicated), Unpaid by
+    default, Over-Due automatically after the due date, Paid → Transaction History and the next period appears. Edit / Delete /
+    Reminder.
+  - *Payment › On-Demand*: Create with client, multiple service types, amount auto-filled from the client's Payment Details
+    (editable), discount fixed ⇄ % (either one calculates the other), gross, status, mode (NEFT / CASH / UPI / Card / RTGS),
+    transaction ID, remarks.
+  - *Transaction History*: everything Paid; only the status can change (Unpaid / Over-Due moves it back).
+  - Reminders use the event `client_payment_reminder` (a paid entry sends a receipt instead).
+  - Daily 02:00 IST job (`/api/cron/billing`) also generates dues and marks Over-Due in every company database; reads refresh at
+    most every 5 minutes per company.
+
+### Client support portal (PWA)
+- **https://support.&lt;company address&gt;** (e.g. `support.whd.mhw.credovation.tech` or `support.leads.company.in`) and,
+  with no DNS at all, **&lt;company address&gt;/support**. The middleware serves the portal on any `support.` host.
+- Clients sign in with **Client ID + the mobile number registered** with the company (client WhatsApp/phone or owner number) →
+  signed 2-hour session (HMAC). Raise Support / Request / Grievance, see every ticket and its status trail. Rate-limited per IP
+  and per Client ID; the portal never shows other clients' data.
+- Installable: per-company manifest (`/support/manifest.webmanifest`, company name/colour/logo) + a small service worker
+  (`/support-sw.js`, page navigations only, offline fallback), registered only on the `support.` host.
+- **DNS**: one CNAME per support address → `cname.vercel-dns.com`. Super Admin › Company › DNS shows the records and checks
+  them live; with `VERCEL_API_TOKEN` set the addresses are added to the Vercel project automatically.
+
+### Performance
+- New collections (company DBs): ServiceType, ClientBoard, Counter, SupportTicket, ClientPlan, ClientPayment — every list query
+  is backed by a compound index (`tenant_indexes_v2` adds them to existing company databases in the background).
+- Board: one indexed query per column in parallel + one grouped count. Client list: one grouped query for outstanding dues of the
+  page. Service master cached 5 minutes; client dropdown options fetched once per page. Measured locally: lists 6–55 ms.

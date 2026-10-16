@@ -8,10 +8,12 @@ export const dynamic = "force-dynamic";
 async function brandFor(host: string) {
   try {
     const { connectDB } = await import("../../../server/lib/db");
-    const { resolveHost, publicBranding, platformBranding } = await import("../../../server/lib/tenant");
+    const { resolveHost, publicBranding, platformBranding, loadPlatformBranding } = await import("../../../server/lib/tenant");
     await connectDB();
     const t = await resolveHost(host);
-    return t.kind === "company" ? publicBranding(t.company) : platformBranding();
+    if (t.kind === "company") return publicBranding(t.company);
+    await loadPlatformBranding();
+    return platformBranding();
   } catch {
     const { platformBranding } = await import("../../../server/lib/tenant");
     return platformBranding();

@@ -148,3 +148,18 @@ body {
 @media (prefers-reduced-motion: reduce) {
   [class*="billflash"] { animation: none !important; }
 }
+
+/* ── Login template: Gradient Mesh blobs ─────────────────────── */
+@keyframes lp-float {
+  0%, 100% { transform: translate(0, 0) scale(1); }
+  33% { transform: translate(40px, -30px) scale(1.08); }
+  66% { transform: translate(-30px, 25px) scale(.95); }
+}
+.lp-blob { animation: lp-float 18s ease-in-out infinite; }
+.lp-blob-2 { animation-duration: 22s; animation-delay: -6s; }
+.lp-blob-3 { animation-duration: 26s; animation-delay: -12s; }
+/* previews in the template picker stay still and light */
+.lp-preview *, .lp-preview *::before, .lp-preview *::after { animation: none !important; transition: none !important; }
+@media (prefers-reduced-motion: reduce) {
+  .lp-blob { animation: none; }
+}

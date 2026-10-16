@@ -3,7 +3,7 @@ import cookieParser from "cookie-parser";
 import { connectDB } from "./lib/db";
 import { rateLimit } from "./lib/cache";
 import { errorHandler, HttpError } from "./lib/http";
-import { requestHost, isPlatformHost, platformBranding, baseDomain, baseSource, configuredBases, hostContext, resolveHost } from "./lib/tenant";
+import { requestHost, isPlatformHost, platformBranding, loadPlatformBranding, baseDomain, baseSource, configuredBases, hostContext, resolveHost } from "./lib/tenant";
 import { requireAuth } from "./middleware/auth";
 import { activityLogger, logActivity } from "./middleware/activity";
 import authRoutes from "./routes/auth";
@@ -110,7 +110,9 @@ export function createApp() {
   // The platform login must render even if the database is unreachable.
   app.get("/api/public/branding", async (req, res, next) => {
     const host = requestHost(req);
-    const platform = () => {
+    const platform = async () => {
+      // Super Admin's saved look (template, colours, texts) — never blocks the page for more than 1.5 s
+      await Promise.race([connectDB().then(() => loadPlatformBranding()), new Promise((r) => setTimeout(r, 1500))]).catch(() => undefined);
       res.setHeader("Cache-Control", "public, max-age=60, s-maxage=60, stale-while-revalidate=600");
       res.json({ ...platformBranding(), host });
     };

@@ -22,6 +22,7 @@ export interface ModuleDef {
 export const COMPANY_MODULES: ModuleDef[] = [
   { key: "dashboard", label: "Dashboard", group: "Main", path: "/app", icon: "LayoutDashboard" },
   { key: "leads", label: "Leads", group: "Main", path: "/app/leads", icon: "Users" },
+  { key: "clients", label: "Client", group: "Main", path: "/app/clients", icon: "Briefcase" },
   { key: "integrations", label: "Integration", group: "Main", path: "/app/integrations", icon: "PlugZap" },
   { key: "reports", label: "Report", group: "Main", path: "/app/reports", icon: "BarChart3" },
   { key: "roles", label: "Role Management", group: "Settings", path: "/app/settings/roles", icon: "ShieldCheck" },
@@ -44,7 +45,11 @@ export const SA_MODULES: ModuleDef[] = [
   { key: "wa_webhooks", label: "WhatsApp Webhook", group: "Settings", path: "/sa/settings/whatsapp", icon: "Webhook" },
   { key: "wa_logs", label: "WhatsApp Logs", group: "Settings", path: "/sa/settings/whatsapp-logs", icon: "MessagesSquare" },
   { key: "subscriptions", label: "Subscription Management", group: "Settings", path: "/sa/settings/subscriptions", icon: "CreditCard" },
+  { key: "branding", label: "Platform Branding", group: "Settings", path: "/sa/settings/branding", icon: "Palette" },
 ];
+
+/** Login page designs (rendered by src/components/LoginTemplates.tsx). */
+export const LOGIN_TEMPLATE_KEYS = ["classic", "photo", "spotlight", "aurora", "minimal", "editorial", "mesh", "noir", "showcase", "glass"] as const;
 
 export const PLAN_TIERS = ["Trial", "Standard", "Pro", "Enterprise"] as const;
 export type PlanTier = (typeof PLAN_TIERS)[number];
@@ -125,6 +130,9 @@ export const COMPANY_SYSTEM_EVENTS = [
   { key: "delete_otp", label: "Delete OTP (verification)" },
   { key: "broadcast", label: "Post / broadcast" },
   { key: "ai_credits_exhausted", label: "AI credits exhausted (to admin)" },
+  { key: "support_ticket_created", label: "Support ticket created (to client)" },
+  { key: "support_ticket_updated", label: "Support ticket status update (to client)" },
+  { key: "client_payment_reminder", label: "Client payment reminder (Client › Subscription)" },
 ];
 
 export const PLACEHOLDERS = [

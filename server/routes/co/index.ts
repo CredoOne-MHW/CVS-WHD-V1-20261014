@@ -22,6 +22,8 @@ import { mcpSession } from "../../lib/mcp";
 import { runPull, PULL_TYPES, wooBase } from "../../lib/pull";
 import { suppress, fromProspecting } from "../../lib/suppress";
 import { testProspect, runProspectNow, BLOCKED_SITES } from "../../lib/prospect";
+import clientRoutes, { businessBody, applyBusiness, safeLead, assertServices } from "./clients";
+import { promoteClients } from "../../lib/clients";
 import { webhookRoutes, waLogRoutes, activityRoutes, roleRoutes } from "../shared";
 import { reportRoutes } from "../reports";
 import { assistantChat, assistantInfo, withAgentDb, endpointChat } from "../../lib/agentic";
@@ -37,6 +39,8 @@ r.use("/integrations", (req, res, next) => {
   next();
 });
 // Vercel caps request bodies at ~4.5 MB; keep uploads under that.
+r.use(clientRoutes); // Client module + service master
+
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 4 * 1024 * 1024, files: 10 } });
 const oid = (s: string) => new mongoose.Types.ObjectId(s);
 
@@ -86,10 +90,13 @@ const leadBody = z.object({
   status: z.enum(LEAD_STATUSES).optional(),
   nextFollowUpAt: z.coerce.date().optional().nullable(),
   consentWhatsapp: z.boolean().optional(),
+  services: z.array(z.string().max(80)).max(30).optional(),
+  business: businessBody.optional(),
 });
 
 function leadQuery(req: any) {
-  const q: any = { ...tenant(req), deletedAt: null, ...dateRange(req.query) };
+  const q: any = { ...tenant(req), deletedAt: null, isClient: { $ne: true }, ...dateRange(req.query) }; // clients live in the Client module
+  if (req.query.service) q.services = String(req.query.service);
   if (req.query.status) q.status = { $in: String(req.query.status).split(",") };
   if (req.query.source) q.source = { $in: String(req.query.source).split(",") };
   if (req.query.campaign) q.campaign = req.query.campaign;
@@ -111,9 +118,9 @@ r.get("/leads", can("leads", "read"), h(async (req, res) => {
   const q = leadQuery(req);
   const sort: any = req.query.sort === "score" ? { score: -1 } : req.query.sort === "updated" ? { updatedAt: -1 } : { createdAt: -1 };
   const [items, total, counts] = await Promise.all([
-    Lead.find(q).sort(sort).skip(skip).limit(limit).select("-attribution.raw -remarks").lean(),
+    Lead.find(q).sort(sort).skip(skip).limit(limit).select("-attribution.raw -remarks -business.ownerAadhaarEnc").lean(),
     Lead.countDocuments(q),
-    Lead.aggregate([{ $match: { companyId: oid(req.auth!.companyId!), deletedAt: null } }, { $group: { _id: "$status", n: { $sum: 1 } } }]),
+    Lead.aggregate([{ $match: { companyId: oid(req.auth!.companyId!), deletedAt: null, isClient: { $ne: true } } }, { $group: { _id: "$status", n: { $sum: 1 } } }]),
   ]);
   res.json({ items, total, page, limit, counts: Object.fromEntries(counts.map((c: any) => [c._id, c.n])) });
 }));
@@ -128,7 +135,7 @@ r.get("/leads/template.:fmt", can("leads", "create"), (req, res) => {
 r.get("/leads/export.csv", can("leads", "read"), h(async (req, res) => {
   const rows = await Lead.find(leadQuery(req)).sort({ createdAt: -1 }).limit(50_000).lean();
   const data = rows.map((l: any) => ({
-    Name: l.name || "NA", "WhatsApp No": l.whatsapp || "NA", "Phone No": l.phone || "NA", Email: l.email || "NA", Address: l.address || "NA", Comments: l.comments || "NA", Source: l.source, Campaign: l.campaign || "NA", Medium: l.medium || "NA", Referral: l.referral || "NA", "Profile / post": l.profileUrl || "NA", Status: l.status, "Lost reason": l.lostReasonOther || l.lostReason, Score: l.score, "Created (IST)": new Date(l.createdAt).toLocaleString("en-IN", { timeZone: "Asia/Kolkata" }),
+    Name: l.name || "NA", "WhatsApp No": l.whatsapp || "NA", "Phone No": l.phone || "NA", Email: l.email || "NA", Address: l.address || "NA", Comments: l.comments || "NA", Source: l.source, Campaign: l.campaign || "NA", Medium: l.medium || "NA", Referral: l.referral || "NA", "Profile / post": l.profileUrl || "NA", Status: l.status, "Lost reason": l.lostReasonOther || l.lostReason, Score: l.score, Service: (l.services || []).join(", ") || "NA", "Company GST": l.business?.gst || "NA", "Trade licence": l.business?.tradeLicence || "NA", "Company PAN": l.business?.pan || "NA", "Registered address": l.business?.registeredAddress || "NA", "Communication address": l.business?.communicationAddress || "NA", "Owner email": l.business?.ownerEmail || "NA", "Owner number": l.business?.ownerPhone || "NA", "Owner PAN": l.business?.ownerPan || "NA", "Owner Aadhaar": l.business?.ownerAadhaarLast4 ? `XXXX XXXX ${l.business.ownerAadhaarLast4}` : "NA", "Created (IST)": new Date(l.createdAt).toLocaleString("en-IN", { timeZone: "Asia/Kolkata" }),
   }));
   res.locals.logRead = true;
   res.locals.action = "Export";
@@ -140,14 +147,22 @@ r.get("/leads/export.csv", can("leads", "read"), h(async (req, res) => {
 r.get("/leads/:id", can("leads", "read"), h(async (req, res) => {
   const lead = await Lead.findOne({ _id: req.params.id, ...tenant(req), deletedAt: null }).lean();
   if (!lead) throw notFound();
-  res.json(lead);
+  res.json(safeLead(lead));
 }));
 
 r.post("/leads", can("leads", "create"), h(async (req, res) => {
   const b = parse(leadBody, req.body);
-  const { lead, created } = await upsertLead(req.auth!.companyId!, { ...b, source: b.source || "manual", consent: b.consentWhatsapp != null ? { whatsapp: b.consentWhatsapp, text: "Recorded by staff" } : undefined } as any, { by: req.auth!.name });
+  const { business, services, ...rest } = b;
+  const svc = services ? await assertServices(req.auth!.companyId, services) : undefined; // validate before saving anything
+  const { lead, created } = await upsertLead(req.auth!.companyId!, { ...rest, source: b.source || "manual", consent: b.consentWhatsapp != null ? { whatsapp: b.consentWhatsapp, text: "Recorded by staff" } : undefined } as any, { by: req.auth!.name });
+  if (business || services) {
+    if (svc) lead.services = svc;
+    applyBusiness(lead, business);
+    await lead.save();
+  }
+  const moved = lead.status === WON_STATUS ? await promoteClients(lead.companyId, [lead._id]) : [];
   res.locals.item = lead.name || lead.phone;
-  res.status(created ? 201 : 200).json({ lead, created });
+  res.status(created ? 201 : 200).json({ lead: safeLead(lead), created, client: moved[0] });
 }));
 
 /** Edit, including status change with mandatory lost reason + remark trail. */
@@ -160,10 +175,14 @@ r.put("/leads/:id", can("leads", "update"), h(async (req, res) => {
     if (!b.lostReason) throw badRequest("Select a lost reason");
     if (b.lostReason === "Other" && !b.lostReasonOther?.trim()) throw badRequest("Describe the reason");
   }
-  const { remark, consentWhatsapp, ...fields } = b;
+  const { remark, consentWhatsapp, business, services, ...fields } = b;
+  // a partial update (e.g. the Status dropdown sends only { status }) must not blank fields it didn't send
+  for (const k of Object.keys(fields)) if (!(k in (req.body || {}))) delete (fields as any)[k];
   if (fields.phone) fields.phone = normalizePhone(fields.phone);
   if (fields.whatsapp) fields.whatsapp = normalizePhone(fields.whatsapp);
   lead.set(fields);
+  if (services) lead.services = await assertServices(lead.companyId, services);
+  applyBusiness(lead, business);
   if (b.status && b.status !== LOST_STATUS) lead.set({ lostReason: undefined, lostReasonOther: undefined });
   if (consentWhatsapp != null) lead.consent = { ...(lead.consent || {}), whatsapp: consentWhatsapp, text: "Updated by staff", capturedAt: new Date() };
   if (remark || (b.status && b.status !== from)) {
@@ -175,7 +194,9 @@ r.put("/leads/:id", can("leads", "update"), h(async (req, res) => {
     const c = await Company.findById(lead.companyId).lean<any>();
     fireEvent("company", req.auth!.companyId, "lead_status_changed", { phone: lead.whatsapp, name: lead.name, company: c?.name, message: `Hi ${lead.name || ""}, your request with ${c?.name} is now: ${b.status}.`, params: { status: b.status, previous: from } }).catch(() => undefined);
   }
-  res.json(lead);
+  // "Converted / Service Initiated" → the lead moves to the Client module with a Client ID
+  const moved = b.status === WON_STATUS && !lead.isClient ? await promoteClients(lead.companyId, [lead._id]) : [];
+  res.json({ ...safeLead(lead), ...(moved[0] ? { isClient: true, clientCode: moved[0].clientCode, movedToClients: true } : {}) });
 }));
 
 r.post("/leads/bulk-status", can("leads", "update"), h(async (req, res) => {
@@ -185,8 +206,9 @@ r.post("/leads/bulk-status", can("leads", "update"), h(async (req, res) => {
     { _id: { $in: b.ids }, ...tenant(req), deletedAt: null },
     { $set: { status: b.status, lostReason: b.lostReason, lostReasonOther: b.lostReasonOther }, $push: { remarks: { at: new Date(), by: req.auth!.name, text: "Bulk status update", statusTo: b.status } } }
   );
+  const moved = b.status === WON_STATUS ? await promoteClients(req.auth!.companyId, b.ids.filter((x) => mongoose.isValidObjectId(x))) : [];
   res.locals.item = `${r2.modifiedCount} leads`;
-  res.json({ updated: r2.modifiedCount });
+  res.json({ updated: r2.modifiedCount, movedToClients: moved.length });
 }));
 
 r.post("/leads/:id/reminder", can("leads", "update"), h(async (req, res) => {

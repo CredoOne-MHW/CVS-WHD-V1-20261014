@@ -1,5 +1,8 @@
 import { Router } from "express";
-import { Connector, IntakeEvent, Company, Lead, Webhook, ConnectorKey, EndpointKey, AiEndpoint } from "../models";
+import { createHmac, timingSafeEqual } from "crypto";
+import { createTicket } from "./co/clients";
+import { refreshBilling } from "../lib/clients";
+import { Connector, IntakeEvent, Company, Lead, Webhook, ConnectorKey, EndpointKey, AiEndpoint, SupportTicket } from "../models";
 import { endpointChat } from "../lib/agentic";
 import { h, HttpError } from "../lib/http";
 import { decrypt, hmacValid, hmacB64Valid, sha256 } from "../lib/crypto";
@@ -12,7 +15,7 @@ import { setTenantDb } from "../lib/context";
 import { forEachCompanyDb, inCompanyDb, sweepStragglers } from "../lib/tenantdb";
 import { runPullConnectors } from "../lib/pull";
 import { prospectWorker } from "../lib/prospect";
-import { requestHost, resolveHost, baseDomain, publicBranding, platformBranding } from "../lib/tenant";
+import { requestHost, resolveHost, baseDomain, publicBranding, platformBranding, loadPlatformBranding } from "../lib/tenant";
 import { LOST_STATUS, WON_STATUS } from "../../shared/constants";
 
 const r = Router();
@@ -157,6 +160,89 @@ r.post("/ai/v1/chat", h(async (req, res) => {
   res.json({ answer: out.text, usage: out.usage ? { credits: out.usage.credits, remaining: out.usage.remaining } : undefined });
 }));
 
+/* ───────────── Client support portal (https://support.<company address>, or <company address>/support) ─────────────
+ * The client proves who they are with their Client ID + the mobile number registered with the company, and gets a
+ * signed 2-hour session. They can raise a ticket (Support / Request / Grievance) and follow its status; every status
+ * change is also sent to them on WhatsApp by the company's "Support ticket" webhooks.
+ */
+const SUP_SECRET = () => process.env.JWT_SECRET || process.env.DATA_ENCRYPTION_KEY || "dev-insecure-key";
+const signSup = (o: any) => {
+  const body = Buffer.from(JSON.stringify(o)).toString("base64url");
+  return `${body}.${createHmac("sha256", SUP_SECRET()).update(`sup.${body}`).digest("base64url")}`;
+};
+function readSup(token?: string) {
+  const [body, mac] = String(token || "").split(".");
+  if (!body || !mac) return null;
+  const want = createHmac("sha256", SUP_SECRET()).update(`sup.${body}`).digest("base64url");
+  if (want.length !== mac.length || !timingSafeEqual(Buffer.from(want), Buffer.from(mac))) return null;
+  const o = JSON.parse(Buffer.from(body, "base64url").toString());
+  return o.exp > Date.now() ? o : null;
+}
+
+/** Company for the support portal: the address it's opened on (support.<company address> or <company address>/support). */
+async function supportCompany(req: any) {
+  const host = requestHost(req);
+  const t = await resolveHost(host);
+  let company: any = t.kind === "company" ? t.company : null;
+  // platform address / local testing: ?c=<short name>
+  if (!company && t.kind !== "unknown" && req.query.c) company = await Company.findOne({ slug: String(req.query.c).toLowerCase(), deletedAt: null }).lean();
+  if (!company || company.status !== "active") throw new HttpError(404, "No support page is set up at this address");
+  return company;
+}
+
+r.get("/public/support/info", h(async (req, res) => {
+  const c = await supportCompany(req);
+  const b = publicBranding(c);
+  res.setHeader("Cache-Control", "public, max-age=60, stale-while-revalidate=300");
+  res.json({ name: b.name, shortName: b.shortName, tagline: b.tagline, logoUrl: b.logoUrl, faviconUrl: b.faviconUrl, themeColor: b.themeColor, accentColor: b.accentColor, supportEmail: b.supportEmail, supportPhone: b.supportPhone, categories: ["Support", "Request", "Grievance"] });
+}));
+
+r.post("/public/support/session", h(async (req, res) => {
+  const c = await supportCompany(req);
+  const b = req.body || {};
+  const code = String(b.clientId || "").trim().toUpperCase();
+  const digits = String(b.phone || "").replace(/\D/g, "").slice(-10);
+  if (!/^[A-Z0-9_-]{3,40}$/.test(code) || digits.length !== 10) throw new HttpError(400, "Enter your Client ID and the 10-digit mobile number registered with us");
+  const ip = ipOf(req);
+  if (!(await rateLimit(`sup:ip:${ip}`, 20, 600)) || !(await rateLimit(`sup:id:${c._id}:${code}`, 8, 600))) throw new HttpError(429, "Too many attempts — please try again in 10 minutes");
+  const client = await inCompanyDb(c._id, () => Lead.findOne({ companyId: c._id, clientCode: code, isClient: true, deletedAt: null }).select("name phone whatsapp business.ownerPhone clientCode").lean<any>());
+  const nums = client ? [client.whatsapp, client.phone, client.business?.ownerPhone].filter(Boolean).map((x: string) => String(x).replace(/\D/g, "").slice(-10)) : [];
+  if (!client || !nums.includes(digits)) throw new HttpError(401, "Client ID and mobile number don't match our records");
+  const first = String(client.name || "").split(" ")[0];
+  res.json({ token: signSup({ c: String(c._id), l: String(client._id), exp: Date.now() + 2 * 3600_000 }), client: { clientId: client.clientCode, name: first || "there" } });
+}));
+
+async function supportSession(req: any) {
+  const s = readSup(req.headers["x-support-token"] as string);
+  if (!s) throw new HttpError(401, "Your session has ended — please sign in again");
+  const c = await supportCompany(req);
+  if (String(c._id) !== s.c) throw new HttpError(401, "Please sign in again");
+  return { company: c, leadId: s.l };
+}
+
+r.get("/public/support/tickets", h(async (req, res) => {
+  const { company, leadId } = await supportSession(req);
+  const rows = await inCompanyDb(company._id, () => SupportTicket.find({ companyId: company._id, clientId: leadId }).sort({ createdAt: -1 }).limit(50).select("ticketNo category description status createdAt updatedAt history.at history.to history.note").lean<any[]>());
+  res.setHeader("Cache-Control", "no-store");
+  res.json(rows.map((t) => ({ ...t, history: (t.history || []).filter((x: any) => x.to) })));
+}));
+
+r.post("/public/support/tickets", h(async (req, res) => {
+  const { company, leadId } = await supportSession(req);
+  const b = req.body || {};
+  if (!["Support", "Request", "Grievance"].includes(b.category)) throw new HttpError(400, "Choose a category");
+  const description = String(b.description || "").trim();
+  if (description.length < 10) throw new HttpError(400, "Please describe what you need (at least 10 characters)");
+  if (description.length > 4000) throw new HttpError(400, "Please keep it under 4000 characters");
+  if (!(await rateLimit(`sup:new:${leadId}`, 10, 3600))) throw new HttpError(429, "You've raised several tickets in the last hour — our team will get back to you");
+  const t = await inCompanyDb(company._id, async () => {
+    const client = await Lead.findOne({ _id: leadId, isClient: true, deletedAt: null }).select("name phone whatsapp business.ownerPhone clientCode companyId").lean<any>();
+    if (!client) throw new HttpError(401, "Please sign in again");
+    return createTicket(client, b.category, description, "portal");
+  });
+  res.status(201).json({ ticketNo: t.ticketNo, status: t.status, createdAt: t.createdAt });
+}));
+
 /* ───────────── White-label branding (login page, favicon, theme) ───────────── */
 
 /** Which login to show for this host: the platform (Super Admin) or a company's branded login. */
@@ -165,7 +251,10 @@ r.get("/public/branding", h(async (req, res) => {
   const t = await resolveHost(host);
   res.setHeader("Cache-Control", "public, max-age=60, stale-while-revalidate=300");
   if (t.kind === "company") return res.json({ ...publicBranding(t.company), host });
-  if (t.kind === "platform") return res.json({ ...platformBranding(), host });
+  if (t.kind === "platform") {
+    await loadPlatformBranding();
+    return res.json({ ...platformBranding(), host });
+  }
   res.status(404).json({ error: "No workspace is set up for this address.", host, baseDomain: baseDomain() || null });
 }));
 
@@ -243,7 +332,10 @@ r.get("/cron/pull-frequent", h(async (req, res) => {
 /** Daily 02:00 IST: AI allocation renewals, subscription cycles, Unpaid → Over Due → Expired, 1/3/7-day reminders. */
 r.get("/cron/billing", h(async (req, res) => {
   cronAuth(req);
-  res.json(await runBillingJobs());
+  const platform = await runBillingJobs();
+  // Client module: generate this period's recurring dues and mark unpaid past-due ones Over-Due, in every company
+  const clients = await forEachCompanyDb(async (co) => (co.db ? refreshBilling(co._id, true).then(() => 1) : 0), { concurrency: 6 });
+  res.json({ ...platform, clientBilling: { companies: clients.reduce((a: number, x: any) => a + (x.value || 0), 0) } });
 }));
 
 /** Daily 08:00 IST: follow-up digest per company (event: followup_digest). */
