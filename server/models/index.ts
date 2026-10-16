@@ -545,6 +545,8 @@ const CompanyAgentSchema = new Schema(
       default: [],
     },
     isAssistant: { type: Boolean, default: false }, // shown as the floating assistant for the whole company
+    // Data tables of THIS company the agent may read (report dataset keys). undefined = legacy agent: every table the user can read.
+    dataAccess: { type: [String], default: undefined },
     active: { type: Boolean, default: true },
   },
   ts

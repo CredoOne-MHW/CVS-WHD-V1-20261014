@@ -26,3 +26,20 @@ export function runInDb<T>(db: string | null, fn: () => T): T {
   return als.run({ ...(als.getStore() || {}), db }, fn);
 }
 export const runInMain = <T>(fn: () => T): T => runInDb(null, fn);
+
+/**
+ * Wrap a callback-style middleware (e.g. multer) so the rest of the request keeps its context. Multer finishes in a
+ * stream callback outside the request's async context — without this, writes after an upload would land in the main
+ * database instead of the company's own one.
+ */
+export function keepCtx<Req, Res>(mw: (req: Req, res: Res, next: (err?: any) => void) => void) {
+  return (req: Req, res: Res, next: (err?: any) => void) => {
+    const store = als.getStore();
+    mw(req, res, (err?: any) => (store ? als.run(store, () => next(err)) : next(err)));
+  };
+}
+
+/** A multer instance whose .single/.array keep the request context (see keepCtx). */
+export function ctxUpload<M extends { single: (n: string) => any; array: (n: string, c?: number) => any }>(m: M) {
+  return { single: (n: string) => keepCtx(m.single(n)), array: (n: string, c?: number) => keepCtx(m.array(n, c)) };
+}

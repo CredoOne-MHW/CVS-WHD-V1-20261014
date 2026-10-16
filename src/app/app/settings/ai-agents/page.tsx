@@ -10,6 +10,7 @@ import { NO_EXTENSIONS } from "@/components/Assistant";
 import { api } from "@/lib/api";
 import { PageHeader, Btn, Modal, Field, Badge, Empty, Spinner, Confirm, useToast } from "@/components/ui";
 import { usePerm } from "@/components/Shell";
+import { DataAccessPicker, dataAccessLabel, type DataTable } from "@/components/DataAccessPicker";
 
 const ACCEPT = ".csv,.xlsx,.xls,.zip,.txt,.json,.docx,.pdf,.md";
 
@@ -28,17 +29,23 @@ export default function CompanyAiAgents() {
   const perm = usePerm("ai_agents");
   const toast = useToast();
   const [storage, setStorage] = useState<{ brain: string } | null>(null);
+  const [tables, setTables] = useState<DataTable[] | null>(null);
+  const [me, setMe] = useState<string>("");
   const load = () => api("/co/ai-agents").then(setList);
   useEffect(() => {
     load();
     api("/co/ai-agents/models").then(setModels);
     api("/co/storage").then(setStorage).catch(() => undefined);
+    api("/co/ai-agents/data-tables").then(setTables).catch(() => setTables([]));
+    api("/auth/me").then((m: any) => setMe(m?.companyName || m?.company?.name || "")).catch(() => undefined);
   }, []);
 
   function openForm(a?: any) {
     setFiles([]);
     setRemove([]);
-    setForm(a ? { ...a, isAssistant: !!a.isAssistant, agentId: a.agentId?._id || a.agentId, prompts: a.prompts?.length ? a.prompts : [{ title: "", text: "" }] } : { agentId: models[0]?._id || "", name: "", purpose: "", systemPrompt: "", prompts: [{ title: "", text: "" }], knowledge: [], isAssistant: !list?.some((x: any) => x.isAssistant) });
+    const allTables = (tables || []).map((t) => t.key);
+    // older agents had no explicit choice (they could read every table) — show that as all ticked
+    setForm(a ? { ...a, isAssistant: !!a.isAssistant, agentId: a.agentId?._id || a.agentId, prompts: a.prompts?.length ? a.prompts : [{ title: "", text: "" }], dataAccess: Array.isArray(a.dataAccess) ? a.dataAccess.filter((k: string) => allTables.includes(k)) : allTables } : { agentId: models[0]?._id || "", name: "", purpose: "", systemPrompt: "", prompts: [{ title: "", text: "" }], knowledge: [], isAssistant: !list?.some((x: any) => x.isAssistant), dataAccess: allTables });
   }
 
   async function save() {
@@ -46,7 +53,7 @@ export default function CompanyAiAgents() {
     try {
       const fd = new FormData();
       const { agentId, name, purpose, systemPrompt, prompts } = form;
-      fd.append("data", JSON.stringify({ agentId, name, purpose, systemPrompt, isAssistant: !!form.isAssistant, prompts: prompts.filter((p: any) => p.title || p.text), removeKeys: remove }));
+      fd.append("data", JSON.stringify({ agentId, name, purpose, systemPrompt, isAssistant: !!form.isAssistant, ...(tables ? { dataAccess: form.dataAccess || [] } : {}), prompts: prompts.filter((p: any) => p.title || p.text), removeKeys: remove }));
       files.forEach((f) => fd.append("files", f));
       if (form._id) await api(`/co/ai-agents/${form._id}`, { method: "PUT", form: fd });
       else await api("/co/ai-agents", { form: fd });
@@ -103,7 +110,7 @@ export default function CompanyAiAgents() {
         <table className="w-full min-w-[760px]">
           <thead>
             <tr>
-              {["Agent name", "AI model", "Purpose", "Knowledge base", "Prompts", "Action"].map((h) => (
+              {["Agent name", "AI model", "Purpose", "Data access", "Knowledge base", "Prompts", "Action"].map((h) => (
                 <th key={h} className={`th ${h === "Action" ? "text-right" : ""}`}>
                   {h}
                 </th>
@@ -127,6 +134,9 @@ export default function CompanyAiAgents() {
                 </td>
                 <td className="td max-w-[260px]">
                   <p className="line-clamp-2 text-ink-700">{a.purpose || "—"}</p>
+                </td>
+                <td className="td max-w-[200px]">
+                  <span className="line-clamp-2 text-sm text-ink-700">{dataAccessLabel(a, tables)}</span>
                 </td>
                 <td className="td">{a.knowledge.length} file(s)</td>
                 <td className="td">{a.prompts.length}</td>
@@ -196,7 +206,7 @@ export default function CompanyAiAgents() {
                 <input type="checkbox" className="mt-0.5 h-4 w-4 accent-hive-700" checked={!!form.isAssistant} onChange={(e) => setForm({ ...form, isAssistant: e.target.checked })} />
                 <span className="text-sm">
                   <b>Use as the company assistant</b>
-                  <span className="block text-ink-500">Shows a floating button with your logo on every screen. It answers from your data in read-only mode and uses this agent’s credits.</span>
+                  <span className="block text-ink-500">Shows a floating button with your logo on every screen. It answers from the data tables chosen under Data access (read-only) and uses this agent’s credits.</span>
                 </span>
               </label>
               <Field label="Agent name" required>
@@ -263,6 +273,7 @@ export default function CompanyAiAgents() {
                   + Add prompt
                 </button>
               </div>
+              <DataAccessPicker tables={tables} value={form.dataAccess || []} onChange={(v) => setForm({ ...form, dataAccess: v })} company={me} />
             </div>
           </div>
         )}

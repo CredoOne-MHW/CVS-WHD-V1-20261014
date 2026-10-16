@@ -7,6 +7,7 @@ import { can, requireScope, invalidateAuth } from "../../middleware/auth";
 import { h, parse, notFound, badRequest, paging, escapeRegex, HttpError } from "../../lib/http";
 import { encrypt } from "../../lib/crypto";
 import multer from "multer";
+import { ctxUpload } from "../../lib/context";
 import { nextRenewal, FREQ_KEYS } from "../../../shared/billing";
 import { renewAllocations } from "../../lib/billing";
 import { dbNameFromCode, validateDbName, provisionDb, inCompanyDb, forEachCompanyDb, migrateAll, dbOf } from "../../lib/tenantdb";
@@ -559,7 +560,7 @@ r.get("/companies-lite", can("activity_logs", "read"), h(async (_req, res) => {
 }));
 
 /* ───────────── Branding assets (logo / side banner / favicon) ───────────── */
-const imgUpload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 3 * 1024 * 1024 } });
+const imgUpload = ctxUpload(multer({ storage: multer.memoryStorage(), limits: { fileSize: 3 * 1024 * 1024 } }));
 r.post("/companies/:id/brand-asset/:kind", can("companies", "update"), imgUpload.single("file"), h(async (req, res) => {
   const kind = req.params.kind;
   if (!["logo", "banner", "favicon"].includes(kind)) throw badRequest("kind must be logo, banner or favicon");

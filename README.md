@@ -469,3 +469,18 @@ discount ≤ amount / ≤ 100 %), company routes are tenant-scoped, Super Admin 
   paused when the tab is hidden or off-screen, one still frame for "reduce motion", a CSS poster when WebGL is unavailable
   and in the template picker's previews. The login page itself stays ~104 KB.
 - The earlier CSS-3D designs (Orbit / Depth / Funnel) were retired; anything set to them shows Cinematic 3D.
+
+### 13.2 AI agent › Data access (Oct 2026)
+- **Create / Edit AI agent › Data access**: tick which of the company's data tables the agent may read — Leads, Clients,
+  Support tickets, Payment details, Payments & transactions, WhatsApp messages, Activity logs, AI usage — with live record
+  counts. Select all / None. Read-only, always.
+- **Only this company's tables**: the list comes from `GET /api/co/ai-agents/data-tables`, built from the signed-in company's
+  own database (filtered by its `companyId`); Super-Admin tables (Companies) and other companies' data are never listed or
+  readable. Saving refuses any table key that isn't one of the company's (and the user's) tables.
+- **Enforced everywhere the agent reads data**: floating assistant, Agentic reports, AI endpoints (agent mode) and the agent's
+  Test chat (which now also reads its granted tables). The report engine refuses any other table
+  ("This AI agent has no access to …"). No tables ticked → the agent answers from its knowledge base and prompts only.
+- Existing agents keep their current behaviour (all tables the user can read) until edited; the form shows that as all ticked.
+- **Fix**: records saved right after a file upload (AI agents with knowledge files, lead imports, WhatsApp posts) could land in
+  the main database instead of the company's own one until the 15-minute sweep moved them. Uploads now keep the request's
+  company context; a one-time repair (`upload_ctx_repair_v1`) moves any such records home at start-up.

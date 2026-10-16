@@ -115,7 +115,7 @@ async function doMigrate(companyId: string) {
 }
 
 /** Moves company records that landed in the main database after the company moved (cache lag on other servers). */
-async function moveStragglers(cid: mongoose.Types.ObjectId, dbName: string) {
+export async function moveStragglers(cid: mongoose.Types.ObjectId, dbName: string) {
   let moved = 0;
   for (const { name } of TENANT_MODELS) {
     const main = tenantModelFor(name, null).collection;
@@ -178,4 +178,12 @@ export async function forEachCompanyDb<T>(fn: (c: { _id: any; name: string; code
     })
   );
   return results;
+}
+
+/** Repair: anything a company wrote to the main database by mistake (e.g. after a file upload) goes back to its own one. */
+export async function repairStragglers() {
+  const list = await Company.find({ dbReadyAt: { $ne: null }, dbName: { $type: "string" } }).select("dbName").lean<any[]>();
+  let n = 0;
+  for (const c of list) n += (await moveStragglers(new mongoose.Types.ObjectId(String(c._id)), c.dbName)) || 0;
+  return n;
 }
