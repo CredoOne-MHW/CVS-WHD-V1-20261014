@@ -236,3 +236,7 @@ body {
 .cin-progress { width: 0; animation: cin-progress 4.5s linear forwards; }
 @keyframes cin-progress { to { width: 100%; } }
 @media (prefers-reduced-motion: reduce) { .cin-progress { animation: none; width: 100%; } }
+
+/* horizontally scrollable tab bars: scroll by swipe / shift-wheel, no visible scroller */
+.no-scrollbar { scrollbar-width: none; -ms-overflow-style: none; }
+.no-scrollbar::-webkit-scrollbar { display: none; }

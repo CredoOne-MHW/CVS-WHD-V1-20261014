@@ -90,7 +90,7 @@ const companyBody = z.object({
   address: z.string().max(500).optional(),
   loginEmail: z.string().email().optional().or(z.literal("")),
   password: z.string().min(8, "Min 8 characters").optional(),
-  slug: z.string().toLowerCase().regex(/^[a-z0-9](?:[a-z0-9-]{0,30}[a-z0-9])?$/, "Short name: 2–32 lowercase letters, numbers or hyphens").optional(),
+  slug: z.string().toLowerCase().regex(/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/, "Platform address: 2–63 lowercase letters, numbers or hyphens").optional(),
   customDomain: z
     .string()
     .toLowerCase()
@@ -119,7 +119,7 @@ const RESERVED_SLUGS = new Set(["www", "app", "api", "admin", "sa", "login", "ma
 async function assertDomainFree(id: string | undefined, slug?: string, customDomain?: string) {
   if (slug) {
     if (RESERVED_SLUGS.has(slug)) throw badRequest(`"${slug}" is reserved. Pick another short name.`);
-    if (await Company.exists({ slug, _id: { $ne: id }, deletedAt: null })) throw badRequest(`Short name "${slug}" is already taken`);
+    if (await Company.exists({ $or: [{ slug }, { slugAliases: slug }], _id: { $ne: id }, deletedAt: null })) throw badRequest(`The address "${slug}" is already used by another company`);
   }
   if (customDomain) {
     const base = baseDomain();
@@ -148,10 +148,12 @@ function supportHosts(c: any) {
   return [c.slug && base ? `support.${c.slug}.${base}` : null, c.customDomain ? `support.${c.customDomain}` : null].filter(Boolean) as string[];
 }
 /** Registers the support portal addresses on Vercel (best effort — the DNS record is still needed). */
+/** The support portal now lives at <company base URL>/support, so the old support.<address> names are no longer
+ *  registered — any left on Vercel from earlier versions are removed (best effort). */
 async function syncSupport(c: any, old?: any) {
   if (!vercelConfigured()) return;
-  for (const d of old ? supportHosts(old).filter((x) => !supportHosts(c).includes(x)) : []) await vercelRemove(d).catch(() => undefined);
-  for (const d of supportHosts(c)) await vercelSync(d).catch(() => undefined);
+  const stale = new Set([...supportHosts(c), ...(old ? supportHosts(old) : [])]);
+  for (const d of stale) await vercelRemove(d).catch(() => undefined);
 }
 
 /** S3 base folder = the company name as typed ("WELLNESSHIVE DIAGNOSTICA LLP"), unique across companies. */
@@ -162,7 +164,8 @@ async function uniqueFolder(name: string) {
   return folder;
 }
 
-const slugFrom = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 32);
+/** Platform address label from the COMPANY NAME: "Sini Labs Technologies LLP" → sini-labs-technologies-llp (DNS label ≤ 63). */
+export const slugFrom = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 63).replace(/-+$/, "");
 
 r.get("/companies", can("companies", "read"), h(async (req, res) => {
   const { page, limit, skip } = paging(req.query);
@@ -191,7 +194,7 @@ r.get("/companies/:id", can("companies", "read"), h(async (req, res) => {
 r.post("/companies", can("companies", "create"), h(async (req, res) => {
   const b = parse(companyBody.required({ password: true }), req.body);
   const loginEmail = (b.loginEmail || b.email).toLowerCase();
-  const slug = b.slug || slugFrom(b.code || b.name);
+  const slug = b.slug || slugFrom(b.name);
   const customDomain = b.customDomain || undefined;
   if (!(await Plan.exists({ name: b.plan }))) throw badRequest("Unknown plan");
   if (await User.exists({ email: loginEmail })) throw badRequest("Login email is already used by another account");
@@ -246,6 +249,8 @@ r.put("/companies/:id", can("companies", "update"), h(async (req, res) => {
   await assertDomainFree(String(c._id), rest.slug, newDomain || undefined);
   // the database name is fixed at creation; changing the code later only renames the label
   c.set({ ...rest, customDomain: newDomain, code: rest.code ? rest.code.toUpperCase() : c.code });
+  // renamed short name: the old address keeps working (and can't be given to another company)
+  if (rest.slug && before.slug && rest.slug !== before.slug) c.set("slugAliases", [...new Set([...(c.slugAliases || []), before.slug])].filter((x) => x !== rest.slug).slice(-5));
   if (branding) c.set("branding", { ...(c.toObject().branding || {}), ...branding, updatedAt: new Date() });
   if (newDomain !== oldDomain) c.set("domain", newDomain ? { verifyToken: newVerifyToken() } : {});
   await c.save();
@@ -649,21 +654,11 @@ async function domainReport(c: any, live: boolean) {
   };
 }
 
-/** Client support portal addresses: one CNAME each (support.<address> → Vercel), plus the always-working /support path. */
-async function supportReport(c: any, live: boolean) {
+/** Client support portal: <company base URL>/support — the company's own URL if set, else <slug>.<platform base>. No extra DNS. */
+async function supportReport(c: any, _live: boolean) {
   const urls = tenantUrls(c);
-  const records = supportHosts(c).map((fqdn) => {
-    const parentIsCustom = !!c.customDomain && fqdn === `support.${c.customDomain}`;
-    const zone = parentIsCustom ? splitDomain(c.customDomain).zone : splitDomain(baseDomain()).zone;
-    const host = zone && fqdn.endsWith(`.${zone}`) ? fqdn.slice(0, -(zone.length + 1)) : fqdn;
-    return { type: "CNAME" as const, host, fqdn, value: FALLBACK_CNAME, ttl: "Auto / 3600", purpose: parentIsCustom ? "Client support portal on the company's own domain" : "Client support portal on the platform address", required: false, zone };
-  });
-  const checked = live ? await checkRecords(records as any) : records;
-  return {
-    urls: supportHosts(c).map((h) => `https://${h}`),
-    fallbackUrl: urls.customUrl ? `${urls.customUrl}/support` : urls.platformUrl ? `${urls.platformUrl}/support` : undefined,
-    records: checked,
-  };
+  const base = urls.customUrl || urls.platformUrl;
+  return { urls: base ? [`${base}/support`] : [], fallbackUrl: base ? `${base}/support` : undefined, records: [] as any[] };
 }
 
 r.get("/companies/:id/domain", can("companies", "read"), h(async (req, res) => {

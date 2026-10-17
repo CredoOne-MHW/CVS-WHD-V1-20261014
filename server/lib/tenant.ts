@@ -74,7 +74,7 @@ export async function resolveHost(host: string): Promise<{ kind: "platform" } | 
     if (host === m || host === `www.${m}`) return { kind: "platform" };
     const slug = host.slice(0, -(m.length + 1));
     if (!slug.includes(".")) {
-      const company = await findCompany({ slug });
+      const company = (await findCompany({ slug })) || (await findCompany({ slugAliases: slug })); // earlier short names still work
       if (company) return { kind: "company", company };
     }
     return { kind: "unknown" }; // <unknown>.<our base>
@@ -89,7 +89,7 @@ export async function resolveHost(host: string): Promise<{ kind: "platform" } | 
   // 3. auto-detect <slug>.<some base> when the base isn't configured for this environment
   const labels = host.split(".");
   if (labels.length >= 4) {
-    const company = await findCompany({ slug: labels[0] });
+    const company = (await findCompany({ slug: labels[0] })) || (await findCompany({ slugAliases: labels[0] }));
     if (company) {
       setCtx(labels.slice(1).join("."), "auto");
       return { kind: "company", company };
