@@ -81,11 +81,13 @@ async function bootstrap() {
   }
 
   const meta = mongoose.connection.db!.collection<{ _id: string; at: Date }>("meta");
+  // every one-time migration flag in ONE round trip (cold starts used to make one query per flag)
+  const done = new Set((await meta.find({}, { projection: { _id: 1 } }).toArray()).map((d) => d._id));
   let changed = false;
 
   // One-time (v2): Report, Role Management, Activity Logs and AI Agent switched on for every existing plan
   // (earlier seeds left them off for Trial/Standard, which hid them from company sidebars).
-  if (!(await meta.findOne({ _id: "plans_v2" }))) {
+  if (!done.has("plans_v2")) {
     const set: any = {};
     for (const k of ["reports", "roles", "activity_logs", "ai_agents"]) set[`permissions.${k}`] = fullPerm();
     await Plan.updateMany({}, { $set: set });
@@ -106,7 +108,7 @@ async function bootstrap() {
 
   // One-time (v3): AI allocations get a cycle (start / monthly renewal) so the Allocation tab can manage them;
   // the new read-only "Subscription" module is ticked on every plan.
-  if (!(await meta.findOne({ _id: "alloc_v3" }))) {
+  if (!done.has("alloc_v3")) {
     const { nextRenewal } = await import("../../shared/billing");
     const now = new Date();
     for (const a of await AiAllocation.find({ startDate: null }).select("createdAt").lean<any[]>()) {
@@ -119,14 +121,14 @@ async function bootstrap() {
   }
 
   // One-time: allocations record the database their AI may read (the company's own)
-  if (!(await meta.findOne({ _id: "alloc_db_v1" }))) {
+  if (!done.has("alloc_db_v1")) {
     const { Company } = await import("../models");
     for (const c of await Company.find({}).select("dbName code").lean<any[]>()) await AiAllocation.updateMany({ companyId: c._id, dbName: null }, { $set: { dbName: c.dbName || c.code } });
     await meta.updateOne({ _id: "alloc_db_v1" }, { $set: { at: new Date() } }, { upsert: true });
   }
 
   // Companies created before per-company databases: their data is moved in the background (and on first use)
-  if (!(await meta.findOne({ _id: "tenantdb_v1" }))) {
+  if (!done.has("tenantdb_v1")) {
     import("./tenantdb")
       .then(({ migrateAll }) => migrateAll())
       .then(async (r) => {
@@ -138,7 +140,7 @@ async function bootstrap() {
 
   // One-time: the Google Search (keyword prospecting) connector was retired in favour of Google Ads lead forms
   // (v2: sweeps every company database — v1 relied on the key registry, which can miss older connectors)
-  if (!(await meta.findOne({ _id: "gsearch_off_v2" }))) {
+  if (!done.has("gsearch_off_v2")) {
     const { ConnectorKey, tenantModelFor } = await import("../models");
     const { forEachCompanyDb } = await import("./tenantdb");
     const off = { $set: { active: false } };
@@ -149,7 +151,7 @@ async function bootstrap() {
   }
 
   // One-time: new Lead index (public profile link) in every company database — background, idempotent
-  if (!(await meta.findOne({ _id: "lead_profile_idx_v1" }))) {
+  if (!done.has("lead_profile_idx_v1")) {
     import("./tenantdb")
       .then(async ({ forEachCompanyDb, provisionDb }) => {
         await forEachCompanyDb(async (c) => (c.db ? provisionDb(c.db) : null), { concurrency: 4 });
@@ -159,7 +161,7 @@ async function bootstrap() {
   }
 
   // One-time: the do-not-collect list (Suppression) needs its unique index in every existing company database
-  if (!(await meta.findOne({ _id: "suppression_idx_v1" }))) {
+  if (!done.has("suppression_idx_v1")) {
     const { tenantModelFor } = await import("../models");
     const { forEachCompanyDb } = await import("./tenantdb");
     await forEachCompanyDb(async (c) => (c.db ? tenantModelFor("Suppression", c.db).collection.createIndex({ hash: 1 }, { unique: true }).catch(() => undefined) : null), { includeDeleted: true });
@@ -168,7 +170,7 @@ async function bootstrap() {
 
   // Company databases get every collection + index added since they were created (Client module, support tickets, payments).
   // Runs in the background; idempotent (existing indexes are left as they are). Bump the version when models gain indexes.
-  if (!(await meta.findOne({ _id: "tenant_indexes_v2" }))) {
+  if (!done.has("tenant_indexes_v2")) {
     import("./tenantdb")
       .then(async ({ forEachCompanyDb, provisionDb }) => {
         await forEachCompanyDb(async (c) => (c.db ? provisionDb(c.db).catch((e: any) => console.warn(`indexes for ${c.db}:`, e?.message)) : null), { includeDeleted: true, concurrency: 3 });
@@ -179,7 +181,7 @@ async function bootstrap() {
 
   // One-time repair: a partial lead update (the Status dropdown) used to blank the lead's name. Where the original
   // channel payload is still stored on the lead, the name is recovered from it. Runs in the background.
-  if (!(await meta.findOne({ _id: "lead_name_repair_v1" }))) {
+  if (!done.has("lead_name_repair_v1")) {
     Promise.all([import("./tenantdb"), import("../models"), import("./intake")])
       .then(async ([{ forEachCompanyDb }, { Lead }, { mapFields }]) => {
         const nameIn = (raw: any): string => {
@@ -206,15 +208,34 @@ async function bootstrap() {
 
   // One-time: records saved after a file upload (AI agents, lead imports, WhatsApp posts) could land in the main database
   // instead of the company's own one (multer dropped the request context — fixed). Move them home. Idempotent.
-  if (!(await meta.findOne({ _id: "upload_ctx_repair_v1" }))) {
+  if (!done.has("upload_ctx_repair_v1")) {
     import("./tenantdb")
       .then(({ repairStragglers }) => repairStragglers())
       .then((moved) => meta.updateOne({ _id: "upload_ctx_repair_v1" }, { $set: { at: new Date(), moved } }, { upsert: true }))
       .catch((e) => console.error("upload_ctx_repair_v1 failed", e));
   }
 
+  // One-time: platform addresses start with the COMPANY NAME (sini-labs-technologies-llp.<base>), not the short code.
+  // Only addresses that were auto-made from the code are changed; the old one stays working as an alias.
+  if (!done.has("slug_from_name_v1")) {
+    const { Company } = await import("../models");
+    const toLabel = (x: string) => String(x || "").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 63).replace(/-+$/, "");
+    const list = await Company.find({ deletedAt: null }).select("name code slug slugAliases").lean<any[]>();
+    let changed = 0;
+    for (const c of list) {
+      const want = toLabel(c.name);
+      if (!want || want.length < 2 || c.slug === want) continue;
+      if (c.slug && c.slug !== toLabel(c.code)) continue; // a short name chosen by hand — leave it
+      if (await Company.exists({ _id: { $ne: c._id }, $or: [{ slug: want }, { slugAliases: want }] })) continue;
+      const aliases = c.slug ? [...new Set([...(c.slugAliases || []), c.slug])] : c.slugAliases;
+      await Company.updateOne({ _id: c._id }, { $set: { slug: want, ...(aliases ? { slugAliases: aliases } : {}) } });
+      changed++;
+    }
+    await meta.updateOne({ _id: "slug_from_name_v1" }, { $set: { at: new Date(), changed } }, { upsert: true });
+  }
+
   // One-time: the Super Admin login moves to the Cinematic 3D design (from the previous defaults / retired CSS-3D designs)
-  if (!(await meta.findOne({ _id: "platform_cinema_v1" }))) {
+  if (!done.has("platform_cinema_v1")) {
     const { PlatformSetting } = await import("../models");
     await PlatformSetting.updateOne({ _id: "platform_branding", "value.loginTemplate": { $in: ["aurora", "orbit", "depth", "funnel", null] } }, { $set: { "value.loginTemplate": "cinema" } });
     await meta.updateOne({ _id: "platform_cinema_v1" }, { $set: { at: new Date() } }, { upsert: true });
@@ -222,7 +243,7 @@ async function bootstrap() {
 
   // One-time (v2): move existing logos/banners/knowledge files into <Company Name>/logo · /banner · /brain.
   // Runs in the background so the first request isn't delayed; idempotent if an instance stops midway.
-  if (process.env.S3_BUCKET && !(await meta.findOne({ _id: "s3_layout_v2" }))) {
+  if (process.env.S3_BUCKET && !done.has("s3_layout_v2")) {
     import("./s3")
       .then(({ relayoutAll }) => relayoutAll())
       .then(() => meta.updateOne({ _id: "s3_layout_v2" }, { $set: { at: new Date() } }, { upsert: true }))

@@ -27,7 +27,7 @@ const BLANK_BRANDING = {
 };
 const BLANK = { name: "", code: "", contactPerson: "", phone: "", whatsapp: "", email: "", plan: "Trial", gstin: "", address: "", loginEmail: "", password: "", slug: "", customDomain: "", branding: { ...BLANK_BRANDING } };
 type Kind = "logo" | "banner" | "favicon";
-const slugify = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 32);
+const slugify = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 63);
 
 export default function Companies() {
   const [data, setData] = useState<any>(null);
@@ -375,7 +375,7 @@ export default function Companies() {
                       <Globe2 className="h-4 w-4 text-hive-700" /> Web address
                     </h3>
                     <div className="grid gap-4 sm:grid-cols-2">
-                      <Field label="Company short name" required hint="Used for the sub-domain">
+                      <Field label="Platform address" required hint="Made from the company name, e.g. sini-labs-technologies-llp — the support page is this address + /support">
                         <div className="flex overflow-hidden rounded-xl border border-ink-400/25 bg-white focus-within:border-hive-500 focus-within:ring-4 focus-within:ring-hive-100">
                           <input
                             className="min-w-0 flex-1 px-3.5 py-2.5 text-sm outline-none"

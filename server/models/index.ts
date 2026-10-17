@@ -86,7 +86,8 @@ const CompanySchema = new Schema(
     deletedAt: Date,
 
     /* White-label: <slug>.<APP_BASE_DOMAIN> and an optional own domain */
-    slug: { type: String, lowercase: true, trim: true, unique: true, sparse: true }, // "short name"
+    slug: { type: String, lowercase: true, trim: true, unique: true, sparse: true }, // "short name" — from the company name
+    slugAliases: { type: [String], default: undefined, index: true }, // earlier short names: old <slug>.<base> links keep working
     customDomain: { type: String, lowercase: true, trim: true, unique: true, sparse: true },
     s3Folder: String, // "<Company-Name>" — fixed at creation; logo/, banner/, brain/ live under it
     dbName: String, // the company's own MongoDB database (= company code at creation; never changes)

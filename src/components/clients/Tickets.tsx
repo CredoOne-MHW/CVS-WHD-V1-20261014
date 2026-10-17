@@ -3,7 +3,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { Search, Plus, Trash2, ExternalLink, Copy, Eye, MessageCircle } from "lucide-react";
 import { api, qs, fmtDate } from "@/lib/api";
 import { Btn, Modal, Field, Empty, Pager, Spinner, Confirm, useToast } from "../ui";
-import { usePerm } from "../Shell";
+import { usePerm, useMe } from "../Shell";
 import { TICKET_STATUS_LIST, SUPPORT_CATEGORIES } from "@shared/clients";
 import { ClientSelect, TICKET_STYLE } from "./common";
 
@@ -22,8 +22,14 @@ export function Tickets() {
     load();
   }, [load]);
 
-  // the client-facing page: support.<this address>, and <this address>/support which works without any DNS
-  const portal = useMemo(() => (typeof window === "undefined" ? null : { pretty: `https://support.${window.location.host}`, path: `${window.location.origin}/support` }), []);
+  // the client-facing page of THIS company: <company base URL>/support. Base URL = the company's own URL if set
+  // (Super Admin › Company › Branding & domain), else its platform address <slug>.mhw.credovation.tech.
+  const me = useMe();
+  const portal = useMemo(() => {
+    const b: any = me?.branding || {};
+    const base = (b.customUrl || b.platformUrl || (typeof window !== "undefined" ? window.location.origin : "")).replace(/\/+$/, "");
+    return base ? `${base}/support` : null;
+  }, [me]);
   const counts = data?.counts || {};
 
   async function saveStatus() {
@@ -51,14 +57,14 @@ export function Tickets() {
             <p className="text-ink-700">
               Clients sign in with their Client ID + registered mobile, raise a Support / Request / Grievance and follow it. Every status change is sent to them on WhatsApp (Settings › WhatsApp Webhook › “Support ticket” events).
             </p>
-            <p className="mt-1 break-all font-mono text-xs text-hive-800">
-              {portal.pretty} <span className="text-ink-500">· or</span> {portal.path}
-            </p>
+            <a href={portal} target="_blank" rel="noreferrer" className="mt-1 inline-block break-all font-mono text-xs font-semibold text-hive-800 hover:underline">
+              {portal}
+            </a>
           </div>
-          <button className="btn-secondary" onClick={() => navigator.clipboard.writeText(portal.pretty).then(() => toast("ok", "Copied"))}>
+          <button className="btn-secondary" onClick={() => navigator.clipboard.writeText(portal).then(() => toast("ok", "Copied"))}>
             <Copy className="h-4 w-4" /> Copy
           </button>
-          <a className="btn-secondary" href={portal.path} target="_blank" rel="noreferrer">
+          <a className="btn-secondary" href={portal} target="_blank" rel="noreferrer">
             <ExternalLink className="h-4 w-4" /> Open
           </a>
         </div>

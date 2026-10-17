@@ -38,6 +38,15 @@ const companyCode = (companyId: any) => cached(`co:code:${companyId}`, 3600, asy
  * Converted leads → clients. Called right after a status change (ids given) and, as a catch-all, when the Client
  * module loads (covers conversions from integrations, imports, bulk updates). Idempotent and race-safe.
  */
+/** Run a background-style safety net at most once per `ms` per key on this instance (keeps list reads cheap). */
+const lastRun = new Map<string, number>();
+export function throttled(key: string, ms: number) {
+  const now = Date.now();
+  if ((lastRun.get(key) || 0) + ms > now) return false;
+  lastRun.set(key, now);
+  return true;
+}
+
 export async function promoteClients(companyId: any, ids?: any[]) {
   const q: any = { companyId, deletedAt: null, status: WON_STATUS, isClient: { $ne: true } };
   if (ids?.length) q._id = { $in: ids };

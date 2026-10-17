@@ -13,7 +13,7 @@ import { h, parse, notFound, badRequest, forbidden, paging, escapeRegex, HttpErr
 import { encrypt } from "../../lib/crypto";
 import { fireEvent } from "../../lib/whatsapp";
 import { cached, invalidate } from "../../lib/cache";
-import { getBoard, newColumnId, promoteClients, refreshBilling, ensureRecurringDues, refreshOverdue, nextSeq, clientPhone } from "../../lib/clients";
+import { getBoard, newColumnId, promoteClients, throttled, refreshBilling, ensureRecurringDues, refreshOverdue, nextSeq, clientPhone } from "../../lib/clients";
 import { normalizePhone } from "../../../shared/constants";
 import { CLIENT_FREQ_KEYS, PAYMENT_MODES, SUPPORT_CATEGORIES, TICKET_STATUS_LIST, GST_RE, PAN_RE, aadhaarValid, maskAadhaar, applyDiscount, clientFreqLabel, round2 } from "../../../shared/clients";
 
@@ -124,7 +124,8 @@ const CLIENT_LIST_FIELDS = "name phone whatsapp email clientCode clientSince ser
 
 r.get("/clients", can("clients", "read"), h(async (req, res) => {
   const cid = tenant(req).companyId;
-  await promoteClients(cid); // catch conversions made by integrations / imports / bulk updates
+  // catch conversions made by integrations / imports / bulk updates (status changes in the app promote immediately)
+  if (throttled(`promote:${cid}`, 30_000)) await promoteClients(cid);
   const { page, limit, skip } = paging(req.query);
   const q: any = { companyId: cid, deletedAt: null, isClient: true };
   if (req.query.stage) q.serviceStage = String(req.query.stage);
@@ -227,7 +228,7 @@ r.put("/clients/:id", can("clients", "update"), h(async (req, res) => {
 /* ───────────── Kanban board ───────────── */
 r.get("/clients-board", can("clients", "read"), h(async (req, res) => {
   const cid = tenant(req).companyId;
-  await promoteClients(cid);
+  if (throttled(`promote:${cid}`, 30_000)) await promoteClients(cid);
   const board = await getBoard(cid);
   const ids = board.columns.map((c: any) => c.id);
   const per = Math.min(200, Number(req.query.perColumn) || 100);
