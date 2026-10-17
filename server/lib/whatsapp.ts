@@ -51,7 +51,23 @@ export interface DispatchOpts {
 }
 
 /** Sends through one webhook, logs every part to WhatsApp Logs. */
+/** Triggers that also copy the message to the webhook's additional numbers (not bulk posts, tests or resends). */
+const COPY_TRIGGERS = new Set(["auto", "manual", "cron"]);
+
 export async function dispatch(hook: any, ctx: SendContext, opts: DispatchOpts) {
+  const results = await sendTo(hook, ctx, opts);
+  // the same message to every additional number on this webhook — logged one by one; the caller's result (e.g. "client
+  // notified") reflects only the main recipient
+  if (COPY_TRIGGERS.has(opts.trigger)) {
+    const main = normalizePhone(ctx.phone);
+    for (const n of (hook.extraNumbers || []) as string[]) {
+      if (n && n !== main) await sendTo(hook, { ...ctx, phone: n }, opts, `Copy (additional number) of message to ${main || "recipient"} · `).catch(() => undefined);
+    }
+  }
+  return results;
+}
+
+async function sendTo(hook: any, ctx: SendContext, opts: DispatchOpts, detailPrefix = "") {
   const results = [];
   for (const p of buildPayloads(hook, ctx)) {
     const r = await sendWithRetry(hook, p.body);
@@ -65,7 +81,7 @@ export async function dispatch(hook: any, ctx: SendContext, opts: DispatchOpts) 
       name: ctx.name,
       result: r.ok ? "success" : "failed",
       httpStatus: r.status,
-      detail: r.ok ? `HTTP ${r.status}` : `HTTP ${r.status || "network"} – ${JSON.stringify(r.response).slice(0, 300)}`,
+      detail: detailPrefix + (r.ok ? `HTTP ${r.status}` : `HTTP ${r.status || "network"} – ${JSON.stringify(r.response).slice(0, 300)}`),
       part: p.part,
       attempts: r.attempts,
       request: { url: hook.url, method: hook.method, body: p.body },
