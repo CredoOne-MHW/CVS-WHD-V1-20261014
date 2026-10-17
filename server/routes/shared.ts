@@ -7,7 +7,8 @@ import { can, invalidateAuth } from "../middleware/auth";
 import { h, parse, notFound, badRequest, paging, dateRange, escapeRegex } from "../lib/http";
 import { encrypt, decrypt } from "../lib/crypto";
 import { buildPayloads, dispatch, resendLog } from "../lib/whatsapp";
-import { ACTIONS, COMPANY_MODULES, SA_EVENTS, COMPANY_SYSTEM_EVENTS, DEFAULT_PAYLOAD_TEMPLATE, type PermMap } from "../../shared/constants";
+import { ACTIONS, COMPANY_MODULES, DEFAULT_PAYLOAD_TEMPLATE, type PermMap } from "../../shared/constants";
+import { eventsFor, isSystemEvent } from "../../shared/events";
 
 type Scope = "super" | "company";
 const scopeFilter = (req: Request, scope: Scope) => (scope === "company" ? { scope, companyId: req.auth!.companyId } : { scope });
@@ -45,17 +46,23 @@ export function webhookRoutes(scope: Scope) {
   const r = Router();
   const mod = "wa_webhooks";
 
+  /** Every event this deployment can send (shared/events.ts) — so the dropdown always matches the running code. */
   r.get("/events", can(mod, "read"), h(async (req, res) => {
-    if (scope === "super") return res.json(SA_EVENTS.map((e) => ({ ...e, system: true })));
-    const custom = await EventType.find({ companyId: req.auth!.companyId }).sort({ label: 1 }).lean();
-    res.json([...COMPANY_SYSTEM_EVENTS.map((e) => ({ ...e, system: true })), ...custom.map((e: any) => ({ _id: e._id, key: e.key, label: e.label, system: false }))]);
+    const a = req.auth!;
+    // company: only events of modules in the company's plan
+    const sys = eventsFor(scope)
+      .filter((e) => scope === "super" || !e.module || a.perms[e.module]?.read || a.isOwner)
+      .map(({ key, label, group, to, description, params, manual }) => ({ key, label, group, to, description, params, manual: !!manual, system: true }));
+    if (scope === "super") return res.json(sys);
+    const custom = await EventType.find({ companyId: a.companyId }).sort({ label: 1 }).lean();
+    res.json([...sys, ...custom.map((e: any) => ({ _id: e._id, key: e.key, label: e.label, group: "Custom", to: "", description: "Your own event type — used with Post / broadcast.", params: [], system: false }))]);
   }));
 
   if (scope === "company") {
     r.post("/events", can(mod, "create"), h(async (req, res) => {
       const b = parse(z.object({ label: z.string().min(2).max(80), key: z.string().regex(/^[a-z0-9_]+$/).max(60).optional() }), req.body);
       const key = b.key || b.label.toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_|_$/g, "");
-      if ([...COMPANY_SYSTEM_EVENTS].some((e) => e.key === key)) throw badRequest("That key is reserved by a system event");
+      if (isSystemEvent("company", key)) throw badRequest("That key is reserved by a system event");
       res.status(201).json(await EventType.create({ companyId: req.auth!.companyId, key, label: b.label }));
     }));
     r.delete("/events/:id", can(mod, "delete"), h(async (req, res) => {

@@ -1,3 +1,4 @@
+import { eventsFor } from "./events";
 /**
  * Single source of truth shared by API and UI.
  *
@@ -112,28 +113,9 @@ export const CONNECTOR_TYPES: ConnectorDef[] = [
   { type: "mcp", label: "MCP Server (Zapier, Make, HubSpot…)", description: "Pull leads daily from any MCP server tool — CRMs, sheets, forms.", icon: "Cable", inbound: "pull" },
 ];
 
-/** Built-in WhatsApp webhook events. Companies can add their own types. */
-export const SA_EVENTS = [
-  { key: "company_reminder", label: "Company reminder (Company → Reminder)" },
-  { key: "company_created", label: "Company created (welcome)" },
-  { key: "company_deactivated", label: "Company deactivated" },
-  { key: "credits_low", label: "AI credits exhausted (company)" },
-  { key: "subscription_reminder", label: "Subscription payment reminder (1 / 3 / 7 days prior)" },
-  { key: "subscription_overdue", label: "Subscription payment over due" },
-  { key: "subscription_expired", label: "Subscription expired (30 days over due)" },
-];
-export const COMPANY_SYSTEM_EVENTS = [
-  { key: "lead_reminder", label: "Lead reminder (Lead → Reminder)" },
-  { key: "lead_created", label: "New lead captured" },
-  { key: "lead_status_changed", label: "Lead status changed" },
-  { key: "followup_digest", label: "Daily follow-up digest" },
-  { key: "delete_otp", label: "Delete OTP (verification)" },
-  { key: "broadcast", label: "Post / broadcast" },
-  { key: "ai_credits_exhausted", label: "AI credits exhausted (to admin)" },
-  { key: "support_ticket_created", label: "Support ticket created (to client)" },
-  { key: "support_ticket_updated", label: "Support ticket status update (to client)" },
-  { key: "client_payment_reminder", label: "Client payment reminder (Client › Subscription)" },
-];
+/** Built-in WhatsApp webhook events — derived from the single registry in shared/events.ts. Companies can add their own types. */
+export const SA_EVENTS = eventsFor("super").map(({ key, label }) => ({ key, label }));
+export const COMPANY_SYSTEM_EVENTS = eventsFor("company").map(({ key, label }) => ({ key, label }));
 
 export const PLACEHOLDERS = [
   "event", "template", "to", "phone", "name", "company", "message", "message_raw", "params",

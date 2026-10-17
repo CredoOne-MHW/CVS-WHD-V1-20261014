@@ -285,6 +285,7 @@ r.post("/companies/:id/status", can("companies", "update"), h(async (req, res) =
   await invalidateAuth();
   res.locals.action = status === "active" ? "Activate" : "Deactivate";
   res.locals.item = c.name;
+  if (status === "active" && c.whatsapp) fireEvent("super", undefined, "company_activated", { phone: c.whatsapp, name: c.contactPerson ?? undefined, company: c.name, message: `Your workspace for ${c.name} is active again. You can sign in now.`, params: { code: c.code } }).catch(() => undefined);
   if (status === "inactive" && c.whatsapp) fireEvent("super", undefined, "company_deactivated", { phone: c.whatsapp, name: c.contactPerson ?? undefined, company: c.name, message: `Your LeadHive workspace for ${c.name} has been deactivated. Please contact support.` }).catch(() => undefined);
   res.json(c);
 }));

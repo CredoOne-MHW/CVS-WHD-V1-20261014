@@ -13,7 +13,7 @@ import { h, parse, notFound, badRequest, forbidden, paging, escapeRegex, HttpErr
 import { encrypt } from "../../lib/crypto";
 import { fireEvent } from "../../lib/whatsapp";
 import { cached, invalidate } from "../../lib/cache";
-import { getBoard, newColumnId, promoteClients, throttled, refreshBilling, ensureRecurringDues, refreshOverdue, nextSeq, clientPhone } from "../../lib/clients";
+import { getBoard, newColumnId, promoteClients, throttled, notifyClient, refreshBilling, ensureRecurringDues, refreshOverdue, nextSeq, clientPhone } from "../../lib/clients";
 import { normalizePhone } from "../../../shared/constants";
 import { CLIENT_FREQ_KEYS, PAYMENT_MODES, SUPPORT_CATEGORIES, TICKET_STATUS_LIST, GST_RE, PAN_RE, aadhaarValid, maskAadhaar, applyDiscount, clientFreqLabel, round2 } from "../../../shared/clients";
 
@@ -284,6 +284,7 @@ r.patch("/clients/:id/stage", can("clients", "update"), h(async (req, res) => {
   c.stageAt = new Date();
   c.remarks.push({ by: req.auth!.name, text: `Service status: ${from} → ${to.name}` });
   await c.save();
+  notifyClient(c.companyId, "client_stage_changed", c, (co) => `Hi ${c.name || ""}, your service with ${co} is now at: ${to.name}.`, { stage: to.name, previous: from || "" });
   res.locals.item = `${c.clientCode} → ${to.name}`;
   res.json({ ok: true, stage, stageAt: c.stageAt });
 }));
@@ -546,11 +547,17 @@ r.put("/clients-payments/:id", can("clients", "update"), h(async (req, res) => {
   if (b.mode !== undefined) p.mode = b.mode || undefined;
   if (b.txnId !== undefined) p.txnId = b.txnId;
   if (b.remarks !== undefined) p.remarks = b.remarks;
+  const becamePaid = b.status === "paid" && p.status !== "paid";
   if (b.status) {
     p.status = b.status;
     if (b.status === "paid") p.paidAt = new Date();
   }
   await p.save();
+  if (becamePaid) {
+    const cl = await Lead.findOne({ _id: p.clientId, companyId: p.companyId }).select("name whatsapp phone business.ownerPhone clientCode").lean<any>();
+    const on = p.paidAt!.toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric", timeZone: "Asia/Kolkata" });
+    if (cl) notifyClient(p.companyId, "client_payment_received", cl, (co) => `Hi ${cl.name || ""}, we have received your payment of ${inr(p.gross)} to ${co} on ${on}${p.mode ? ` via ${p.mode}` : ""}${p.txnId ? ` (Txn ${p.txnId})` : ""}. Thank you!`, { amount: p.gross, mode: p.mode || "", txn_id: p.txnId || "", paid_on: on });
+  }
   if (p.status === "paid" && p.kind === "recurring" && p.planId) await ensureRecurringDues(p.companyId, [p.planId]); // next period appears
   res.locals.item = `${p.clientCode} · ${inr(p.gross)} · ${p.status}`;
   res.json(p);

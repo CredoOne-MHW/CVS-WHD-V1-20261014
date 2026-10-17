@@ -30,7 +30,7 @@ import { reportRoutes } from "../reports";
 import { assistantChat, assistantInfo, withAgentDb, endpointChat, testChat } from "../../lib/agentic";
 import { companyTables, countTable } from "../../lib/reports";
 import { rateLimit, invalidate } from "../../lib/cache";
-import { publicBranding } from "../../lib/tenant";
+import { publicBranding, tenantUrls } from "../../lib/tenant";
 import { LEAD_STATUSES, LOST_REASONS, LOST_STATUS, WON_STATUS, CONNECTOR_TYPES, normalizePhone } from "../../../shared/constants";
 
 const r = Router();
@@ -537,6 +537,13 @@ r.post("/users", can("roles", "create"), h(async (req, res) => {
   if (plan?.userLimit && (await User.countDocuments({ companyId: req.auth!.companyId })) >= plan.userLimit) throw new HttpError(402, `Your plan allows ${plan.userLimit} users`);
   if (!(await Role.exists({ _id: b.roleId, companyId: req.auth!.companyId }))) throw badRequest("Unknown role");
   const u = await User.create({ scope: "company", companyId: req.auth!.companyId, name: b.name, email: b.email.toLowerCase(), phone: b.phone || undefined, passwordHash: await bcrypt.hash(b.password, 12), roleId: b.roleId });
+  if (u.phone) {
+    // welcome with the login address (never the password)
+    const [co, role] = await Promise.all([Company.findById(req.auth!.companyId).select("name slug customDomain").lean<any>(), Role.findById(b.roleId).select("name").lean<any>()]);
+    const urls = tenantUrls(co || {});
+    const login = urls.customUrl || urls.platformUrl || "";
+    fireEvent("company", req.auth!.companyId, "user_created", { phone: u.phone, name: u.name, company: co?.name, message: `Hi ${u.name}, you have been added to ${co?.name || "the team"}${role?.name ? ` as ${role.name}` : ""}. Sign in${login ? ` at ${login}` : ""} with ${u.email}.`, params: { email: u.email, role: role?.name || "", login_url: login } }).catch(() => undefined);
+  }
   res.locals.item = u.email;
   res.status(201).json({ _id: u._id, name: u.name, email: u.email });
 }));

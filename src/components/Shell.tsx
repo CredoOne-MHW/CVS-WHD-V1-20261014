@@ -106,8 +106,11 @@ export default function Shell({ scope, children }: { scope: "super" | "company";
       </div>
     );
 
-  const isActive = (p: string) => (p === "/sa" || p === "/app" ? path === p : path.startsWith(p));
-  const current = me.nav.find((n) => isActive(n.path));
+  // Exactly one menu item is active: the longest one whose path matches whole URL segments
+  // ("/app/settings/whatsapp" must not light up on "/app/settings/whatsapp-logs").
+  const matches = (p: string) => (p === "/sa" || p === "/app" ? path === p : path === p || path.startsWith(p + "/"));
+  const current = me.nav.filter((n) => matches(n.path)).sort((x, y) => y.path.length - x.path.length)[0];
+  const isActive = (p: string) => current?.path === p;
   const b = me.branding;
   const toggle = () => {
     if (window.matchMedia("(min-width: 1024px)").matches) {
