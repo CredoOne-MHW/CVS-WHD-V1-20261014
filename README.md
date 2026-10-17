@@ -518,3 +518,8 @@ discount ≤ amount / ≤ 100 %), company routes are tenant-scoped, Super Admin 
   `client_payment_received` (receipt), `client_payment_overdue` (once, when a due passes its date); Team — `user_created`
   (login address, never the password); Super Admin — `company_activated`, `subscription_paid` (receipt).
   Nothing is sent until a webhook is created for the event.
+- **Additional numbers per webhook** (Add Webhook form and each webhook card): up to 10 extra WhatsApp numbers that get a
+  copy of every message the webhook sends (e.g. owner / manager). Same text and template; each copy is sent and logged
+  separately ("Copy (additional number) of message to …" in WhatsApp Logs). Numbers are cleaned (+91, spaces) and
+  de-duplicated. Copies go for automatic, manual and scheduled messages — not for bulk Post, test sends or resends — and
+  the main recipient's result alone decides "client notified".

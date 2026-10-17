@@ -21,7 +21,62 @@ export interface Hook {
   singleLine: boolean;
   lineSeparator?: string;
   maxChars: number;
+  extraNumbers?: string[];
 }
+
+/** Additional WhatsApp numbers that receive a copy of every message this webhook sends. */
+export function ExtraNumbers({ value, onChange, disabled }: { value?: string[]; onChange: (v: string[]) => void; disabled?: boolean }) {
+  const [draft, setDraft] = useState("");
+  const list = value || [];
+  const clean = draft.replace(/\D/g, "").slice(-10);
+  const valid = /^[6-9]\d{9}$/.test(clean);
+  const add = () => {
+    if (!valid || list.includes(clean) || list.length >= 10) return;
+    onChange([...list, clean]);
+    setDraft("");
+  };
+  return (
+    <div>
+      {list.length > 0 && (
+        <div className="mb-2 flex flex-wrap gap-2">
+          {list.map((n) => (
+            <span key={n} className="inline-flex items-center gap-1.5 rounded-full border border-hive-200 bg-hive-50 py-1 pl-3 pr-1.5 font-mono text-[13px] text-hive-800">
+              {n}
+              {!disabled && (
+                <button type="button" aria-label={`Remove ${n}`} className="grid h-5 w-5 place-items-center rounded-full text-ink-400 hover:bg-white hover:text-red-600" onClick={() => onChange(list.filter((x) => x !== n))}>
+                  ×
+                </button>
+              )}
+            </span>
+          ))}
+        </div>
+      )}
+      {!disabled && list.length < 10 && (
+        <div className="flex gap-2">
+          <input
+            className="input font-mono"
+            inputMode="numeric"
+            placeholder="10-digit WhatsApp number, e.g. 9876543210"
+            value={draft}
+            onChange={(e) => setDraft(e.target.value.replace(/[^\d+ ]/g, "").slice(0, 14))}
+            onBlur={add}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" || e.key === ",") {
+                e.preventDefault();
+                add();
+              }
+            }}
+          />
+          <button type="button" className="btn-secondary shrink-0" disabled={!valid || list.includes(clean)} onClick={add}>
+            + Add
+          </button>
+        </div>
+      )}
+      {draft && !valid && <p className="mt-1 text-xs text-amber-700">Enter a valid 10-digit mobile number.</p>}
+    </div>
+  );
+}
+
 export interface EventOpt {
   _id?: string;
   key: string;
@@ -138,6 +193,9 @@ export function WebhookModal({ open, onClose, base, events, initial, onSaved, on
         <Field label="Endpoint URL" required className="sm:col-span-2">
           <input className="input" placeholder="https://wapp-api.credoone.org/…" value={f.url} onChange={(e) => set("url", e.target.value)} />
         </Field>
+        <Field label="Additional numbers (optional)" className="sm:col-span-2" hint="Each gets a copy of every message this webhook sends — e.g. the owner or a manager. Up to 10. Not used for bulk Post or test sends.">
+          <ExtraNumbers value={f.extraNumbers} onChange={(v) => set("extraNumbers", v)} />
+        </Field>
         <Field label="Method">
           <select className="input" value={f.method} onChange={(e) => set("method", e.target.value)}>
             {["POST", "PUT", "PATCH", "GET"].map((m) => (
@@ -233,6 +291,9 @@ export function WebhookCard({ hook, base, eventLabel, testPhone, onChanged }: { 
         </Field>
         <Field label="Template name (optional)">
           <input className="input" value={f.templateName || ""} placeholder={f.event} disabled={!perm.update} onChange={(e) => set("templateName", e.target.value)} />
+        </Field>
+        <Field label="Additional numbers" hint="Also receive a copy of every message (not bulk Post / tests). Save to apply.">
+          <ExtraNumbers value={f.extraNumbers} disabled={!perm.update} onChange={(v) => set("extraNumbers", v)} />
         </Field>
         <label className="flex gap-3 text-sm text-ink-700">
           <input type="checkbox" className="mt-0.5 h-4 w-4 shrink-0 accent-hive-700" checked={f.singleLine} disabled={!perm.update} onChange={(e) => set("singleLine", e.target.checked)} />
