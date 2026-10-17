@@ -1,3 +1,4 @@
+import type { EventKey } from "../../shared/events";
 import { Webhook, WaLog } from "../models";
 import { runInDb } from "./context";
 import { dbOf } from "./tenantdb";
@@ -77,7 +78,8 @@ export async function dispatch(hook: any, ctx: SendContext, opts: DispatchOpts) 
 }
 
 /** Fire every active webhook bound to an event (system events like lead_created). */
-export async function fireEvent(scope: "super" | "company", companyId: string | undefined, event: string, ctx: SendContext, trigger: DispatchOpts["trigger"] = "auto", triggeredBy?: string) {
+/** Fire a registered event (shared/events.ts) — unregistered keys don't compile. */
+export async function fireEvent<S extends "super" | "company">(scope: S, companyId: string | undefined, event: EventKey<S>, ctx: SendContext, trigger: DispatchOpts["trigger"] = "auto", triggeredBy?: string) {
   // platform webhooks/logs live in the main database, company ones in the company's database
   const db = scope === "company" && companyId ? await dbOf(companyId) : null;
   return runInDb(db, () => fireEventHere(scope, companyId, event, ctx, trigger, triggeredBy));

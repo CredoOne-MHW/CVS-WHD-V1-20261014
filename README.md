@@ -502,3 +502,19 @@ discount ≤ amount / ≤ 100 %), company routes are tenant-scoped, Super Admin 
   old links and logins keep opening the same company and the old name can't be given to another company.
   One-time migration `slug_from_name_v1`: companies whose address was auto-made from the code (e.g. `whd`) move to the
   name-based one (`wellnesshive-diagnostica-llp`); hand-picked addresses are left alone.
+
+### 13.4 Sidebar highlight fix & WhatsApp events registry (Oct 2026)
+- Sidebar: exactly one item is active — matching is by whole URL segment and the most specific item wins
+  (WhatsApp Webhook no longer lights up on WhatsApp Logs; the breadcrumb follows the same rule).
+- **WhatsApp events come from one registry: `shared/events.ts`.** Each event has its group, recipient, description and
+  `{{params.*}}` fields. The Webhook "Event" dropdown (grouped, with recipient + fields shown) and the Logs event filter are
+  served from it by `/api/{sa|co}/webhooks/events`, so every deployment shows exactly the events that version sends.
+  Companies only see events of modules in their plan; custom event types still work.
+  - Add an event: add an entry to `shared/events.ts` and call `fireEvent(...)` with its key.
+  - Remove one: delete the call and the entry. A webhook still pointing at a removed event is flagged in the UI.
+  - Guards: `fireEvent()` only accepts registered keys (TypeScript), and `npm run check:events` (runs automatically as
+    `prebuild`, i.e. on every Vercel build) fails if a registered event is never fired.
+- New events: Client — `client_created` (welcome + Client ID + support link), `client_stage_changed` (Service Board move),
+  `client_payment_received` (receipt), `client_payment_overdue` (once, when a due passes its date); Team — `user_created`
+  (login address, never the password); Super Admin — `company_activated`, `subscription_paid` (receipt).
+  Nothing is sent until a webhook is created for the event.

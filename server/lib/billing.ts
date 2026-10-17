@@ -69,7 +69,7 @@ async function companyContact(companyId: any) {
 }
 
 /** Sends a subscription WhatsApp message through the plan's chosen webhook, or every active SA webhook for the event. */
-export async function notifyCycle(cycle: any, event: "subscription_reminder" | "subscription_overdue" | "subscription_expired", opts: { webhookId?: any; message?: string; trigger?: "auto" | "manual"; by?: string } = {}) {
+export async function notifyCycle(cycle: any, event: "subscription_reminder" | "subscription_overdue" | "subscription_expired" | "subscription_paid", opts: { webhookId?: any; message?: string; trigger?: "auto" | "manual"; by?: string } = {}) {
   const c = await companyContact(cycle.companyId);
   const phone = c?.whatsapp || c?.phone;
   if (!phone) return { sent: 0, reason: "Company has no WhatsApp number" };
@@ -79,6 +79,8 @@ export async function notifyCycle(cycle: any, event: "subscription_reminder" | "
     opts.message ||
     (event === "subscription_reminder"
       ? `Hi ${c.contactPerson || c.name}, your ${cycle.planName} subscription payment of ${inr(total)} is due on ${due}. Please pay to continue uninterrupted service.`
+      : event === "subscription_paid"
+        ? `Hi ${c.contactPerson || c.name}, we have received your ${cycle.planName} subscription payment of ${inr(total)} (due ${due}). Thank you!`
       : event === "subscription_overdue"
         ? `Hi ${c.contactPerson || c.name}, your ${cycle.planName} subscription payment of ${inr(total)} was due on ${due} and is now over due. Please pay at the earliest.`
         : `Hi ${c.contactPerson || c.name}, your ${cycle.planName} subscription has expired (payment due ${due} not received). Please contact us to renew.`);

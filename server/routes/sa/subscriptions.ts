@@ -213,8 +213,10 @@ r.put("/cycles/:id/status", can("subscriptions", "update"), h(async (req, res) =
   const { status } = parse(z.object({ status: z.enum(["paid", "unpaid", "overdue", "expired"]) }), req.body);
   const now = new Date();
   const set: any = { status, statusChangedAt: now, statusChangedBy: req.auth!.email, paidAt: status === "paid" ? now : null };
+  const prev = await SubscriptionCycle.findById(req.params.id).select("status").lean<any>();
   const cy = await SubscriptionCycle.findByIdAndUpdate(req.params.id, { $set: set }, { new: true }).lean<any>();
   if (!cy) throw notFound();
+  if (status === "paid" && prev?.status !== "paid") notifyCycle(cy, "subscription_paid", { trigger: "auto", by: req.auth!.email }).catch(() => undefined);
   if (status === "paid" && cy.aiAmount == null && new Date(cy.periodEnd) <= now) await SubscriptionCycle.updateOne({ _id: cy._id }, { $set: { aiAmount: await aiAmountFor(cy.companyId, cy.periodStart, cy.periodEnd) } });
   if (status === "unpaid") await refreshStatuses(now); // "Unpaid" after the due date is shown as Over Due
   await invalidate("billing:");

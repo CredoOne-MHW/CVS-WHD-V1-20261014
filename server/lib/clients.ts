@@ -47,10 +47,41 @@ export function throttled(key: string, ms: number) {
   return true;
 }
 
+const inrFmt = (n: number) => `₹${Number(n || 0).toLocaleString("en-IN", { maximumFractionDigits: 2 })}`;
+const dmy = (d: any) => (d ? new Date(d).toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric", timeZone: "Asia/Kolkata" }) : "");
+
+/**
+ * WhatsApp to a client for a Client-module event (registered in shared/events.ts). Never throws and never blocks the
+ * caller — a missing webhook or number just means nothing is sent (it's in WhatsApp Logs when it is).
+ */
+export function notifyClient(
+  companyId: any,
+  event: "client_created" | "client_stage_changed" | "client_payment_received" | "client_payment_overdue",
+  client: any,
+  message: (company: string) => string,
+  params: Record<string, any>
+) {
+  const phone = clientPhone(client);
+  if (!phone) return;
+  (async () => {
+    const [{ fireEvent }, company] = await Promise.all([import("./whatsapp"), cached(`clientco:${companyId}`, 300, () => Company.findById(companyId).select("name").lean<any>())]);
+    const name = company?.name || "";
+    await fireEvent("company", String(companyId), event, { phone, name: client.name, company: name, message: message(name), params: { client_id: client.clientCode, ...params } });
+  })().catch(() => undefined);
+}
+
+/** <company base URL>/support — own URL if set, else <slug>.<platform base>. */
+async function supportUrlOf(companyId: any) {
+  const [{ tenantUrls }, c] = await Promise.all([import("./tenant"), Company.findById(companyId).select("slug customDomain").lean<any>()]);
+  const u = tenantUrls(c || {});
+  const base = u.customUrl || u.platformUrl;
+  return base ? `${base}/support` : "";
+}
+
 export async function promoteClients(companyId: any, ids?: any[]) {
   const q: any = { companyId, deletedAt: null, status: WON_STATUS, isClient: { $ne: true } };
   if (ids?.length) q._id = { $in: ids };
-  const leads = await Lead.find(q).select("_id").limit(500).lean<any[]>();
+  const leads = await Lead.find(q).select("_id name whatsapp phone business.ownerPhone").limit(500).lean<any[]>();
   if (!leads.length) return [];
   const [board, code] = await Promise.all([getBoard(companyId), companyCode(companyId)]);
   const first = board.columns[0]?.id;
@@ -62,7 +93,11 @@ export async function promoteClients(companyId: any, ids?: any[]) {
       { _id: l._id, isClient: { $ne: true } },
       { $set: { isClient: true, clientCode, clientSince: now, serviceStage: first, stageAt: now }, $push: { remarks: { at: now, by: "system", text: `Moved to Clients · Client ID ${clientCode}` } } }
     );
-    if (r.modifiedCount) out.push({ id: String(l._id), clientCode });
+    if (r.modifiedCount) {
+      out.push({ id: String(l._id), clientCode });
+      const url = await supportUrlOf(companyId).catch(() => "");
+      notifyClient(companyId, "client_created", { ...l, clientCode }, (co) => `Hi ${l.name || ""}, welcome to ${co}! Your Client ID is ${clientCode}.${url ? ` For any support, visit ${url} and sign in with your Client ID and this mobile number.` : ""}`.replace(/\s+/g, " ").trim(), { support_url: url });
+    }
   }
   return out;
 }
@@ -71,7 +106,17 @@ const startOfTodayIST = () => new Date(new Date().toLocaleDateString("en-CA", { 
 
 /** Unpaid dues past their date become Over-Due (one indexed update). */
 export async function refreshOverdue(companyId: any) {
-  await ClientPayment.updateMany({ companyId, status: "unpaid", dueDate: { $lt: startOfTodayIST() } }, { $set: { status: "overdue" } });
+  const q = { companyId, status: "unpaid", dueDate: { $lt: startOfTodayIST() } };
+  const due = await ClientPayment.find(q).select("_id clientId clientCode clientName gross dueDate").limit(500).lean<any[]>();
+  if (!due.length) return;
+  const r = await ClientPayment.updateMany({ _id: { $in: due.map((d) => d._id) }, status: "unpaid" }, { $set: { status: "overdue" } });
+  if (!r.modifiedCount) return;
+  // tell each client once (this transition only happens once per payment)
+  const clients = await Lead.find({ _id: { $in: [...new Set(due.map((d) => String(d.clientId)))] } }).select("name whatsapp phone business.ownerPhone clientCode").lean<any[]>();
+  for (const p of due) {
+    const c = clients.find((x) => String(x._id) === String(p.clientId));
+    if (c) notifyClient(companyId, "client_payment_overdue", c, (co) => `Hi ${c.name || ""}, your payment of ${inrFmt(p.gross)} to ${co} was due on ${dmy(p.dueDate)} and is now over due. Please pay at the earliest.`, { amount: p.gross, due_date: dmy(p.dueDate) });
+  }
 }
 
 /**
