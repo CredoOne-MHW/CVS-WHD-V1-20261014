@@ -89,13 +89,13 @@ export function DnsPanel({ companyId, autoCheck = false }: { companyId: string; 
       {rep.support && (
         <div className="rounded-2xl border border-ink-400/15 p-4">
           <p className="eyebrow text-ink-500">Client support portal</p>
-          <p className="mt-1 text-xs text-ink-500">Clients raise Support / Request / Grievance tickets here. Works right away at the path address; the support.… addresses need one DNS record each.</p>
+          <p className="mt-1 text-xs text-ink-500">Clients raise Support / Request / Grievance tickets here — at the company’s base URL + /support (its own URL once set).</p>
           {rep.support.fallbackUrl && (
             <a href={rep.support.fallbackUrl} target="_blank" rel="noreferrer" className="mt-2 flex items-center gap-1.5 break-all font-mono text-[13px] font-semibold text-hive-800 hover:underline">
               {rep.support.fallbackUrl.replace("https://", "")} <ExternalLink className="h-3.5 w-3.5 shrink-0" />
             </a>
           )}
-          <div className="mt-3 overflow-x-auto">
+          {rep.support.records?.length > 0 && <div className="mt-3 overflow-x-auto">
             <table className="w-full text-left text-[12.5px]">
               <thead>
                 <tr className="text-ink-500">
@@ -118,7 +118,7 @@ export function DnsPanel({ companyId, autoCheck = false }: { companyId: string; 
                 ))}
               </tbody>
             </table>
-          </div>
+          </div>}
         </div>
       )}
 

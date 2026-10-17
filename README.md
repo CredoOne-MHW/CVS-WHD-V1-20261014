@@ -484,3 +484,21 @@ discount ≤ amount / ≤ 100 %), company routes are tenant-scoped, Super Admin 
 - **Fix**: records saved right after a file upload (AI agents with knowledge files, lead imports, WhatsApp posts) could land in
   the main database instead of the company's own one until the 15-minute sweep moved them. Uploads now keep the request's
   company context; a one-time repair (`upload_ctx_repair_v1`) moves any such records home at start-up.
+
+### 13.3 Client page fixes & performance (Oct 2026)
+- Client tabs: removed the stray scroller (tabs no longer overflow by 1 px; the bar still swipes sideways on narrow screens).
+- **Client support page URL = `<company base URL>/support`.** Base URL = the company's own URL if set (Super Admin ›
+  Company › Branding & domain), else its platform address `<slug>.mhw.credovation.tech` (slug is generated from the company
+  when it's created) — e.g. `https://sini-labs-technologies-llp.mhw.credovation.tech/support`. Shown with Copy / Open on
+  Client › Support Tickets and in Super Admin › Company › Domain. No extra DNS needed; the old `support.<address>` names are
+  no longer shown or registered on Vercel (any left from earlier builds are removed when the company is saved).
+- Performance: Client tabs load their code on demand (first load 135 kB → 94 kB); the "move converted leads to Clients"
+  safety net runs at most every 30 s per company instead of on every Clients/Board request (in-app status changes still
+  move a lead instantly); cold starts read all one-time-migration flags in one query instead of ~12.
+
+- **Platform address = company name.** `<company-name>.mhw.credovation.tech` (e.g. `sini-labs-technologies-llp`), made from the
+  company name on creation (no longer from the short code; up to 63 characters). Super Admin can still edit it under
+  Company › Web address › Platform address. When it changes, the previous address is kept as an alias (`slugAliases`), so
+  old links and logins keep opening the same company and the old name can't be given to another company.
+  One-time migration `slug_from_name_v1`: companies whose address was auto-made from the code (e.g. `whd`) move to the
+  name-based one (`wellnesshive-diagnostica-llp`); hand-picked addresses are left alone.
