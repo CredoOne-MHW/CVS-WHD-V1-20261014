@@ -7,7 +7,7 @@ import { can, invalidateAuth } from "../middleware/auth";
 import { h, parse, notFound, badRequest, paging, dateRange, escapeRegex } from "../lib/http";
 import { encrypt, decrypt } from "../lib/crypto";
 import { buildPayloads, dispatch, resendLog } from "../lib/whatsapp";
-import { ACTIONS, COMPANY_MODULES, DEFAULT_PAYLOAD_TEMPLATE, type PermMap } from "../../shared/constants";
+import { ACTIONS, COMPANY_MODULES, DEFAULT_PAYLOAD_TEMPLATE, normalizePhone, type PermMap } from "../../shared/constants";
 import { eventsFor, isSystemEvent } from "../../shared/events";
 
 type Scope = "super" | "company";
@@ -28,6 +28,13 @@ const webhookBody = z.object({
   singleLine: z.boolean().default(true),
   lineSeparator: z.string().max(20).optional(),
   maxChars: z.coerce.number().int().min(100).max(4096).default(800),
+  // additional WhatsApp numbers that receive the same message (10 digits each, max 10)
+  extraNumbers: z
+    .array(z.string())
+    .max(10, "Up to 10 additional numbers")
+    .transform((a) => [...new Set(a.map((x) => normalizePhone(x)).filter(Boolean))])
+    .refine((a) => a.every((x) => /^[6-9]\d{9}$/.test(x)), "Each additional number must be a valid 10-digit mobile number")
+    .optional(),
 });
 
 function validateJsonText(label: string, text?: string, allowPlaceholders = false) {

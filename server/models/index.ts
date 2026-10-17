@@ -399,6 +399,8 @@ const WebhookSchema = new Schema(
     singleLine: { type: Boolean, default: true },
     lineSeparator: { type: String, default: " | " },
     maxChars: { type: Number, default: 800 },
+    // extra 10-digit numbers that get a copy of every message this webhook sends (e.g. owner, manager)
+    extraNumbers: { type: [String], default: undefined },
     payloadTemplate: { type: String, required: true },
     active: { type: Boolean, default: true },
   },
