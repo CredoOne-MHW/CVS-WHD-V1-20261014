@@ -27,7 +27,19 @@ export interface EventOpt {
   key: string;
   label: string;
   system: boolean;
+  group?: string;
+  to?: string;
+  description?: string;
+  params?: string[];
+  manual?: boolean;
 }
+
+/** events grouped for the dropdown, in registry order */
+const byGroup = (events: EventOpt[]) => {
+  const m = new Map<string, EventOpt[]>();
+  for (const e of events) m.set(e.group || "Other", [...(m.get(e.group || "Other") || []), e]);
+  return [...m.entries()];
+};
 
 const BLANK: Hook = {
   name: "",
@@ -99,13 +111,29 @@ export function WebhookModal({ open, onClose, base, events, initial, onSaved, on
         </Field>
         <Field label="Event" hint={onNewEvent ? <button type="button" className="font-semibold text-hive-700 underline" onClick={onNewEvent}>+ New event type</button> : undefined}>
           <select className="input" value={f.event} onChange={(e) => set("event", e.target.value)}>
-            {events.map((ev) => (
-              <option key={ev.key} value={ev.key}>
-                {ev.label}
-                {!ev.system ? " (custom)" : ""}
-              </option>
+            {f.event && !events.some((ev) => ev.key === f.event) && <option value={f.event}>{f.event} — no longer sent by the app</option>}
+            {byGroup(events).map(([g, list]) => (
+              <optgroup key={g} label={g}>
+                {list.map((ev) => (
+                  <option key={ev.key} value={ev.key}>
+                    {ev.label}
+                    {ev.to ? ` → ${ev.to}` : ""}
+                  </option>
+                ))}
+              </optgroup>
             ))}
           </select>
+          {(() => {
+            const ev = events.find((x) => x.key === f.event);
+            if (!ev) return f.event ? <p className="mt-1.5 text-xs text-amber-700">This event isn’t sent by the current version of the app — pick another one.</p> : null;
+            return (
+              <p className="mt-1.5 text-xs text-ink-500">
+                {ev.description}
+                {ev.to ? <> · Sent to: <b className="text-ink-700">{ev.to}</b></> : null}
+                {ev.params?.length ? <> · Params: <span className="mono">{ev.params.map((p) => `{{params.${p}}}`).join(" ")}</span></> : null}
+              </p>
+            );
+          })()}
         </Field>
         <Field label="Endpoint URL" required className="sm:col-span-2">
           <input className="input" placeholder="https://wapp-api.credoone.org/…" value={f.url} onChange={(e) => set("url", e.target.value)} />
@@ -305,7 +333,7 @@ export function WebhookBoard({ base, createAlign = "right", allowEventTypes = fa
     } catch {}
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const label = (k: string) => events.find((e) => e.key === k)?.label || k;
+  const label = (k: string) => events.find((e) => e.key === k)?.label || (events.length ? `${k} — no longer sent by the app` : k);
   const groups = useMemo(() => {
     const m = new Map<string, Hook[]>();
     for (const h of hooks || []) m.set(h.event, [...(m.get(h.event) || []), h]);
