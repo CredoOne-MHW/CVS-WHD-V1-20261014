@@ -1,11 +1,11 @@
 /** @type {import('next').NextConfig} */
 
-// Content Security Policy — only our own origin plus Google Fonts. Next.js needs inline scripts for hydration.
+// Content Security Policy — only our own origin (fonts are self-hosted). Next.js needs inline scripts for hydration.
 const csp = [
   "default-src 'self'",
   "script-src 'self' 'unsafe-inline'",
-  "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
-  "font-src 'self' data: https://fonts.gstatic.com",
+  "style-src 'self' 'unsafe-inline'",
+  "font-src 'self' data:",
   "img-src 'self' data: blob: https:",
   "connect-src 'self'",
   "frame-ancestors 'none'",
@@ -31,9 +31,9 @@ const nextConfig = {
   poweredByHeader: false,
   compress: true,
   productionBrowserSourceMaps: false,
+  // keep heavy server-only libs out of the client/edge bundles
+  serverExternalPackages: ["mongoose", "pdf-parse", "mammoth", "adm-zip", "exceljs"],
   experimental: {
-    // keep heavy server-only libs out of the client/edge bundles
-    serverComponentsExternalPackages: ["mongoose", "pdf-parse", "mammoth", "adm-zip"],
     optimizePackageImports: ["lucide-react"],
   },
   compiler: { removeConsole: process.env.NODE_ENV === "production" ? { exclude: ["error", "warn"] } : false },

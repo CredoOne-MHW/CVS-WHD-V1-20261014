@@ -21,7 +21,8 @@ async function brandFor(host: string) {
 }
 
 export async function generateMetadata(): Promise<Metadata> {
-  const host = headers().get("x-forwarded-host") || headers().get("host") || "";
+  const h = await headers();
+  const host = h.get("x-forwarded-host") || h.get("host") || "";
   const b = await brandFor(host);
   const title = b.kind === "company" ? `Sign in · ${b.shortName}` : `${b.name} · ${b.tagline}`;
   const description = b.kind === "company" ? `${b.shortName}${b.tagline ? ` — ${b.tagline}` : ""}. Secure sign-in for the ${b.shortName} team.` : b.subheadline;
@@ -39,7 +40,8 @@ export async function generateMetadata(): Promise<Metadata> {
 }
 
 export default async function LoginLayout({ children }: { children: React.ReactNode }) {
-  const host = headers().get("x-forwarded-host") || headers().get("host") || "";
+  const h = await headers();
+  const host = h.get("x-forwarded-host") || h.get("host") || "";
   const b = await brandFor(host);
   // Structured data for search and answer engines (AEO)
   const jsonLd =

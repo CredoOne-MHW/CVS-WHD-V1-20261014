@@ -4,7 +4,8 @@ export const dynamic = "force-dynamic";
 
 /** Per-company PWA manifest for the support portal (name, colours and icon follow the company's branding). */
 export async function GET() {
-  const host = headers().get("x-forwarded-host") || headers().get("host") || "";
+  const h = await headers();
+  const host = h.get("x-forwarded-host") || h.get("host") || "";
   let name = "Support";
   let short = "Support";
   let color = "#2f5c24";

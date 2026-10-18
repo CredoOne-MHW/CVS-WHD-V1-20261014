@@ -11,6 +11,14 @@
   },
   "crons": [
     {
+      "path": "/api/cron/jobs",
+      "schedule": "* * * * *"
+    },
+    {
+      "path": "/api/cron/insights",
+      "schedule": "2 * * * *"
+    },
+    {
       "path": "/api/cron/followups",
       "schedule": "30 2 * * *"
     },

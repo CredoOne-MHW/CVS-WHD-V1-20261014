@@ -1,3 +1,4 @@
+import { pump } from "../lib/jobs";
 import { Router } from "express";
 import { createHmac, timingSafeEqual } from "crypto";
 import { createTicket } from "./co/clients";
@@ -293,6 +294,20 @@ function cronAuth(req: any) {
 }
 
 /** Every 15 min: retry failed intake deliveries whose backoff has elapsed. */
+/** Hourly: queue scheduled "AI insights" WhatsApp digests (they run on the job worker). */
+r.get("/cron/insights", h(async (req, res) => {
+  cronAuth(req);
+  const { scheduleInsights } = await import("../lib/insights");
+  res.json({ queued: await scheduleInsights() });
+}));
+
+/** Every minute: background job worker (imports, exports, WhatsApp redelivery, scheduled AI digests). */
+r.get("/cron/jobs", h(async (req, res) => {
+  cronAuth(req);
+  const ran = await pump({ budgetMs: 50_000 });
+  res.json({ ran });
+}));
+
 r.get("/cron/retry", h(async (req, res) => {
   cronAuth(req);
   let retried = 0;

@@ -47,6 +47,7 @@ export const SA_MODULES: ModuleDef[] = [
   { key: "wa_logs", label: "WhatsApp Logs", group: "Settings", path: "/sa/settings/whatsapp-logs", icon: "MessagesSquare" },
   { key: "subscriptions", label: "Subscription Management", group: "Settings", path: "/sa/settings/subscriptions", icon: "CreditCard" },
   { key: "branding", label: "Platform Branding", group: "Settings", path: "/sa/settings/branding", icon: "Palette" },
+  { key: "system", label: "System Health", group: "Settings", path: "/sa/settings/system", icon: "Activity" },
 ];
 
 /** Login page designs (rendered by src/components/LoginTemplates.tsx). */

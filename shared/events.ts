@@ -47,6 +47,7 @@ export const WA_EVENTS = [
 
   /* ───────────── Company › Team, AI, messaging ───────────── */
   { key: "user_created", scope: "company", group: "Team", label: "New team member added (login details)", to: "Staff user", module: "roles", description: "A user is added in Role Management (no password is sent).", params: ["email", "role", "login_url"] },
+  { key: "ai_insights", scope: "company", group: "AI", label: "AI insights & recommendations (dashboard digest)", to: "Company admin", module: "dashboard", description: "Health score, what needs attention, what goes well and AI recommendations from live data — on a daily / weekly schedule (set below) or from Dashboard › Share on WhatsApp.", params: ["health_score", "health", "leads", "conversion", "collected", "overdue", "alerts"] },
   { key: "ai_credits_exhausted", scope: "company", group: "AI", label: "AI credits exhausted", to: "Company admin", module: "ai_agents", description: "An AI agent's model runs out of credits.", params: ["agent", "credits"] },
   { key: "broadcast", scope: "company", group: "Messaging", label: "Post / broadcast", to: "Selected leads", module: "wa_webhooks", description: "Messages sent from WhatsApp Webhook › Post.", params: ["lead_id"], manual: true },
 
