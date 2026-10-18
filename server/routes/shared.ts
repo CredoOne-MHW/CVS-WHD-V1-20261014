@@ -35,6 +35,9 @@ const webhookBody = z.object({
     .transform((a) => [...new Set(a.map((x) => normalizePhone(x)).filter(Boolean))])
     .refine((a) => a.every((x) => /^[6-9]\d{9}$/.test(x)), "Each additional number must be a valid 10-digit mobile number")
     .optional(),
+  schedule: z
+    .object({ freq: z.enum(["off", "daily", "weekly"]), hour: z.coerce.number().int().min(0).max(23).default(9), weekday: z.coerce.number().int().min(0).max(6).default(1), days: z.coerce.number().refine((d) => [1, 7, 30].includes(d)).default(7) })
+    .optional(),
 });
 
 function validateJsonText(label: string, text?: string, allowPlaceholders = false) {
@@ -151,7 +154,7 @@ export function waLogRoutes(scope: Scope) {
     if (req.query.event) q.event = req.query.event;
     if (req.query.phone) q.to = { $regex: escapeRegex(String(req.query.phone).replace(/\D/g, "")) }; // "To" filter (`to` is the date range end)
     if (req.query.result) q.result = req.query.result;
-    const [items, total] = await Promise.all([WaLog.find(q).sort({ createdAt: -1 }).skip(skip).limit(limit).select("-response").lean(), WaLog.countDocuments(q)]);
+    const [items, total] = await Promise.all([WaLog.find(q).sort({ createdAt: -1, _id: -1 }).skip(skip).limit(limit).select("-response").lean(), WaLog.countDocuments(q)]);
     res.json({ items, total, page, limit });
   }));
   r.get("/:id", can("wa_logs", "read"), h(async (req, res) => {
@@ -188,7 +191,7 @@ export function activityRoutes(scope: Scope) {
     if (scope === "super" && side === "company") {
       if (q.companyId) {
         setTenantDb(await dbOf(q.companyId));
-        [items, total] = await Promise.all([ActivityLog.find(q).sort({ createdAt: -1 }).skip(skip).limit(limit).lean(), ActivityLog.countDocuments(q)]);
+        [items, total] = await Promise.all([ActivityLog.find(q).sort({ createdAt: -1, _id: -1 }).skip(skip).limit(limit).lean(), ActivityLog.countDocuments(q)]);
       } else {
         // all companies: newest first across every company database (each contributes at most skip+limit rows)
         const per = await forEachCompanyDb(async (co) => {
@@ -199,7 +202,7 @@ export function activityRoutes(scope: Scope) {
         total = per.reduce((a, p) => a + p.value.n, 0);
         items = per.flatMap((p) => p.value.rows).sort((a: any, b: any) => +new Date(b.createdAt) - +new Date(a.createdAt)).slice(skip, skip + limit);
       }
-    } else [items, total] = await Promise.all([ActivityLog.find(q).sort({ createdAt: -1 }).skip(skip).limit(limit).lean(), ActivityLog.countDocuments(q)]);
+    } else [items, total] = await Promise.all([ActivityLog.find(q).sort({ createdAt: -1, _id: -1 }).skip(skip).limit(limit).lean(), ActivityLog.countDocuments(q)]);
     let companies: Record<string, string> = {};
     if (scope === "super" && side === "company") {
       const ids = [...new Set(items.map((i: any) => String(i.companyId)))];

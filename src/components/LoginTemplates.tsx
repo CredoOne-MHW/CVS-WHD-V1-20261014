@@ -4,6 +4,7 @@
  * logo, banner and texts set in Super Admin › Company › Branding & domain (or Settings › Platform branding).
  * The same components render the live login page and the scaled previews in the template picker, so a preview is exact.
  */
+import type React from "react";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { AuraLogo } from "./Login3D";
 import { LogoDisc } from "./LogoDisc";
@@ -429,7 +430,7 @@ function Glass({ b, darkForm }: P) {
   );
 }
 
-const DESIGNS: Record<LoginTemplateKey, (p: P) => JSX.Element> = { classic: Classic, photo: Photo, spotlight: Spotlight, aurora: Aurora, cinema: Cinema, minimal: Minimal, editorial: Editorial, mesh: Mesh, noir: Noir, showcase: Showcase, glass: Glass };
+const DESIGNS: Record<LoginTemplateKey, (p: P) => React.JSX.Element> = { classic: Classic, photo: Photo, spotlight: Spotlight, aurora: Aurora, cinema: Cinema, minimal: Minimal, editorial: Editorial, mesh: Mesh, noir: Noir, showcase: Showcase, glass: Glass };
 export const DARK_TEMPLATES: LoginTemplateKey[] = ["mesh", "noir", "glass"];
 
 export function LoginTemplate({ template, b, form, darkForm }: { template: LoginTemplateKey; b: LoginBrand; form: ReactNode; darkForm?: ReactNode }) {

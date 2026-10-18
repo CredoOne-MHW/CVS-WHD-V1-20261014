@@ -22,6 +22,52 @@ export interface Hook {
   lineSeparator?: string;
   maxChars: number;
   extraNumbers?: string[];
+  schedule?: { freq: "off" | "daily" | "weekly"; hour: number; weekday: number; days: number };
+}
+
+const WEEKDAYS = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+const hourLabel = (h: number) => `${((h + 11) % 12) + 1}:00 ${h < 12 ? "AM" : "PM"}`;
+
+/** "AI insights" webhooks: when the digest goes out automatically (IST). */
+export function InsightsSchedule({ value, onChange, disabled }: { value?: Hook["schedule"]; onChange: (v: NonNullable<Hook["schedule"]>) => void; disabled?: boolean }) {
+  const v = value || { freq: "daily", hour: 9, weekday: 1, days: 1 };
+  const set = (p: Partial<typeof v>) => onChange({ ...v, ...p } as any);
+  return (
+    <div className="rounded-2xl border border-hive-200 bg-hive-50/60 p-4">
+      <p className="text-sm font-semibold text-ink-900">Send AI insights automatically</p>
+      <p className="mb-3 text-xs text-ink-500">Health score, alerts, what goes well and AI recommendations from live data. Also available any time from Dashboard › Share on WhatsApp.</p>
+      <div className="grid gap-3 sm:grid-cols-4">
+        <select className="input" value={v.freq} disabled={disabled} onChange={(e) => set({ freq: e.target.value as any, days: e.target.value === "weekly" ? 7 : v.days })} aria-label="Frequency">
+          <option value="daily">Daily</option>
+          <option value="weekly">Weekly</option>
+          <option value="off">Off (manual only)</option>
+        </select>
+        {v.freq === "weekly" && (
+          <select className="input" value={v.weekday} disabled={disabled} onChange={(e) => set({ weekday: Number(e.target.value) })} aria-label="Day">
+            {WEEKDAYS.map((d, i) => (
+              <option key={d} value={i}>
+                {d}
+              </option>
+            ))}
+          </select>
+        )}
+        {v.freq !== "off" && (
+          <select className="input" value={v.hour} disabled={disabled} onChange={(e) => set({ hour: Number(e.target.value) })} aria-label="Time (IST)">
+            {Array.from({ length: 24 }, (_, h) => (
+              <option key={h} value={h}>
+                {hourLabel(h)} IST
+              </option>
+            ))}
+          </select>
+        )}
+        <select className="input" value={v.days} disabled={disabled} onChange={(e) => set({ days: Number(e.target.value) })} aria-label="Period covered">
+          <option value={1}>Covers last 1 day</option>
+          <option value={7}>Covers last 7 days</option>
+          <option value={30}>Covers last 30 days</option>
+        </select>
+      </div>
+    </div>
+  );
 }
 
 /** Additional WhatsApp numbers that receive a copy of every message this webhook sends. */
@@ -165,7 +211,14 @@ export function WebhookModal({ open, onClose, base, events, initial, onSaved, on
           <input className="input" placeholder="e.g. CredoOne WA API" value={f.name} onChange={(e) => set("name", e.target.value)} />
         </Field>
         <Field label="Event" hint={onNewEvent ? <button type="button" className="font-semibold text-hive-700 underline" onClick={onNewEvent}>+ New event type</button> : undefined}>
-          <select className="input" value={f.event} onChange={(e) => set("event", e.target.value)}>
+          <select
+            className="input"
+            value={f.event}
+            onChange={(e) => {
+              set("event", e.target.value);
+              if (e.target.value === "ai_insights" && !f.schedule) set("schedule", { freq: "daily", hour: 9, weekday: 1, days: 1 });
+            }}
+          >
             {f.event && !events.some((ev) => ev.key === f.event) && <option value={f.event}>{f.event} — no longer sent by the app</option>}
             {byGroup(events).map(([g, list]) => (
               <optgroup key={g} label={g}>
@@ -193,6 +246,11 @@ export function WebhookModal({ open, onClose, base, events, initial, onSaved, on
         <Field label="Endpoint URL" required className="sm:col-span-2">
           <input className="input" placeholder="https://wapp-api.credoone.org/…" value={f.url} onChange={(e) => set("url", e.target.value)} />
         </Field>
+        {f.event === "ai_insights" && (
+          <div className="sm:col-span-2">
+            <InsightsSchedule value={f.schedule} onChange={(v) => set("schedule", v)} />
+          </div>
+        )}
         <Field label="Additional numbers (optional)" className="sm:col-span-2" hint="Each gets a copy of every message this webhook sends — e.g. the owner or a manager. Up to 10. Not used for bulk Post or test sends.">
           <ExtraNumbers value={f.extraNumbers} onChange={(v) => set("extraNumbers", v)} />
         </Field>
@@ -292,6 +350,7 @@ export function WebhookCard({ hook, base, eventLabel, testPhone, onChanged }: { 
         <Field label="Template name (optional)">
           <input className="input" value={f.templateName || ""} placeholder={f.event} disabled={!perm.update} onChange={(e) => set("templateName", e.target.value)} />
         </Field>
+        {f.event === "ai_insights" && <InsightsSchedule value={f.schedule} disabled={!perm.update} onChange={(v) => set("schedule", v)} />}
         <Field label="Additional numbers" hint="Also receive a copy of every message (not bulk Post / tests). Save to apply.">
           <ExtraNumbers value={f.extraNumbers} disabled={!perm.update} onChange={(v) => set("extraNumbers", v)} />
         </Field>

@@ -6,7 +6,7 @@ import crypto from "crypto";
 import { z } from "zod";
 import mongoose, { Types } from "mongoose";
 import * as XLSX from "xlsx";
-import { Lead, Connector, IntakeEvent, Company, User, Webhook, Otp, AiAgent, AiAllocation, CompanyAgent, Role, Plan, AiProvider, AiUsage, Subscription, SubscriptionCycle, SubscriptionPlan, ConnectorKey, AiEndpoint, EndpointKey } from "../../models";
+import { Lead, Connector, IntakeEvent, Job, Company, User, Webhook, Otp, AiAgent, AiAllocation, CompanyAgent, Role, Plan, AiProvider, AiUsage, Subscription, SubscriptionCycle, SubscriptionPlan, ConnectorKey, AiEndpoint, EndpointKey } from "../../models";
 import { can, requireScope, tenant, invalidateAuth } from "../../middleware/auth";
 import { h, parse, notFound, badRequest, forbidden, paging, dateRange, escapeRegex, HttpError } from "../../lib/http";
 import { upsertLead, mapFields, runEvent } from "../../lib/intake";
@@ -17,6 +17,8 @@ import { encrypt, decrypt, randomKey, sha256, maskSecret } from "../../lib/crypt
 import { chat, walletFor } from "../../lib/ai";
 import { renewAllocations, billingAlert, enrichCycles, refreshIfStale } from "../../lib/billing";
 import { currentDb } from "../../lib/context";
+import { enqueue, pump, defineJob, jobView, saveFile, readFile, deleteFile } from "../../lib/jobs";
+import { overview, recommendations, sendInsights } from "../../lib/insights";
 import { splitKeywords } from "../../../shared/text";
 import { assertPublicUrl } from "../../lib/net";
 import { mcpSession } from "../../lib/mcp";
@@ -29,7 +31,7 @@ import { webhookRoutes, waLogRoutes, activityRoutes, roleRoutes } from "../share
 import { reportRoutes } from "../reports";
 import { assistantChat, assistantInfo, withAgentDb, endpointChat, testChat } from "../../lib/agentic";
 import { companyTables, countTable } from "../../lib/reports";
-import { rateLimit, invalidate } from "../../lib/cache";
+import { rateLimit, invalidate, cached } from "../../lib/cache";
 import { publicBranding, tenantUrls } from "../../lib/tenant";
 import { LEAD_STATUSES, LOST_REASONS, LOST_STATUS, WON_STATUS, CONNECTOR_TYPES, normalizePhone } from "../../../shared/constants";
 
@@ -77,6 +79,32 @@ r.get("/dashboard", can("dashboard", "read"), h(async (req, res) => {
   res.json({ days, total, today, won, lost: lostN, untouched, conversion: total ? +((won / total) * 100).toFixed(1) : 0, funnel, sources, lostReasons: lost, trend, dueFollowups, recent });
 }));
 
+/** Intelligent dashboard: the whole organisation at a glance, compared with the previous period, with signals. */
+r.get("/dashboard/overview", can("dashboard", "read"), h(async (req, res) => {
+  const days = [7, 30, 90, 365].includes(Number(req.query.days)) ? Number(req.query.days) : 30;
+  // the same numbers for 30 s: refreshes from several screens/tabs don't re-run every aggregation
+  res.json(await cached(`dash:${req.auth!.companyId}:${days}`, 30, () => overview(req.auth!.companyId!, days)));
+}));
+
+/** AI recommendations from the live numbers (regenerated when the numbers change; rules if no AI model). */
+r.post("/dashboard/insights", can("dashboard", "read"), h(async (req, res) => {
+  const b = parse(z.object({ days: z.coerce.number().optional(), force: z.boolean().optional() }), req.body);
+  const days = [7, 30, 90, 365].includes(Number(b.days)) ? Number(b.days) : 30;
+  if (b.force && !(await rateLimit(`insights:${req.auth!.companyId}`, 12, 3600))) throw new HttpError(429, "Recommendations were regenerated many times this hour — try again later.");
+  const o = await cached(`dash:${req.auth!.companyId}:${days}`, 30, () => overview(req.auth!.companyId!, days));
+  res.json(await recommendations(req.auth!.companyId!, o, { force: b.force, userId: req.auth!.userId }));
+}));
+
+/** Share the snapshot + recommendations on WhatsApp now, through every active "AI insights" webhook. */
+r.post("/dashboard/share", can("dashboard", "read"), h(async (req, res) => {
+  const b = parse(z.object({ days: z.coerce.number().optional() }), req.body);
+  const days = [7, 30, 90, 365].includes(Number(b.days)) ? Number(b.days) : 30;
+  const r2 = await sendInsights(req.auth!.companyId!, days, { trigger: "manual", by: req.auth!.email });
+  if (!r2.sent) throw new HttpError(424, r2.reason || "No active webhook for “AI insights & recommendations”. Create one in Settings › WhatsApp Webhook.");
+  res.locals.action = "Share insights";
+  res.json(r2);
+}));
+
 /* ───────────── Leads ───────────── */
 const leadBody = z.object({
   name: z.string().max(150).optional().default(""),
@@ -94,6 +122,10 @@ const leadBody = z.object({
   consentWhatsapp: z.boolean().optional(),
   services: z.array(z.string().max(80)).max(30).optional(),
   business: businessBody.optional(),
+});
+
+const exportRow = (l: any) => ({
+    Name: l.name || "NA", "WhatsApp No": l.whatsapp || "NA", "Phone No": l.phone || "NA", Email: l.email || "NA", Address: l.address || "NA", Comments: l.comments || "NA", Source: l.source, Campaign: l.campaign || "NA", Medium: l.medium || "NA", Referral: l.referral || "NA", "Profile / post": l.profileUrl || "NA", Status: l.status, "Lost reason": l.lostReasonOther || l.lostReason, Score: l.score, Service: (l.services || []).join(", ") || "NA", "Company GST": l.business?.gst || "NA", "Trade licence": l.business?.tradeLicence || "NA", "Company PAN": l.business?.pan || "NA", "Registered address": l.business?.registeredAddress || "NA", "Communication address": l.business?.communicationAddress || "NA", "Owner email": l.business?.ownerEmail || "NA", "Owner number": l.business?.ownerPhone || "NA", "Owner PAN": l.business?.ownerPan || "NA", "Owner Aadhaar": l.business?.ownerAadhaarLast4 ? `XXXX XXXX ${l.business.ownerAadhaarLast4}` : "NA", "Created (IST)": new Date(l.createdAt).toLocaleString("en-IN", { timeZone: "Asia/Kolkata" }),
 });
 
 function leadQuery(req: any) {
@@ -118,7 +150,7 @@ r.get("/leads/meta", can("leads", "read"), h(async (req, res) => {
 r.get("/leads", can("leads", "read"), h(async (req, res) => {
   const { page, limit, skip } = paging(req.query);
   const q = leadQuery(req);
-  const sort: any = req.query.sort === "score" ? { score: -1 } : req.query.sort === "updated" ? { updatedAt: -1 } : { createdAt: -1 };
+  const sort: any = req.query.sort === "score" ? { score: -1, _id: -1 } : req.query.sort === "updated" ? { updatedAt: -1, _id: -1 } : { createdAt: -1, _id: -1 }; // _id breaks ties → no repeated or skipped rows between pages
   const [items, total, counts] = await Promise.all([
     Lead.find(q).sort(sort).skip(skip).limit(limit).select("-attribution.raw -remarks -business.ownerAadhaarEnc").lean(),
     Lead.countDocuments(q),
@@ -135,10 +167,8 @@ r.get("/leads/template.:fmt", can("leads", "create"), (req, res) => {
 });
 
 r.get("/leads/export.csv", can("leads", "read"), h(async (req, res) => {
-  const rows = await Lead.find(leadQuery(req)).sort({ createdAt: -1 }).limit(50_000).lean();
-  const data = rows.map((l: any) => ({
-    Name: l.name || "NA", "WhatsApp No": l.whatsapp || "NA", "Phone No": l.phone || "NA", Email: l.email || "NA", Address: l.address || "NA", Comments: l.comments || "NA", Source: l.source, Campaign: l.campaign || "NA", Medium: l.medium || "NA", Referral: l.referral || "NA", "Profile / post": l.profileUrl || "NA", Status: l.status, "Lost reason": l.lostReasonOther || l.lostReason, Score: l.score, Service: (l.services || []).join(", ") || "NA", "Company GST": l.business?.gst || "NA", "Trade licence": l.business?.tradeLicence || "NA", "Company PAN": l.business?.pan || "NA", "Registered address": l.business?.registeredAddress || "NA", "Communication address": l.business?.communicationAddress || "NA", "Owner email": l.business?.ownerEmail || "NA", "Owner number": l.business?.ownerPhone || "NA", "Owner PAN": l.business?.ownerPan || "NA", "Owner Aadhaar": l.business?.ownerAadhaarLast4 ? `XXXX XXXX ${l.business.ownerAadhaarLast4}` : "NA", "Created (IST)": new Date(l.createdAt).toLocaleString("en-IN", { timeZone: "Asia/Kolkata" }),
-  }));
+  const rows = await Lead.find(leadQuery(req)).sort({ createdAt: -1 }).limit(5_000).lean(); // larger exports: POST /leads/export (background job)
+  const data = rows.map(exportRow);
   res.locals.logRead = true;
   res.locals.action = "Export";
   res.setHeader("Content-Disposition", `attachment; filename="leads-${Date.now()}.csv"`);
@@ -273,29 +303,132 @@ r.post("/leads/:id/delete-confirm", can("leads", "delete"), h(async (req, res) =
 }));
 
 /** Bulk import from .xlsx/.csv (Manual & Bulk connector). Dedupes against existing leads. */
+/**
+ * Bulk import runs as a background job (lib/jobs): the file is kept in the company's own database (GridFS), rows are
+ * processed in time-boxed slices with a resumable cursor, and the screen polls the progress. Small files usually finish
+ * inside the upload request itself (one slice runs straight away).
+ */
 r.post("/leads/import", can("leads", "create"), upload.single("file"), h(async (req, res) => {
   if (!req.file) throw badRequest("Attach a .xlsx or .csv file");
-  if (!/\.(xlsx|xls|csv)$/i.test(req.file.originalname)) throw badRequest("Only .xlsx, .xls or .csv");
-  const rows = parseSheet(req.file.buffer, req.file.originalname);
+  if (!/\.(xlsx|csv)$/i.test(req.file.originalname)) throw badRequest("Only .xlsx or .csv (save .xls files as .xlsx)");
+  const rows = await parseSheet(req.file.buffer, req.file.originalname).catch((e) => {
+    throw badRequest(`Couldn't read the file: ${e.message}`);
+  });
   if (!rows.length) throw badRequest("No rows found");
   if (rows.length > 5000) throw badRequest("Max 5,000 rows per file");
-  const source = String(req.body.source || "bulk_import");
-  const campaign = req.body.campaign ? String(req.body.campaign) : undefined;
-  const out = { total: rows.length, created: 0, merged: 0, failed: 0, errors: [] as { row: number; error: string }[] };
-  const batchId = randomKey(6);
-  for (let i = 0; i < rows.length; i++) {
+  const db = currentDb();
+  const fileId = await saveFile(db, req.file.originalname, req.file.buffer, req.file.mimetype || "application/octet-stream");
+  // the same file uploaded twice within a minute by the same user is one job (double-click / retry safe)
+  const idem = `import:${req.auth!.companyId}:${req.auth!.userId}:${crypto.createHash("sha256").update(req.file.buffer).digest("hex").slice(0, 24)}:${Math.floor(Date.now() / 60_000)}`;
+  const job: any = await enqueue("leads.import", { fileId, fileName: req.file.originalname, source: String(req.body.source || "bulk_import"), campaign: req.body.campaign ? String(req.body.campaign) : undefined, by: req.auth!.name, total: rows.length }, { companyId: req.auth!.companyId, idemKey: idem, createdBy: req.auth!.email });
+  await pump({ budgetMs: 8_000, jobId: job._id, sliceMs: 7_000 });
+  res.locals.action = "Import";
+  res.locals.item = `${req.file.originalname} (${rows.length} rows)`;
+  res.status(202).json(jobView(await Job.findById(job._id).lean()));
+}));
+
+defineJob("leads.import", async (p, st, ctx) => {
+  const db = currentDb();
+  const chunks: Buffer[] = [];
+  for await (const c of readFile(db, p.fileId)) chunks.push(c as Buffer);
+  const rows = await parseSheet(Buffer.concat(chunks), p.fileName);
+  const s = st || { i: 0, created: 0, merged: 0, failed: 0, errors: [] as { row: number; error: string }[], batchId: randomKey(6) };
+  const companyId = String(ctx.job.companyId);
+  const one = async (i: number) => {
     try {
       const m = mapFields(rows[i]);
-      const r2 = await upsertLead(req.auth!.companyId!, { ...m, source: m.source || source, campaign: m.campaign || campaign, customFields: { importBatch: batchId } }, { by: req.auth!.name, notify: false });
-      r2.created ? out.created++ : out.merged++;
+      // idempotent: upsertLead merges by phone/email, so a slice that is re-run never creates duplicates
+      const r2 = await upsertLead(companyId, { ...m, source: m.source || p.source, campaign: m.campaign || p.campaign, customFields: { importBatch: s.batchId } }, { by: p.by, notify: false });
+      r2.created ? s.created++ : s.merged++;
     } catch (e: any) {
-      out.failed++;
-      if (out.errors.length < 50) out.errors.push({ row: i + 2, error: e.message });
+      s.failed++;
+      if (s.errors.length < 50) s.errors.push({ row: i + 2, error: e.message });
     }
+  };
+  // up to 6 rows at a time; rows sharing a phone / email never run together, so in-file duplicates still merge
+  const keyOf = (r: any) => {
+    const m = mapFields(r);
+    return [normalizePhone(m.whatsapp || ""), normalizePhone(m.phone || ""), String(m.email || "").toLowerCase()].filter(Boolean);
+  };
+  while (s.i < rows.length && ctx.timeLeft() > 2500) {
+    const batch: number[] = [];
+    const keys = new Set<string>();
+    for (let i = s.i; i < rows.length && batch.length < 6; i++) {
+      const k = keyOf(rows[i]);
+      if (k.some((x) => keys.has(x))) break;
+      k.forEach((x) => keys.add(x));
+      batch.push(i);
+    }
+    await Promise.all(batch.map(one));
+    s.i += batch.length;
+    if (Math.floor(s.i / 100) !== Math.floor((s.i - batch.length) / 100)) await ctx.progress(s.i, rows.length);
   }
-  res.locals.action = "Import";
-  res.locals.item = `${req.file.originalname} (${out.created} new)`;
-  res.json(out);
+  await ctx.progress(s.i, rows.length);
+  if (s.i < rows.length) return { done: false, state: s };
+  await deleteFile(db, p.fileId);
+  return { done: true, result: { total: rows.length, created: s.created, merged: s.merged, failed: s.failed, errors: s.errors } };
+}, { maxAttempts: 5 });
+
+/** Large exports also run as a job: the CSV is written to the company's own database and downloaded from there. */
+r.post("/leads/export", can("leads", "read"), h(async (req, res) => {
+  const q = { ...req.query };
+  const job: any = await enqueue("leads.export", { query: q, by: req.auth!.email }, { companyId: req.auth!.companyId, createdBy: req.auth!.email });
+  await pump({ budgetMs: 8_000, jobId: job._id, sliceMs: 7_500 });
+  res.locals.logRead = true;
+  res.locals.action = "Export";
+  res.status(202).json(jobView(await Job.findById(job._id).lean()));
+}));
+
+defineJob("leads.export", async (p, st, ctx) => {
+  const filter = leadQuery({ query: p.query, auth: { companyId: String(ctx.job.companyId) } } as any);
+  const s = st || { lastId: null as string | null, parts: [] as string[], n: 0, total: 0 };
+  if (!s.total) s.total = Math.min(50_000, await Lead.countDocuments(filter));
+  // page by _id (stable, index-friendly), 2,000 rows at a time, each page saved as one CSV part
+  while (s.n < s.total && ctx.timeLeft() > 3000) {
+    const page = await Lead.find({ ...filter, ...(s.lastId ? { _id: { $lt: new Types.ObjectId(s.lastId) } } : {}) }).sort({ _id: -1 }).limit(Math.min(2000, s.total - s.n)).lean<any[]>();
+    if (!page.length) break;
+    const csv = XLSX.utils.sheet_to_csv(XLSX.utils.json_to_sheet(page.map(exportRow), { skipHeader: s.n > 0 }));
+    s.parts.push(await saveFile(currentDb(), `part-${s.parts.length}.csv`, Buffer.from((s.n > 0 ? "\n" : "") + csv), "text/csv"));
+    s.n += page.length;
+    s.lastId = String(page[page.length - 1]._id);
+    await ctx.progress(s.n, s.total);
+    if (page.length < 2000) break;
+  }
+  if (s.n < s.total && ctx.timeLeft() <= 3000) return { done: false, state: s };
+  // stitch the parts into one file
+  const db = currentDb();
+  const all: Buffer[] = [];
+  for (const id of s.parts) {
+    for await (const c of readFile(db, id)) all.push(c as Buffer);
+    await deleteFile(db, id);
+  }
+  const fileId = await saveFile(db, `leads-${Date.now()}.csv`, Buffer.concat(all.length ? all : [Buffer.from("Name\n")]), "text/csv");
+  return { done: true, result: { fileId, rows: s.n, fileName: `leads-${new Date().toISOString().slice(0, 10)}.csv` } };
+}, { maxAttempts: 4 });
+
+/** Job progress (and a nudge: one more slice runs while someone is watching). Only the company's own jobs. */
+r.get("/jobs/:id", h(async (req, res) => {
+  if (!mongoose.isValidObjectId(req.params.id)) throw notFound();
+  const own = { _id: req.params.id, companyId: new Types.ObjectId(req.auth!.companyId!) };
+  let j = await Job.findOne(own).lean<any>();
+  if (!j) throw notFound();
+  if (j.status === "queued" || (j.status === "running" && new Date(j.lockedUntil) < new Date())) {
+    await pump({ budgetMs: 8_000, jobId: j._id, sliceMs: 7_000 });
+    j = await Job.findOne(own).lean<any>();
+  }
+  res.json(jobView(j));
+}));
+
+r.get("/jobs/:id/download", h(async (req, res) => {
+  if (!mongoose.isValidObjectId(req.params.id)) throw notFound();
+  const j = await Job.findOne({ _id: req.params.id, companyId: new Types.ObjectId(req.auth!.companyId!), status: "done" }).lean<any>();
+  if (!j?.result?.fileId) throw notFound();
+  if (j.type === "leads.export" && !req.auth!.perms.leads?.read) throw forbidden();
+  res.setHeader("Content-Type", "text/csv; charset=utf-8");
+  res.setHeader("Content-Disposition", `attachment; filename="${j.result.fileName || "export.csv"}"`);
+  res.locals.logRead = true;
+  res.locals.action = "Download export";
+  readFile(currentDb(), j.result.fileId).on("error", () => res.end()).pipe(res);
 }));
 
 /* ───────────── Integrations / Connectors ───────────── */
@@ -513,7 +646,7 @@ r.get("/integrations/:id/events", can("integrations", "read"), h(async (req, res
   const { page, limit, skip } = paging(req.query);
   const q: any = { connectorId: req.params.id, ...tenant(req) };
   if (req.query.status) q.status = req.query.status;
-  const [items, total] = await Promise.all([IntakeEvent.find(q).sort({ createdAt: -1 }).skip(skip).limit(limit).lean(), IntakeEvent.countDocuments(q)]);
+  const [items, total] = await Promise.all([IntakeEvent.find(q).sort({ createdAt: -1, _id: -1 }).skip(skip).limit(limit).lean(), IntakeEvent.countDocuments(q)]);
   res.json({ items, total, page, limit });
 }));
 
@@ -580,7 +713,7 @@ r.post("/wa-post", can("wa_webhooks", "update"), upload.single("file"), h(async 
     recipients = leads.map((l: any) => ({ phone: l.whatsapp || l.phone, name: l.name, leadId: String(l._id) })).filter((x) => x.phone);
   }
   if (req.file) {
-    const rows = parseSheet(req.file.buffer, req.file.originalname).map((r2) => mapFields(r2));
+    const rows = (await parseSheet(req.file.buffer, req.file.originalname)).map((r2) => mapFields(r2));
     for (const row of rows) {
       const phone = row.whatsapp || row.phone;
       if (!phone) continue;
@@ -768,7 +901,7 @@ r.get("/ai-agents/:id/usage", can("ai_agents", "read"), h(async (req, res) => {
       { $group: { _id: { $dateToString: { format: "%Y-%m-%d", date: "$createdAt", timezone: "Asia/Kolkata" } }, calls: { $sum: 1 }, credits: { $sum: "$credits" }, billed: { $sum: "$billed" } } },
       { $sort: { _id: 1 } },
     ]),
-    AiUsage.find(match).sort({ createdAt: -1 }).skip((page - 1) * limit).limit(limit).select("-cost").lean<any[]>(),
+    AiUsage.find(match).sort({ createdAt: -1, _id: -1 }).skip((page - 1) * limit).limit(limit).select("-cost").lean<any[]>(),
     AiUsage.countDocuments(match),
     model?._id ? walletFor(cid, model) : null,
   ]);
@@ -948,7 +1081,7 @@ r.get("/subscription/history", can("subscription", "read"), h(async (req, res) =
   const q: any = { companyId: new Types.ObjectId(req.auth!.companyId!) };
   if (typeof req.query.status === "string" && ["paid", "unpaid", "overdue", "expired"].includes(req.query.status)) q.status = req.query.status;
   const { page, limit, skip } = paging(req.query);
-  const [rows, total] = await Promise.all([SubscriptionCycle.find(q).sort({ periodStart: -1 }).skip(skip).limit(limit).select("-remindersSent -overdueNotifiedAt -expiredNotifiedAt -statusChangedBy").lean<any[]>(), SubscriptionCycle.countDocuments(q)]);
+  const [rows, total] = await Promise.all([SubscriptionCycle.find(q).sort({ periodStart: -1, _id: -1 }).skip(skip).limit(limit).select("-remindersSent -overdueNotifiedAt -expiredNotifiedAt -statusChangedBy").lean<any[]>(), SubscriptionCycle.countDocuments(q)]);
   res.json({ items: await enrichCycles(rows), page, limit, total });
 }));
 

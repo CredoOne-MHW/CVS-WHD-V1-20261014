@@ -93,7 +93,7 @@ r.get("/allocations", can("subscriptions", "read"), h(async (req, res) => {
   if (req.query.active !== "all") q.active = true;
   if (typeof req.query.companyId === "string" && /^[a-f0-9]{24}$/.test(req.query.companyId)) q.companyId = req.query.companyId;
   const { page, limit, skip } = paging(req.query);
-  const [items, total] = await Promise.all([Subscription.find(q).sort({ createdAt: -1 }).skip(skip).limit(limit).lean<any[]>(), Subscription.countDocuments(q)]);
+  const [items, total] = await Promise.all([Subscription.find(q).sort({ createdAt: -1, _id: -1 }).skip(skip).limit(limit).lean<any[]>(), Subscription.countDocuments(q)]);
   const [cos, current] = await Promise.all([
     Company.find({ _id: { $in: items.map((x) => x.companyId) } }).select("name code").lean<any[]>(),
     // latest cycle per subscription: one indexed lookup each (≤ page size), no collection-wide aggregation
@@ -183,7 +183,7 @@ r.get("/cycles", can("subscriptions", "read"), h(async (req, res) => {
   }
   const { page, limit, skip } = paging(req.query);
   const [rows, total, counts] = await Promise.all([
-    SubscriptionCycle.find(q).sort({ periodEnd: 1 }).skip(skip).limit(limit).lean<any[]>(),
+    SubscriptionCycle.find(q).sort({ periodEnd: 1, _id: 1 }).skip(skip).limit(limit).lean<any[]>(),
     SubscriptionCycle.countDocuments(q),
     cached("billing:counts", 30, async () => {
       const now = new Date();

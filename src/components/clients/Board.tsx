@@ -19,7 +19,7 @@ export function Board() {
   const [open, setOpen] = useState<string | null>(null);
   const perm = usePerm("clients");
   const toast = useToast();
-  const t = useRef<any>();
+  const t = useRef<any>(undefined);
 
   const load = useCallback(() => api(`/co/clients-board${qs({ q })}`).then((r) => setCols(r.columns)), [q]);
   useEffect(() => {

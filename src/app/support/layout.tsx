@@ -16,7 +16,8 @@ async function brandFor(host: string) {
 }
 
 export async function generateMetadata(): Promise<Metadata> {
-  const host = headers().get("x-forwarded-host") || headers().get("host") || "";
+  const h = await headers();
+  const host = h.get("x-forwarded-host") || h.get("host") || "";
   const b = await brandFor(host);
   const title = b ? `Support · ${b.shortName}` : "Support";
   return {
@@ -29,7 +30,8 @@ export async function generateMetadata(): Promise<Metadata> {
   };
 }
 export async function generateViewport(): Promise<Viewport> {
-  const host = headers().get("x-forwarded-host") || headers().get("host") || "";
+  const h = await headers();
+  const host = h.get("x-forwarded-host") || h.get("host") || "";
   const b = await brandFor(host);
   return { themeColor: b?.themeColor || "#2f5c24", width: "device-width", initialScale: 1, viewportFit: "cover" };
 }

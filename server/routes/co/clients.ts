@@ -134,7 +134,7 @@ r.get("/clients", can("clients", "read"), h(async (req, res) => {
     const rx = { $regex: escapeRegex(String(req.query.q)), $options: "i" };
     q.$or = [{ name: rx }, { clientCode: rx }, { phone: rx }, { whatsapp: rx }, { email: rx }];
   }
-  const [items, total, board] = await Promise.all([Lead.find(q).sort({ clientSince: -1 }).skip(skip).limit(limit).select(CLIENT_LIST_FIELDS).lean<any[]>(), Lead.countDocuments(q), getBoard(cid)]);
+  const [items, total, board] = await Promise.all([Lead.find(q).sort({ clientSince: -1, _id: -1 }).skip(skip).limit(limit).select(CLIENT_LIST_FIELDS).lean<any[]>(), Lead.countDocuments(q), getBoard(cid)]);
   // outstanding dues for the clients on this page (one grouped query)
   const due = items.length
     ? await ClientPayment.aggregate([{ $match: { companyId: oid(cid), clientId: { $in: items.map((i) => i._id) }, status: { $in: ["unpaid", "overdue"] } } }, { $group: { _id: "$clientId", n: { $sum: 1 }, amount: { $sum: "$gross" } } }])
@@ -312,7 +312,7 @@ r.get("/clients-tickets", can("clients", "read"), h(async (req, res) => {
     q.$or = [{ ticketNo: rx }, { clientCode: rx }, { clientName: rx }, { description: rx }];
   }
   const [items, total, counts] = await Promise.all([
-    SupportTicket.find(q).sort({ updatedAt: -1 }).skip(skip).limit(limit).lean(),
+    SupportTicket.find(q).sort({ updatedAt: -1, _id: -1 }).skip(skip).limit(limit).lean(),
     SupportTicket.countDocuments(q),
     SupportTicket.aggregate([{ $match: { companyId: oid(tenant(req).companyId) } }, { $group: { _id: "$status", n: { $sum: 1 } } }]),
   ]);
@@ -395,7 +395,7 @@ r.get("/clients-plans", can("clients", "read"), h(async (req, res) => {
     const rx = { $regex: escapeRegex(String(req.query.q)), $options: "i" };
     q.$or = [{ clientCode: rx }, { clientName: rx }, { serviceType: rx }];
   }
-  const [items, total] = await Promise.all([ClientPlan.find(q).sort({ createdAt: -1 }).skip(skip).limit(limit).lean(), ClientPlan.countDocuments(q)]);
+  const [items, total] = await Promise.all([ClientPlan.find(q).sort({ createdAt: -1, _id: -1 }).skip(skip).limit(limit).lean(), ClientPlan.countDocuments(q)]);
   res.json({ items, total, page, limit });
 }));
 

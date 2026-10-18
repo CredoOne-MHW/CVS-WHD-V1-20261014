@@ -143,7 +143,7 @@ function Post() {
             <label className="flex cursor-pointer flex-col items-center justify-center rounded-2xl border-2 border-dashed border-hive-200 bg-hive-50/50 px-4 py-12 text-center hover:bg-hive-50">
               <Upload className="mb-2 h-6 w-6 text-hive-600" />
               <span className="text-sm font-semibold">{file ? file.name : "Choose .xlsx or .csv with Name and WhatsApp No columns"}</span>
-              <input type="file" accept=".xlsx,.xls,.csv" className="hidden" onChange={(e) => setFile(e.target.files?.[0] || null)} />
+              <input type="file" accept=".xlsx,.csv" className="hidden" onChange={(e) => setFile(e.target.files?.[0] || null)} />
             </label>
             <label className="flex items-center gap-2 text-sm text-ink-700">
               <input type="checkbox" className="h-4 w-4 accent-hive-700" checked={save} onChange={(e) => setSave(e.target.checked)} />

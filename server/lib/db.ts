@@ -170,11 +170,11 @@ async function bootstrap() {
 
   // Company databases get every collection + index added since they were created (Client module, support tickets, payments).
   // Runs in the background; idempotent (existing indexes are left as they are). Bump the version when models gain indexes.
-  if (!done.has("tenant_indexes_v2")) {
+  if (!done.has("tenant_indexes_v3")) {
     import("./tenantdb")
       .then(async ({ forEachCompanyDb, provisionDb }) => {
         await forEachCompanyDb(async (c) => (c.db ? provisionDb(c.db).catch((e: any) => console.warn(`indexes for ${c.db}:`, e?.message)) : null), { includeDeleted: true, concurrency: 3 });
-        await meta.updateOne({ _id: "tenant_indexes_v2" }, { $set: { at: new Date() } }, { upsert: true });
+        await meta.updateOne({ _id: "tenant_indexes_v3" }, { $set: { at: new Date() } }, { upsert: true });
       })
       .catch((e) => console.warn("tenant indexes:", e?.message));
   }
