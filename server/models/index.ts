@@ -234,6 +234,10 @@ LeadSchema.index({ companyId: 1, status: 1, isClient: 1 });
 LeadSchema.index({ companyId: 1, clientCode: 1 }, { unique: true, partialFilterExpression: { clientCode: { $type: "string" } } });
 LeadSchema.index({ companyId: 1, profileUrl: 1 }, { partialFilterExpression: { profileUrl: { $type: "string" } } });
 LeadSchema.index({ companyId: 1, status: 1, updatedAt: -1 });
+// dashboard + list sorts (performance): follow-ups due, score sort, recently updated
+LeadSchema.index({ companyId: 1, nextFollowUpAt: 1 }, { partialFilterExpression: { nextFollowUpAt: { $type: "date" } } });
+LeadSchema.index({ companyId: 1, score: -1 });
+LeadSchema.index({ companyId: 1, updatedAt: -1 });
 LeadSchema.index({ name: "text", email: "text", phone: "text", whatsapp: "text", comments: "text" });
 export const Lead = tm<any>("Lead", LeadSchema);
 
@@ -401,6 +405,9 @@ const WebhookSchema = new Schema(
     maxChars: { type: Number, default: 800 },
     // extra 10-digit numbers that get a copy of every message this webhook sends (e.g. owner, manager)
     extraNumbers: { type: [String], default: undefined },
+    // "AI insights" event only: when to send the digest automatically (IST)
+    schedule: { freq: { type: String, enum: ["off", "daily", "weekly"] }, hour: Number, weekday: Number, days: Number },
+    lastScheduledKey: String, // idempotency: one scheduled send per day/week
     payloadTemplate: { type: String, required: true },
     active: { type: Boolean, default: true },
   },
@@ -437,6 +444,8 @@ const WaLogSchema = new Schema(
     request: Mixed, // { url, method, body }
     response: Mixed,
     triggeredBy: String,
+    // automatic redelivery after a provider outage (background job): scheduled → delivered | dead
+    retry: { status: String, attempts: Number, nextAt: Date, lastError: String },
   },
   { timestamps: { createdAt: true, updatedAt: false } }
 );
@@ -696,3 +705,63 @@ export const AiEndpoint = tm<any>("AiEndpoint", AiEndpointSchema);
 /** Small key → value documents, e.g. "platform_branding" (Super Admin › Settings › Platform branding). */
 const PlatformSettingSchema = new Schema({ _id: String, value: { type: Mixed, default: {} } }, { timestamps: true });
 export const PlatformSetting = m<any>("PlatformSetting", PlatformSettingSchema);
+
+/* ───────────── Reliability & performance (main database) ───────────── */
+
+/**
+ * Background job queue. Claimed atomically (status + lockedUntil), retried with exponential backoff, dead-lettered after
+ * maxAttempts. idemKey makes enqueueing idempotent (the same key never creates a second job).
+ */
+const JobSchema = new Schema(
+  {
+    type: { type: String, required: true },
+    companyId: ObjectId,
+    db: String, // company database the handler runs in (null = main)
+    status: { type: String, enum: ["queued", "running", "done", "failed", "dead"], default: "queued" },
+    runAt: { type: Date, default: Date.now },
+    lockedUntil: Date,
+    attempts: { type: Number, default: 0 }, // failed attempts (slices that made progress don't count)
+    slices: { type: Number, default: 0 },
+    maxAttempts: { type: Number, default: 6 },
+    idemKey: String,
+    payload: Mixed,
+    state: Mixed, // resumable cursor between slices
+    progress: { done: { type: Number, default: 0 }, total: { type: Number, default: 0 } },
+    result: Mixed,
+    error: String,
+    createdBy: String,
+    finishedAt: Date,
+  },
+  ts
+);
+JobSchema.index({ status: 1, runAt: 1 });
+JobSchema.index({ idemKey: 1 }, { unique: true, partialFilterExpression: { idemKey: { $type: "string" } } });
+JobSchema.index({ companyId: 1, createdAt: -1 });
+JobSchema.index({ finishedAt: 1 }, { expireAfterSeconds: 60 * 60 * 24 * 14 }); // finished jobs kept 14 days
+export const Job = m<any>("Job", JobSchema);
+
+/** Per-route latency histogram, one document per route per hour (p50/p95 are read from the buckets). */
+const PerfStatSchema = new Schema({
+  route: { type: String, required: true },
+  method: { type: String, required: true },
+  hour: { type: Date, required: true },
+  count: { type: Number, default: 0 },
+  errors: { type: Number, default: 0 },
+  sum: { type: Number, default: 0 },
+  max: { type: Number, default: 0 },
+  b: { type: Mixed, default: {} }, // { "<bucket index>": count } (buckets in shared/perf.ts)
+});
+PerfStatSchema.index({ hour: 1, route: 1, method: 1 }, { unique: true });
+PerfStatSchema.index({ hour: 1 }, { expireAfterSeconds: 60 * 60 * 24 * 8 });
+export const PerfStat = m<any>("PerfStat", PerfStatSchema);
+
+/** Circuit breaker per external provider host (WhatsApp APIs, AI providers). */
+const ProviderStateSchema = new Schema({
+  _id: String, // host
+  failures: { type: Number, default: 0 }, // consecutive
+  openUntil: Date,
+  lastError: String,
+  lastFailureAt: Date,
+  lastSuccessAt: Date,
+});
+export const ProviderState = m<any>("ProviderState", ProviderStateSchema);

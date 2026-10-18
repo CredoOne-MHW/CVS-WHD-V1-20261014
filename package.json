@@ -11,7 +11,8 @@
     "lint": "next lint",
     "check:effects": "node scripts/check-effects.mjs",
     "prebuild": "node scripts/check-events.mjs && node scripts/check-effects.mjs",
-    "check:events": "node scripts/check-events.mjs"
+    "check:events": "node scripts/check-events.mjs",
+    "perf:check": "node scripts/perf-check.mjs"
   },
   "engines": {
     "node": ">=20"
@@ -19,20 +20,22 @@
   "dependencies": {
     "@aws-sdk/client-s3": "^3.650.0",
     "@aws-sdk/s3-request-presigner": "^3.650.0",
-    "adm-zip": "^0.5.16",
+    "adm-zip": "0.6.1",
     "bcryptjs": "^2.4.3",
     "cookie-parser": "^1.4.6",
+    "exceljs": "4.4.0",
     "express": "^4.21.0",
     "jsonwebtoken": "^9.0.2",
     "lucide-react": "^0.446.0",
     "mammoth": "^1.8.0",
     "mongoose": "^8.7.0",
     "multer": "^1.4.5-lts.1",
-    "next": "14.2.15",
+    "next": "15.5.28",
+    "papaparse": "5.4.1",
     "pdf-parse": "^1.1.1",
     "qrcode": "^1.5.4",
-    "react": "18.3.1",
-    "react-dom": "18.3.1",
+    "react": "19.2.0",
+    "react-dom": "19.2.0",
     "three": "^0.169.0",
     "xlsx": "^0.18.5",
     "zod": "^3.23.8"
@@ -45,14 +48,20 @@
     "@types/jsonwebtoken": "^9.0.7",
     "@types/multer": "^1.4.12",
     "@types/node": "^20.16.10",
+    "@types/papaparse": "^5.3.15",
     "@types/pdf-parse": "^1.1.4",
     "@types/qrcode": "^1.5.6",
-    "@types/react": "^18.3.11",
-    "@types/react-dom": "^18.3.0",
+    "@types/react": "19.2.2",
+    "@types/react-dom": "19.2.2",
     "@types/three": "^0.169.0",
     "autoprefixer": "^10.4.20",
-    "postcss": "^8.4.47",
+    "eslint-config-next": "15.5.28",
+    "postcss": "8.5.31",
     "tailwindcss": "^3.4.13",
     "typescript": "^5.6.2"
+  },
+  "overrides": {
+    "postcss": "$postcss",
+    "uuid": "11.1.1"
   }
 }

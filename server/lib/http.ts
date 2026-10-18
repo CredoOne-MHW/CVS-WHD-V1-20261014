@@ -22,13 +22,14 @@ export function parse<T>(schema: ZodSchema<T>, data: unknown): T {
   return r.data;
 }
 
-export function errorHandler(err: any, _req: Request, res: Response, _next: NextFunction) {
+export function errorHandler(err: any, req: Request, res: Response, _next: NextFunction) {
   const status = err instanceof HttpError ? err.status : err instanceof ZodError ? 400 : err?.code === 11000 ? 409 : 500;
   const message =
     err?.code === 11000 ? `Duplicate value for ${Object.keys(err.keyPattern || {}).join(", ")}` : status === 500 ? "Internal server error" : err.message;
-  if (status === 500) console.error(err);
+  const requestId = (req as any).requestId;
+  if (status === 500) console.error(`[${requestId}]`, err); // the id is shown to the user, so support can find this line
   res.locals.error = err?.message;
-  res.status(status).json({ error: message, details: err?.details });
+  res.status(status).json({ error: status === 500 && requestId ? `${message} (ref ${String(requestId).slice(-12)})` : message, details: err?.details, requestId });
 }
 
 export function paging(q: any) {

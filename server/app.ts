@@ -2,6 +2,7 @@ import express, { type Request, type Response, type NextFunction } from "express
 import cookieParser from "cookie-parser";
 import { connectDB } from "./lib/db";
 import { rateLimit } from "./lib/cache";
+import { metrics } from "./lib/metrics";
 import { errorHandler, HttpError } from "./lib/http";
 import { requestHost, isPlatformHost, platformBranding, loadPlatformBranding, baseDomain, baseSource, configuredBases, hostContext, resolveHost } from "./lib/tenant";
 import { requireAuth } from "./middleware/auth";
@@ -44,6 +45,7 @@ export function createApp() {
   app.set("trust proxy", 1);
   app.set("query parser", "simple"); // no nested objects in query strings → no operator injection via ?a[$ne]=
 
+  app.use(metrics); // latency histogram per route + X-Request-Id + Server-Timing
   app.use(hostContext);
   app.use(
     express.json({
@@ -151,10 +153,20 @@ export function createApp() {
     res.status(204).end();
   });
 
+  // abuse / runaway-client protection: per IP on public endpoints, per signed-in user on the consoles
+  const ipOf = (req: Request) => String(req.headers["x-forwarded-for"] || req.socket.remoteAddress || "").split(",")[0].trim();
+  const limit = (key: (req: Request) => string, max: number) => async (req: Request, res: Response, next: NextFunction) => {
+    if (await rateLimit(key(req), max, 60)) return next();
+    res.setHeader("Retry-After", "60");
+    next(new HttpError(429, "Too many requests — please slow down and try again in a minute."));
+  };
+  app.use(["/api/intake", "/api/public", "/api/ai/v1"], limit((req) => `ip:${ipOf(req)}`, 300));
+
   app.use("/api", publicRoutes); // intake, hosted forms, cron, branding
   app.use("/api/auth", sameOrigin, authRoutes);
-  app.use("/api/sa", sameOrigin, requireAuth, activityLogger, saRoutes);
-  app.use("/api/co", sameOrigin, requireAuth, activityLogger, coRoutes);
+  const perUser = limit((req) => `user:${req.auth!.userId}`, 600);
+  app.use("/api/sa", sameOrigin, requireAuth, perUser, activityLogger, saRoutes);
+  app.use("/api/co", sameOrigin, requireAuth, perUser, activityLogger, coRoutes);
 
   app.use("/api", (_req, res) => res.status(404).json({ error: "Not found" }));
   app.use(errorHandler);

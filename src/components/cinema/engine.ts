@@ -445,7 +445,7 @@ export function start(el: HTMLElement, opts: CinemaOptions) {
     c.width = c.height = 512;
     const g = c.getContext("2d")!;
     g.fillStyle = hex(brand700);
-    g.font = "800 230px 'Plus Jakarta Sans', system-ui, sans-serif";
+    g.font = `800 230px ${getComputedStyle(document.documentElement).getPropertyValue("--font-jakarta") || "system-ui"}, system-ui, sans-serif`;
     g.textAlign = "center";
     g.textBaseline = "middle";
     g.fillText(initials(opts.name), 256, 272);

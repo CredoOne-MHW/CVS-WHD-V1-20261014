@@ -2,6 +2,7 @@
 import { Suspense, useCallback, useEffect, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import { Plus, Upload, Download, Search, BellRing, Pencil, Trash2, FileSpreadsheet, ShieldCheck } from "lucide-react";
+import { followJob, pct, type JobView } from "@/lib/jobs";
 import { api, qs, fmtDate } from "@/lib/api";
 import { PageHeader, Btn, Modal, Field, Badge, Empty, Pager, Spinner, useToast } from "@/components/ui";
 import { usePerm } from "@/components/Shell";
@@ -85,9 +86,7 @@ function LeadsInner() {
         subtitle="Every enquiry from every channel, de-duplicated by phone and email"
         actions={
           <>
-            <a className="btn-secondary" href={`/api/co/leads/export.csv${qs({ ...f, page: undefined })}`}>
-              <Download className="h-4 w-4" /> Export
-            </a>
+            <ExportButton query={{ ...f, page: undefined }} />
             {perm.create && (
               <Btn variant="secondary" onClick={() => setImp(true)}>
                 <Upload className="h-4 w-4" /> Import
@@ -572,16 +571,47 @@ function LostFields({ reason, other, onChange }: { reason: string; other: string
   );
 }
 
+/** Export runs as a background job; the CSV downloads by itself when it's ready. */
+function ExportButton({ query }: { query: Record<string, any> }) {
+  const [job, setJob] = useState<JobView | null>(null);
+  const toast = useToast();
+  const running = job && job.status !== "done" && job.status !== "dead";
+  return (
+    <button
+      className="btn-secondary"
+      disabled={!!running}
+      onClick={async () => {
+        try {
+          const first = await api<JobView>(`/co/leads/export${qs(query)}`, { method: "POST" });
+          const done = await followJob(first, setJob);
+          if (done.status === "done") {
+            window.location.href = `/api/co/jobs/${done._id}/download`;
+            toast("ok", `Exported ${done.result?.rows?.toLocaleString("en-IN") ?? ""} leads`);
+          } else toast("err", done.error || "Export failed");
+        } catch (e: any) {
+          toast("err", e.message);
+        } finally {
+          setTimeout(() => setJob(null), 1500);
+        }
+      }}
+    >
+      {running ? <Spinner className="h-4 w-4" /> : <Download className="h-4 w-4" />} {running ? `Exporting… ${pct(job)}%` : "Export"}
+    </button>
+  );
+}
+
 function ImportModal({ open, onClose, onDone }: { open: boolean; onClose: () => void; onDone: () => void }) {
   const [file, setFile] = useState<File | null>(null);
   const [campaign, setCampaign] = useState("");
   const [busy, setBusy] = useState(false);
   const [res, setRes] = useState<any>(null);
+  const [job, setJob] = useState<JobView | null>(null);
   const toast = useToast();
   useEffect(() => {
     if (open) {
       setFile(null);
       setRes(null);
+      setJob(null);
     }
   }, [open]);
   return (
@@ -604,8 +634,11 @@ function ImportModal({ open, onClose, onDone }: { open: boolean; onClose: () => 
                 const fd = new FormData();
                 fd.append("file", file!);
                 if (campaign) fd.append("campaign", campaign);
-                const r = await api("/co/leads/import", { form: fd });
-                setRes(r);
+                // runs in the background — follow the progress (closing this window doesn't stop the import)
+                const first = await api<JobView>("/co/leads/import", { form: fd });
+                const done = await followJob(first, setJob);
+                if (done.status === "done") setRes(done.result);
+                else toast("err", done.error || "Import failed");
                 onDone();
               } catch (e: any) {
                 toast("err", e.message);
@@ -631,11 +664,25 @@ function ImportModal({ open, onClose, onDone }: { open: boolean; onClose: () => 
         <label className="flex cursor-pointer flex-col items-center justify-center rounded-2xl border-2 border-dashed border-hive-200 bg-hive-50/50 px-4 py-8 text-center hover:bg-hive-50">
           <Upload className="mb-2 h-6 w-6 text-hive-600" />
           <span className="text-sm font-semibold">{file ? file.name : "Choose .xlsx or .csv (max 5,000 rows, 4 MB)"}</span>
-          <input type="file" accept=".xlsx,.xls,.csv" className="hidden" onChange={(e) => setFile(e.target.files?.[0] || null)} />
+          <input type="file" accept=".xlsx,.csv" className="hidden" onChange={(e) => setFile(e.target.files?.[0] || null)} />
         </label>
         <Field label="Campaign (optional)" hint="Applied to rows without a Campaign column">
           <input className="input" value={campaign} onChange={(e) => setCampaign(e.target.value)} />
         </Field>
+        {job && job.status !== "done" && (
+          <div className="rounded-2xl border border-hive-200 bg-hive-50/60 p-4 text-sm">
+            <div className="flex justify-between font-semibold">
+              <span>{job.status === "failed" ? "Retrying…" : job.status === "dead" ? "Import stopped" : "Importing in the background…"}</span>
+              <span>
+                {job.progress?.done?.toLocaleString("en-IN") || 0} / {job.progress?.total?.toLocaleString("en-IN") || "…"}
+              </span>
+            </div>
+            <div className="mt-2 h-2 overflow-hidden rounded-full bg-white">
+              <div className="h-full rounded-full bg-hive-600 transition-all" style={{ width: `${pct(job)}%` }} />
+            </div>
+            <p className="mt-2 text-xs text-ink-500">You can close this window — the import keeps running.</p>
+          </div>
+        )}
         {res && (
           <div className="rounded-2xl bg-hive-50 p-4 text-sm">
             <p className="font-semibold">

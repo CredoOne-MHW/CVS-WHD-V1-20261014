@@ -12,7 +12,7 @@ import { PageHeader, Btn, Modal, Field, Badge, Empty, Spinner, Confirm, useToast
 import { usePerm } from "@/components/Shell";
 import { DataAccessPicker, dataAccessLabel, type DataTable } from "@/components/DataAccessPicker";
 
-const ACCEPT = ".csv,.xlsx,.xls,.zip,.txt,.json,.docx,.pdf,.md";
+const ACCEPT = ".csv,.xlsx,.zip,.txt,.json,.docx,.pdf,.md";
 
 export default function CompanyAiAgents() {
   const [list, setList] = useState<any[] | null>(null);

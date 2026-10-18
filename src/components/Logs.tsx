@@ -99,7 +99,8 @@ export function WaLogs({ base }: { base: "/sa" | "/co" }) {
                 <td className="td mono">{l.to}</td>
                 <td className="td">{l.name || "—"}</td>
                 <td className="td">
-                  <Badge color={l.result === "success" ? "green" : "red"}>{l.result}</Badge>
+                  <Badge color={l.result === "success" ? "green" : l.retry?.status === "scheduled" ? "honey" : "red"}>{l.result === "success" ? (l.retry?.status === "delivered" ? "delivered on retry" : "success") : l.retry?.status === "scheduled" ? "retrying" : l.retry?.status === "dead" ? "dead-lettered" : l.result}</Badge>
+                  {l.retry?.status === "scheduled" && l.retry?.nextAt && <span className="mt-0.5 block text-[11px] text-ink-400">next try {new Date(l.retry.nextAt).toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit" })}</span>}
                   {l.part && <span className="ml-1 text-xs text-ink-400">{l.part}</span>}
                 </td>
                 <td className="td max-w-[280px] truncate text-ink-500" title={l.detail}>

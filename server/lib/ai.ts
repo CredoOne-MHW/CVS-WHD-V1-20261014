@@ -1,3 +1,4 @@
+import { openUntil, record, retryable } from "./circuit";
 import { toText, stripThinking, errorText } from "../../shared/text";
 import { renewAllocations } from "./billing";
 import { AiAllocation, AiUsage, AiProvider, Company, User } from "../models";
@@ -42,7 +43,7 @@ async function callProvider(agent: any, system: string, messages: Msg[], opts: {
       signal: timeout,
     });
     const j: any = await r.json().catch(() => ({}));
-    if (!r.ok || j?.type === "error") throw new HttpError(502, errorText(j, r.status));
+    if (!r.ok || j?.type === "error") throw Object.assign(new HttpError(502, errorText(j, r.status)), { providerStatus: r.status });
     return { text: stripThinking(toText((j.content || []).filter((c: any) => c.type === "text"))), inTok: j.usage?.input_tokens || 0, outTok: j.usage?.output_tokens || 0 };
   }
   if (p.apiStyle === "google") {
@@ -57,7 +58,7 @@ async function callProvider(agent: any, system: string, messages: Msg[], opts: {
       signal: timeout,
     });
     const j: any = await r.json().catch(() => ({}));
-    if (!r.ok || j?.error) throw new HttpError(502, errorText(j, r.status));
+    if (!r.ok || j?.error) throw Object.assign(new HttpError(502, errorText(j, r.status)), { providerStatus: r.status });
     return { text: stripThinking(toText(j.candidates?.[0]?.content?.parts?.filter((x: any) => !x.thought))), inTok: j.usageMetadata?.promptTokenCount || 0, outTok: j.usageMetadata?.candidatesTokenCount || 0 };
   }
   // OpenAI wire format: OpenAI, OpenRouter, Groq, Mistral, DeepSeek, Together, any compatible gateway
@@ -75,7 +76,7 @@ async function callProvider(agent: any, system: string, messages: Msg[], opts: {
     throw new HttpError(502, `AI provider returned an invalid response (${r.status}). Please try again.`);
   }
   // OpenRouter can answer 200 with an error body when the upstream provider fails
-  if (!r.ok || j?.error || !Array.isArray(j?.choices)) throw new HttpError(502, errorText(j, r.status));
+  if (!r.ok || j?.error || !Array.isArray(j?.choices)) throw Object.assign(new HttpError(502, errorText(j, r.status)), { providerStatus: r.status });
   const msg = j.choices[0]?.message || {};
   let text = stripThinking(toText(msg.content));
   if (!text && (msg.reasoning || msg.reasoning_content)) text = "I ran out of room before finishing my answer. Please ask again, a little more specifically.";
@@ -126,13 +127,31 @@ async function notifyExhausted(companyId: string, agent: any, alloc: any) {
  */
 export async function complete(args: { agent: any; companyId: string; system: string; messages: Msg[]; purpose: string; userId?: string; companyAgentId?: any; maxTokens?: number; json?: boolean; timeoutMs?: number }) {
   const alloc = await ensureCredits(args.companyId, args.agent);
+  // provider outage handling: a shared circuit breaker fails fast while the provider is down, and a transient failure
+  // (network, 429, 5xx) gets one quick retry with jittered backoff when there is time for it
+  const breaker = `ai:${args.agent.provider || "provider"}`;
+  if (await openUntil(breaker)) throw new HttpError(503, "The AI provider is temporarily unavailable. Please try again in a few minutes.");
+  const started = Date.now();
   let out;
-  try {
-    out = await callProvider(args.agent, args.system, args.messages, args);
-  } catch (e: any) {
-    if (e?.name === "TimeoutError" || e?.name === "AbortError") throw new HttpError(504, "The AI model took too long to answer. Please try again, or ask a shorter question.");
-    if (e instanceof HttpError) throw e;
-    throw new HttpError(502, `Could not reach the AI provider (${e?.message || "network error"}).`);
+  for (let attempt = 1; ; attempt++) {
+    try {
+      out = await callProvider(args.agent, args.system, args.messages, args);
+      await record(breaker, true);
+      break;
+    } catch (e: any) {
+      const timeout = e?.name === "TimeoutError" || e?.name === "AbortError";
+      const status = e?.providerStatus ?? (e instanceof HttpError ? -1 : 0); // 0 = network error, -1 = our own validation
+      const transient = !timeout && status !== -1 && retryable(status);
+      if (transient || timeout) await record(breaker, false, e?.message);
+      const budget = (args.timeoutMs || 55_000) - (Date.now() - started);
+      if (transient && attempt === 1 && budget > 20_000) {
+        await new Promise((r) => setTimeout(r, 800 + Math.random() * 800));
+        continue;
+      }
+      if (timeout) throw new HttpError(504, "The AI model took too long to answer. Please try again, or ask a shorter question.");
+      if (e instanceof HttpError) throw e;
+      throw new HttpError(502, `Could not reach the AI provider (${e?.message || "network error"}).`);
+    }
   }
   const { text, inTok, outTok } = out;
   const weighted = inTok * (args.agent.tokenWeights?.input ?? 1) + outTok * (args.agent.tokenWeights?.output ?? 1);

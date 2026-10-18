@@ -16,7 +16,7 @@ const config: Config = {
         ink: { 400: "#7a8577", 500: "#5b6658", 700: "#2f3a2d", 900: "#172015" },
       },
       fontFamily: {
-        sans: ["'Plus Jakarta Sans'", "system-ui", "sans-serif"],
+        sans: ["var(--font-jakarta)", "system-ui", "sans-serif"],
         mono: ["ui-monospace", "SFMono-Regular", "Menlo", "monospace"],
       },
       boxShadow: {

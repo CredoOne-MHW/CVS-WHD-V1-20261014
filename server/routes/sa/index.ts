@@ -18,6 +18,7 @@ import { vercelSync, vercelVerify, vercelRemove, vercelConfigured, splitDomain, 
 import { fireEvent } from "../../lib/whatsapp";
 import { webhookRoutes, waLogRoutes, activityRoutes, roleRoutes } from "../shared";
 import { reportRoutes } from "../reports";
+import systemRoutes from "./system";
 import { COMPANY_MODULES, PLAN_TIERS, ACTIONS, type PermMap, LOGIN_TEMPLATE_KEYS } from "../../../shared/constants";
 
 const r = Router();
@@ -173,7 +174,7 @@ r.get("/companies", can("companies", "read"), h(async (req, res) => {
   if (req.query.q) q.$or = ["name", "code", "email", "contactPerson"].map((f) => ({ [f]: { $regex: escapeRegex(String(req.query.q)), $options: "i" } }));
   if (req.query.plan) q.plan = req.query.plan;
   if (req.query.status) q.status = req.query.status;
-  const [items, total] = await Promise.all([Company.find(q).sort({ createdAt: -1 }).skip(skip).limit(limit).lean(), Company.countDocuments(q)]);
+  const [items, total] = await Promise.all([Company.find(q).sort({ createdAt: -1, _id: -1 }).skip(skip).limit(limit).lean(), Company.countDocuments(q)]);
   const owners = await User.find({ companyId: { $in: items.map((c: any) => c._id) }, isOwner: true }).select("companyId email").lean();
   const loginBy = Object.fromEntries(owners.map((o: any) => [String(o.companyId), o.email]));
   res.json({ items: items.map((c: any) => ({ ...c, ...tenantUrls(c), loginEmail: loginBy[String(c._id)] })), total, page, limit });
@@ -393,7 +394,7 @@ r.get("/ai-allocations", can("ai_agents", "read"), h(async (req, res) => {
   if (typeof req.query.companyId === "string" && /^[a-f0-9]{24}$/.test(req.query.companyId)) q.companyId = req.query.companyId;
   if (typeof req.query.agentId === "string" && /^[a-f0-9]{24}$/.test(req.query.agentId)) q.agentId = req.query.agentId;
   const { page, limit, skip } = paging(req.query);
-  const [items, total] = await Promise.all([AiAllocation.find(q).sort({ createdAt: -1 }).skip(skip).limit(limit).lean<any[]>(), AiAllocation.countDocuments(q)]);
+  const [items, total] = await Promise.all([AiAllocation.find(q).sort({ createdAt: -1, _id: -1 }).skip(skip).limit(limit).lean<any[]>(), AiAllocation.countDocuments(q)]);
   const [cos, ags] = await Promise.all([
     Company.find({ _id: { $in: items.map((x) => x.companyId) } }).select("name code dbName").lean<any[]>(),
     AiAgent.find({ _id: { $in: items.map((x) => x.agentId) } }).select("name llmVersion companyRate active").lean<any[]>(),
@@ -731,5 +732,7 @@ r.use("/roles", roleRoutes("super"));
 r.use("/activity-logs", activityRoutes("super"));
 r.use("/webhooks", webhookRoutes("super"));
 r.use("/wa-logs", waLogRoutes("super"));
+
+r.use(systemRoutes);
 
 export default r;

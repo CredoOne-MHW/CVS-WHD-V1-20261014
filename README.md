@@ -523,3 +523,46 @@ discount ≤ amount / ≤ 100 %), company routes are tenant-scoped, Super Admin 
   separately ("Copy (additional number) of message to …" in WhatsApp Logs). Numbers are cleaned (+91, spaces) and
   de-duplicated. Copies go for automatic, manual and scheduled messages — not for bulk Post, test sends or resends — and
   the main recipient's result alone decides "client notified".
+
+## 14. Performance, reliability & security (Oct 2026)
+
+**Targets:** common read APIs p95 < 300 ms, common write APIs p95 < 500 ms. Measured locally with
+`BASE_URL=… EMAIL=… PASSWORD=… [COMPANY_ID=…] npm run perf:check -- --runs 30 --writes` (exits non-zero if over budget):
+reads p95 5–95 ms, writes p95 34–43 ms. Run the same command against production after each deploy.
+
+- **Live latency monitoring** — every API request is timed into an hourly per-route histogram (`PerfStat`, 8-day TTL);
+  Super Admin › Settings › **System Health** shows p50 / p95 / max per route vs budget, background jobs and provider
+  circuits. Responses carry `X-Request-Id` and `Server-Timing`; 500 errors show a reference id that matches the server log.
+- **Background jobs** (`server/lib/jobs.ts`, `Job` collection): atomic claim + lock, time-boxed resumable slices, exponential
+  backoff with jitter (30 s → 6 h), dead-letter after max attempts, idempotency keys, replay from System Health.
+  Worker: Vercel Cron `/api/cron/jobs` every minute, plus a slice whenever a user polls progress.
+  Used for **lead import** (5,000 rows, 6 rows in parallel, in-file duplicates still merge, double-upload = same job),
+  **lead export** (2,000-row pages → CSV in the company's own database, GridFS, then download), **WhatsApp redelivery**,
+  and the **scheduled AI insights** digest.
+- **WhatsApp delivery** — `Idempotency-Key` header (same key on every retry), 3 quick retries, then queued redelivery with
+  backoff for ~15 h before dead-lettering (shown in WhatsApp Logs as retrying / delivered on retry / dead-lettered).
+  **Circuit breaker** per provider host: after 5 consecutive failures calls pause 1 → 30 min, messages queue meanwhile.
+- **AI provider outages** — the same breaker + one jittered retry for 429/5xx; the dashboard falls back to rule-based
+  recommendations (cached 2 min only, so AI resumes as soon as the provider is back).
+- **Database** — pooled connection (`MONGODB_POOL_SIZE`), all list endpoints page with an `_id` tie-breaker (no repeated or
+  skipped rows), new indexes for follow-ups / score / updated sorts (migration `tenant_indexes_v3`), migration flags read in
+  one query at cold start.
+- **Front end** — self-hosted font (no Google request, preloaded, no layout shift), Client tabs load on demand.
+- **Security** — Next.js 15.5.28 / React 19 (clears the critical & high Next.js advisories), uploaded spreadsheets parsed with
+  ExcelJS / PapaParse (the npm `xlsx` build is now only used to *write* our own files), `__proto__` keys dropped, zip-bomb
+  limits on knowledge-base zips, rate limits (300/min per IP on public endpoints, 600/min per signed-in user), CSP without
+  third-party font hosts. Existing: NoSQL-operator stripping, CSRF same-origin check, body size limits, encrypted secrets.
+  `npm audit --omit=dev`: 0 critical; remaining = xlsx (write-only use) and mammoth's CLI-only dependency.
+- Set `CRON_SECRET` in Vercel so cron endpoints can't be triggered by anyone else.
+
+## 15. Intelligent dashboard & AI insights on WhatsApp (Oct 2026)
+- `/api/co/dashboard/overview?days=7|30|90|365` — leads, conversion, pipeline, speed-to-lead, follow-ups, sources, lost
+  reasons, clients, collections (collected / over due / due in 7 days), support (open, grievances, 48 h+, resolution time),
+  WhatsApp delivery, AI credits, integrations — each compared with the previous period — turned into **signals**
+  (critical / not going well / going well / coming up) and a **health score** (0–100). Cached 30 s.
+- `/api/co/dashboard/insights` — AI recommendations from the live numbers (no personal data is sent to the AI), via the
+  company assistant / any agent / any allocated model with credits. Regenerated whenever the numbers change (hash cache),
+  so refreshing unchanged data costs no credits; "regenerate" forces it (12/hour). No model → rule-based recommendations.
+- **WhatsApp:** event `ai_insights` ("AI insights & recommendations") with a schedule on the webhook (daily / weekly, hour IST,
+  period covered); hourly cron `/api/cron/insights` queues each due webhook once per day/week (idempotent); Dashboard ›
+  **Share on WhatsApp** sends it now. Goes to the company owner + the webhook's additional numbers.
