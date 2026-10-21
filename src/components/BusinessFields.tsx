@@ -1,8 +1,8 @@
 "use client";
-import { ShieldCheck } from "lucide-react";
+import { ShieldCheck, Plus, Minus } from "lucide-react";
 import { Field } from "./ui";
 import { ServicePicker } from "./ServicePicker";
-import { GST_RE, PAN_RE, aadhaarValid } from "@shared/clients";
+import { GST_RE, PAN_RE, aadhaarValid, type ServiceLine } from "@shared/clients";
 
 /** Form state: business details as edited in the browser (Aadhaar is write-only: the server returns only XXXX XXXX 1234). */
 export type BizForm = {
@@ -48,11 +48,69 @@ export function bizError(f: BizForm) {
   return "";
 }
 
-export function ServiceField({ services, onChange }: { services: string[]; onChange: (v: string[]) => void }) {
+/** First problem in the service rows (the server checks the same). */
+export function linesError(lines: ServiceLine[]) {
+  const named = lines.filter((l) => l.service);
+  if (lines.some((l) => !l.service && String(l.licenses ?? "") !== "" && Number(l.licenses) !== 1)) return "Pick a service or product on every row";
+  if (named.some((l) => !Number.isInteger(Number(l.licenses)) || Number(l.licenses) < 1)) return "No of Licenses must be a whole number of at least 1";
+  const names = named.map((l) => l.service.toLowerCase());
+  if (new Set(names).size !== names.length) return "A service is listed twice — put all its licences on one row";
+  return "";
+}
+/** Rows to send (empty rows dropped, licences as numbers). */
+export const linesPayload = (lines: ServiceLine[]) => lines.filter((l) => l.service).map((l) => ({ service: l.service, licenses: Number(l.licenses) || 1 }));
+
+/**
+ * Services / products opted for, one row each: service (from the Service master — type to add, trash to remove from the
+ * list) + No of Licenses, with + / − to add or remove rows. Used on Lead and Client; Payment Details read the licences.
+ */
+export function ServiceField({ lines, onChange }: { lines: ServiceLine[]; onChange: (v: ServiceLine[]) => void }) {
+  const rows = lines.length ? lines : [{ service: "", licenses: 1 }];
+  const set = (i: number, p: Partial<ServiceLine>) => onChange(rows.map((r, j) => (j === i ? { ...r, ...p } : r)));
+  const taken = (i: number) => rows.filter((_, j) => j !== i).map((r) => r.service.toLowerCase());
   return (
-    <Field label="Service" className="sm:col-span-2" hint="Pick from the list — type to add a new service, trash icon removes one from the list">
-      <ServicePicker value={services} onChange={onChange} />
-    </Field>
+    <div className="sm:col-span-2">
+      <div className="mb-1.5 hidden grid-cols-[1fr_9rem_2.5rem] gap-3 sm:grid">
+        <p className="label mb-0">Service / product</p>
+        <p className="label mb-0">No of Licenses</p>
+        <span />
+      </div>
+      <div className="space-y-2.5">
+        {rows.map((r, i) => (
+          <div key={i} className="grid grid-cols-[1fr_6.5rem_2.5rem] items-start gap-2 sm:grid-cols-[1fr_9rem_2.5rem] sm:gap-3">
+            <div>
+              <ServicePicker multiple={false} value={r.service} onChange={(v: string) => set(i, { service: v })} placeholder="Select service or product…" />
+              {r.service && taken(i).includes(r.service.toLowerCase()) && <p className="mt-1 text-xs text-red-600">Already listed above</p>}
+            </div>
+            <input
+              className="input tabular-nums"
+              inputMode="numeric"
+              aria-label={`No of Licenses for ${r.service || `row ${i + 1}`}`}
+              placeholder="1"
+              value={r.licenses === 0 ? "" : String(r.licenses ?? "")}
+              onChange={(e) => set(i, { licenses: (e.target.value.replace(/\D/g, "").slice(0, 7) || 0) as any })}
+              onBlur={() => !Number(r.licenses) && set(i, { licenses: 1 })}
+            />
+            <button
+              type="button"
+              aria-label="Remove this service"
+              title="Remove this service"
+              className="grid h-11 w-10 place-items-center rounded-xl border border-ink-400/20 text-ink-500 hover:border-red-200 hover:bg-red-50 hover:text-red-600 disabled:opacity-40"
+              disabled={rows.length === 1 && !r.service}
+              onClick={() => onChange(rows.length === 1 ? [] : rows.filter((_, j) => j !== i))}
+            >
+              <Minus className="h-4 w-4" />
+            </button>
+          </div>
+        ))}
+      </div>
+      <div className="mt-2 flex flex-wrap items-center justify-between gap-2">
+        <button type="button" className="inline-flex items-center gap-1.5 text-sm font-semibold text-hive-700 hover:underline" onClick={() => onChange([...rows, { service: "", licenses: 1 }])}>
+          <Plus className="h-4 w-4" /> Add service / product
+        </button>
+        <p className="text-xs text-ink-500">Type in the list to add a new service; the trash icon removes one from the list.</p>
+      </div>
+    </div>
   );
 }
 

@@ -42,6 +42,12 @@ export function applyDiscount(amount: number, type: "fixed" | "percent", value: 
   const percent = a ? round2((discountAmount / a) * 100) : 0;
   return { discountAmount, percent, gross: round2(a - discountAmount) };
 }
+/** A service / product the lead or client opted for, with its number of licences. */
+export type ServiceLine = { service: string; licenses: number };
+/** Service lines of a lead/client — older records only have service names (1 licence each). */
+export const linesOf = (l: { serviceLines?: ServiceLine[] | null; services?: string[] | null }): ServiceLine[] =>
+  l?.serviceLines?.length ? l.serviceLines.map((x) => ({ service: x.service, licenses: Number(x.licenses) || 1 })) : (l?.services || []).map((s) => ({ service: s, licenses: 1 }));
+
 export const round2 = (n: number) => Math.round((Number(n) || 0) * 100) / 100;
 
 /* ─────────── Indian business identifiers ─────────── */

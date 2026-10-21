@@ -566,3 +566,17 @@ reads p95 5–95 ms, writes p95 34–43 ms. Run the same command against product
 - **WhatsApp:** event `ai_insights` ("AI insights & recommendations") with a schedule on the webhook (daily / weekly, hour IST,
   period covered); hourly cron `/api/cron/insights` queues each due webhook once per day/week (idempotent); Dashboard ›
   **Share on WhatsApp** sends it now. Goes to the company owner + the webhook's additional numbers.
+
+### 13.5 Services with No of Licenses · per-service Payment Details (Oct 2026)
+- **Lead and Client › Service / product rows**: each row = a service or product (from the Service master — type to add a
+  new one, trash icon removes it from the list) + **No of Licenses**; **+ Add service / product** and **−** to remove a row.
+  Stored as `serviceLines: [{ service, licenses }]`; the plain `services` list is kept in sync (filters, reports, AI
+  tables, Service Board badges keep working). Older records show their services with 1 licence. A service can appear once.
+  Shown on the Clients list as “Service × 5”; the leads CSV export lists “Service × licences”.
+- **Client › Subscription Management › Payment Details › Create**: pick the client → every service it has opted for is
+  listed with its **No of Licenses (auto-filled, read-only)**; per service enter **Rate (₹ per licence)**, Payment Type,
+  Payment Frequency and First due date — **Payment Amount = Rate × Licenses** (shown live). Services that already have
+  payment details are marked and skipped (one per client + service + payment type). `POST /api/co/clients-plans/batch`.
+- **Licences stay in sync**: changing No of Licenses on the Lead / Client updates that service's payment details
+  (licences and amount) and its **upcoming unpaid dues**; paid and over due dues are never rewritten.
+- Payment Details list shows Licenses and Rate; editing keeps licences read-only (they come from the client).

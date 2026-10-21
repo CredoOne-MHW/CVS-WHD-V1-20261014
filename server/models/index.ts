@@ -203,7 +203,8 @@ const LeadSchema = new Schema(
       default: [],
     },
     customFields: { type: Mixed, default: {} },
-    services: { type: [String], default: undefined }, // from the company's Service master
+    services: { type: [String], default: undefined }, // from the company's Service master (names; kept in sync with serviceLines)
+    serviceLines: { type: [{ _id: false, service: String, licenses: Number }], default: undefined }, // service / product + No of Licenses
     business: {
       gst: String,
       tradeLicence: String,
@@ -342,6 +343,8 @@ const ClientPlanSchema = new Schema(
     clientCode: String,
     clientName: String,
     serviceType: { type: String, required: true },
+    rate: Number, // per licence (₹); amount = rate × licenses
+    licenses: Number, // from the client's service lines (kept in sync when the client is edited)
     amount: { type: Number, required: true, min: 0 },
     type: { type: String, enum: ["recurring", "on_demand"], required: true },
     frequency: { type: String, enum: ["on_demand", "weekly", "monthly", "quarterly", "half_yearly", "yearly"], required: true },

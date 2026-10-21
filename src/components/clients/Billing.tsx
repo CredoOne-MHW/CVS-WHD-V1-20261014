@@ -6,7 +6,7 @@ import { Btn, Modal, Field, Empty, Pager, Spinner, Confirm, Stat, useToast } fro
 import { usePerm } from "../Shell";
 import { Tabs } from "../Logs";
 import { ServicePicker } from "../ServicePicker";
-import { CLIENT_FREQUENCIES, PAYMENT_MODES, applyDiscount, clientFreqLabel } from "@shared/clients";
+import { CLIENT_FREQUENCIES, PAYMENT_MODES, applyDiscount, clientFreqLabel, linesOf, round2 } from "@shared/clients";
 import { ClientSelect, PAY_STATUS } from "./common";
 
 type View = "recurring" | "on_demand" | "history";
@@ -53,7 +53,6 @@ export function Billing() {
 }
 
 /* ───────────── Payment Details ───────────── */
-const BLANK_PLAN = { clientId: "", serviceType: "", amount: "", type: "recurring", frequency: "monthly", startDate: today() };
 
 function PlanTable() {
   const [f, setF] = useState({ q: "", type: "", page: 1 });
@@ -71,11 +70,20 @@ function PlanTable() {
   async function save() {
     setBusy(true);
     try {
-      const body = { ...form, amount: Number(form.amount), startDate: form.type === "recurring" ? fromIst(form.startDate) : undefined };
-      delete body._id;
-      if (form._id) await api(`/co/clients-plans/${form._id}`, { method: "PUT", body });
-      else await api("/co/clients-plans", { body });
-      toast("ok", form._id ? "Payment details updated" : form.type === "recurring" ? "Saved — dues appear under Payment › Recurring" : "Saved");
+      const row = (x: any) => ({ serviceType: x.serviceType, rate: Number(x.rate), type: x.type, frequency: x.frequency, startDate: x.type === "recurring" ? fromIst(x.startDate) : undefined });
+      if (form._id) {
+        if (form.rate === "" || isNaN(Number(form.rate))) throw new Error("Enter the rate");
+        await api(`/co/clients-plans/${form._id}`, { method: "PUT", body: { clientId: form.clientId, ...row(form) } });
+        toast("ok", "Payment details updated");
+      } else {
+        const rows = (form.rows || []).filter((x: any) => x.on && !x.exists);
+        if (!form.clientId) throw new Error("Pick a client");
+        if (!rows.length) throw new Error("Tick at least one service and enter its rate");
+        const bad = rows.find((x: any) => x.rate === "" || isNaN(Number(x.rate)));
+        if (bad) throw new Error(`Enter the rate for “${bad.serviceType}”`);
+        const r = await api<any>("/co/clients-plans/batch", { body: { clientId: form.clientId, lines: rows.map(row) } });
+        toast("ok", `Saved ${r.created} service${r.created > 1 ? "s" : ""}${rows.some((x: any) => x.type === "recurring") ? " — dues appear under Payment › Recurring" : ""}`);
+      }
       setForm(null);
       load();
     } catch (e: any) {
@@ -95,6 +103,21 @@ function PlanTable() {
   }
   const setType = (type: string) => setForm({ ...form, type, frequency: type === "on_demand" ? "on_demand" : form.frequency === "on_demand" ? "monthly" : form.frequency });
 
+  // Create: picking a client lists its services / products with their No of Licenses (from Lead / Client)
+  async function pickClient(clientId: string) {
+    setForm((f: any) => ({ ...f, clientId, rows: null }));
+    if (!clientId) return;
+    try {
+      const x = await api<any>(`/co/clients/${clientId}`);
+      const existing = new Set((x.plans || []).filter((p: any) => p.active !== false).map((p: any) => `${p.serviceType.toLowerCase()}`));
+      const rows = linesOf(x.client).map((l) => ({ serviceType: l.service, licenses: l.licenses, rate: "", type: "recurring", frequency: "monthly", startDate: today(), on: !existing.has(l.service.toLowerCase()), exists: existing.has(l.service.toLowerCase()) }));
+      setForm((f: any) => (f?.clientId === clientId ? { ...f, rows } : f));
+    } catch (e: any) {
+      toast("err", e.message);
+    }
+  }
+  const setRow = (i: number, p: any) => setForm((f: any) => ({ ...f, rows: f.rows.map((r: any, j: number) => (j === i ? { ...r, ...p } : r)) }));
+
   return (
     <div className="card">
       <div className="flex flex-wrap items-center gap-3 border-b border-ink-400/15 p-4">
@@ -108,7 +131,7 @@ function PlanTable() {
           <option value="on_demand">On-Demand</option>
         </select>
         {perm.create && (
-          <Btn className="ml-auto" onClick={() => setForm({ ...BLANK_PLAN })}>
+          <Btn className="ml-auto" onClick={() => setForm({ clientId: "", rows: null })}>
             <Plus className="h-4 w-4" /> Create
           </Btn>
         )}
@@ -117,7 +140,7 @@ function PlanTable() {
         <table className="w-full min-w-[900px]">
           <thead>
             <tr>
-              {["Client", "Service Type", "Payment Amount", "Payment Type", "Frequency", "Starts", "Action"].map((h) => (
+              {["Client", "Service Type", "Licenses", "Rate", "Payment Amount", "Payment Type", "Frequency", "Starts", "Action"].map((h) => (
                 <th key={h} className={`th ${h === "Action" ? "text-right" : ""}`}>
                   {h}
                 </th>
@@ -132,6 +155,8 @@ function PlanTable() {
                   <p className="mono text-xs text-hive-800">{p.clientCode}</p>
                 </td>
                 <td className="td">{p.serviceType}</td>
+                <td className="td tabular-nums">{p.licenses ?? 1}</td>
+                <td className="td tabular-nums text-ink-700">{p.rate != null ? inr(p.rate) : "—"}</td>
                 <td className="td font-semibold tabular-nums">{inr(p.amount)}</td>
                 <td className="td">{p.type === "recurring" ? "Recurring" : "On-Demand"}</td>
                 <td className="td">{clientFreqLabel(p.frequency)}</td>
@@ -139,7 +164,7 @@ function PlanTable() {
                 <td className="td">
                   <div className="flex justify-end gap-1">
                     {perm.update && (
-                      <button className="btn-ghost" title="Edit" aria-label="Edit" onClick={() => setForm({ ...p, amount: String(p.amount), startDate: istDate(p.startDate) || today(), clientId: String(p.clientId) })}>
+                      <button className="btn-ghost" title="Edit" aria-label="Edit" onClick={() => setForm({ ...p, rate: String(p.rate ?? round2(p.amount / (p.licenses || 1))), licenses: p.licenses ?? 1, startDate: istDate(p.startDate) || today(), clientId: String(p.clientId) })}>
                         <Pencil className="h-4 w-4" />
                       </button>
                     )}
@@ -172,7 +197,7 @@ function PlanTable() {
         open={!!form}
         onClose={() => setForm(null)}
         title={form?._id ? "Edit payment details" : "Create payment details"}
-        size="md"
+        size="lg"
         footer={
           <>
             <Btn variant="secondary" onClick={() => setForm(null)}>
@@ -184,46 +209,24 @@ function PlanTable() {
           </>
         }
       >
-        {form && (
-          <div className="grid gap-4 sm:grid-cols-2">
-            <Field label="Client" required className="sm:col-span-2">
-              <ClientSelect value={form.clientId} onChange={(v) => setForm({ ...form, clientId: v })} />
+        {form && !form._id && (
+          <div className="min-h-[420px] space-y-4">
+            <Field label="Client" required>
+              <ClientSelect value={form.clientId} onChange={pickClient} />
             </Field>
-            <Field label="Service Type" required className="sm:col-span-2" hint="Type to add a new service; trash icon removes one from the list">
-              <ServicePicker multiple={false} value={form.serviceType} onChange={(v) => setForm({ ...form, serviceType: v })} placeholder="Select service type…" />
-            </Field>
-            <Field label="Payment Amount (₹)" required>
-              <input className="input tabular-nums" inputMode="decimal" value={form.amount} onChange={(e) => setForm({ ...form, amount: e.target.value.replace(/[^\d.]/g, "") })} />
-            </Field>
-            <Field label="Payment Type" required>
-              <div className="flex rounded-xl border border-ink-400/20 bg-white p-1">
-                {[
-                  ["recurring", "Recurring"],
-                  ["on_demand", "On-Demand"],
-                ].map(([k, l]) => (
-                  <button key={k} type="button" onClick={() => setType(k)} className={`flex-1 rounded-lg py-1.5 text-sm font-semibold ${form.type === k ? "bg-hive-700 text-white" : "text-ink-700"}`}>
-                    {l}
-                  </button>
-                ))}
+            {form.clientId && !form.rows && (
+              <div className="flex justify-center py-6 text-hive-700">
+                <Spinner className="h-5 w-5" />
               </div>
-            </Field>
-            <Field label="Payment Frequency" required>
-              <select className="input" value={form.frequency} disabled={form.type === "on_demand"} onChange={(e) => setForm({ ...form, frequency: e.target.value })}>
-                {CLIENT_FREQUENCIES.filter((x) => (form.type === "on_demand" ? x.key === "on_demand" : x.key !== "on_demand")).map((x) => (
-                  <option key={x.key} value={x.key}>
-                    {x.label}
-                  </option>
-                ))}
-              </select>
-            </Field>
-            {form.type === "recurring" && (
-              <Field label="First due date" hint="Next dues follow the frequency">
-                <input type="date" className="input" value={form.startDate} onChange={(e) => setForm({ ...form, startDate: e.target.value })} />
-              </Field>
             )}
-            {form.type === "on_demand" && <p className="self-end text-xs text-ink-500">On-demand prices fill in automatically when you create an On-Demand payment for this client and service.</p>}
+            {form.rows && !form.rows.length && <p className="rounded-xl bg-amber-50 px-4 py-3 text-sm text-amber-800">This client has no services yet. Add services and their No of Licenses on the client (Client › Edit), then come back.</p>}
+            {form.rows?.map((r: any, i: number) => (
+              <PlanRow key={r.serviceType} r={r} onChange={(p) => setRow(i, p)} />
+            ))}
+            {form.rows?.length > 0 && <p className="text-xs text-ink-500">No of Licenses comes from the client’s services (Lead / Client › Edit) and updates here automatically. Payment Amount = Rate × Licenses.</p>}
           </div>
         )}
+        {form && form._id && <PlanRow edit r={form} onChange={(p) => setForm({ ...form, ...p })} />}
       </Modal>
       <Confirm
         open={!!del}
@@ -239,6 +242,62 @@ function PlanTable() {
           load();
         }}
       />
+    </div>
+  );
+}
+
+/** One service / product of a client: licences (read-only, from the client) + rate, type, frequency, first due date. */
+function PlanRow({ r, onChange, edit }: { r: any; onChange: (p: any) => void; edit?: boolean }) {
+  const amount = r.rate !== "" && !isNaN(Number(r.rate)) ? round2(Number(r.rate) * (Number(r.licenses) || 1)) : null;
+  const off = !edit && (!r.on || r.exists);
+  const setType = (type: string) => onChange({ type, frequency: type === "on_demand" ? "on_demand" : r.frequency === "on_demand" ? "monthly" : r.frequency });
+  return (
+    <div className={`rounded-2xl border p-4 transition ${off ? "border-ink-400/15 bg-ink-400/5" : "border-hive-200 bg-white"}`}>
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <label className="flex items-center gap-2.5">
+          {!edit && <input type="checkbox" className="h-4 w-4 accent-hive-700" checked={!!r.on && !r.exists} disabled={r.exists} onChange={(e) => onChange({ on: e.target.checked })} />}
+          <span className="font-semibold text-ink-900">{r.serviceType}</span>
+        </label>
+        {r.exists ? <span className="text-xs font-semibold text-ink-500">Payment details already set up — edit them from the list</span> : amount != null ? <span className="text-sm font-bold tabular-nums text-hive-800">Payment Amount {inr(amount)}</span> : null}
+      </div>
+      {!off && (
+        <div className="mt-3 grid gap-3 sm:grid-cols-3">
+          <Field label="No of Licenses" hint="From the client">
+            <input className="input bg-[#f7f8f6] tabular-nums" readOnly value={r.licenses ?? 1} />
+          </Field>
+          <Field label="Rate (₹ per licence)" required>
+            <input className="input tabular-nums" inputMode="decimal" placeholder="0" value={r.rate} onChange={(e) => onChange({ rate: e.target.value.replace(/[^\d.]/g, "") })} />
+          </Field>
+          <Field label="Payment Type" required>
+            <div className="flex rounded-xl border border-ink-400/20 bg-white p-1">
+              {[
+                ["recurring", "Recurring"],
+                ["on_demand", "On-Demand"],
+              ].map(([k, l]) => (
+                <button key={k} type="button" onClick={() => setType(k)} className={`flex-1 rounded-lg py-1.5 text-sm font-semibold ${r.type === k ? "bg-hive-700 text-white" : "text-ink-700"}`}>
+                  {l}
+                </button>
+              ))}
+            </div>
+          </Field>
+          <Field label="Payment Frequency" required>
+            <select className="input" value={r.frequency} disabled={r.type === "on_demand"} onChange={(e) => onChange({ frequency: e.target.value })}>
+              {CLIENT_FREQUENCIES.filter((x) => (r.type === "on_demand" ? x.key === "on_demand" : x.key !== "on_demand")).map((x) => (
+                <option key={x.key} value={x.key}>
+                  {x.label}
+                </option>
+              ))}
+            </select>
+          </Field>
+          {r.type === "recurring" ? (
+            <Field label="First due date" hint="Next dues follow the frequency">
+              <input type="date" className="input" value={r.startDate} onChange={(e) => onChange({ startDate: e.target.value })} />
+            </Field>
+          ) : (
+            <p className="self-end text-xs text-ink-500 sm:col-span-2">On-demand prices fill in automatically when you create an On-Demand payment for this client and service.</p>
+          )}
+        </div>
+      )}
     </div>
   );
 }
