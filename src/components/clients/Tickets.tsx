@@ -15,7 +15,7 @@ export function Tickets() {
   const [add, setAdd] = useState<any>(null);
   const [del, setDel] = useState<any>(null);
   const [busy, setBusy] = useState(false);
-  const perm = usePerm("clients");
+  const perm = usePerm("clients:tickets");
   const toast = useToast();
   const load = useCallback(() => api(`/co/clients-tickets${qs(f)}`).then(setData), [f]);
   useEffect(() => {

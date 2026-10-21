@@ -1,5 +1,6 @@
 import { S3Client, PutObjectCommand, GetObjectCommand, DeleteObjectCommand, CopyObjectCommand } from "@aws-sdk/client-s3";
 import { randomKey } from "./crypto";
+import { HttpError } from "./http";
 
 let client: S3Client | null = null;
 function s3() {
@@ -26,38 +27,59 @@ export function publicUrl(key: string) {
 }
 const encKey = (key: string) => key.split("/").map(encodeURIComponent).join("/");
 
-/** Base folder = the company name exactly as typed ("WELLNESSHIVE DIAGNOSTICA LLP"); only characters S3 can't hold in a folder name are dropped. */
-export function companyFolder(name: string) {
-  return (
-    name
-      .normalize("NFC")
-      .replace(/[\u0000-\u001f\u007f/\\{}^%`\[\]"<>~#|]/g, "")
-      .replace(/\s+/g, " ")
-      .trim()
-      .replace(/^\.+$/, "")
-      .slice(0, 100) || "company"
-  );
-}
-/** Folder style used before Oct 2026 ("WELLNESSHIVE-DIAGNOSTICA-LLP") — migrated to the exact name. */
-function legacyFolder(name: string) {
-  return name.normalize("NFKD").replace(/[^\w\s.-]/g, "").trim().replace(/\s+/g, "-").replace(/-+/g, "-").slice(0, 80) || "company";
+/** Optional root for every company folder (S3_BASE_PATH, e.g. "lms/prod"); empty = bucket root. */
+const basePath = () => (process.env.S3_BASE_PATH || "").replace(/^\/+|\/+$/g, "");
+/** One path segment S3 can hold (codes, client IDs, attachment types like "Profile Photo"). */
+export const seg = (s: string) =>
+  String(s || "")
+    .normalize("NFC")
+    .replace(/[\u0000-\u001f\u007f/\\{}^%`\[\]"<>~#|]/g, "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .replace(/^\.+$/, "")
+    .slice(0, 100) || "_";
+
+/** The company's folder: <base path>/<Company Code>  (e.g. "WHD"). */
+export function companyFolder(code: string) {
+  return [basePath(), seg(String(code || "company").toUpperCase())].filter(Boolean).join("/");
 }
 
-/** Ensures the company has its fixed base folder (older companies get one on first upload). */
+/** Thrown when Super Admin has switched S3 off for the company (Company › Web address & storage). */
+export class S3OffError extends HttpError {
+  constructor() {
+    super(409, "File storage (S3) is turned off for this company. Ask your Super Admin to tick “S3 storage required” in Company › Edit.");
+  }
+}
+
+/** The company's base folder — refuses when S3 is switched off for it. */
 export async function folderFor(company: any): Promise<string> {
-  if (company.s3Folder && company.s3Folder !== legacyFolder(company.name)) return company.s3Folder;
-  if (company.s3Folder && company.s3Folder === companyFolder(company.name)) return company.s3Folder;
-  const { Company } = await import("../models");
-  const base = companyFolder(company.name);
-  let folder = base;
-  for (let i = 2; await Company.exists({ s3Folder: folder, _id: { $ne: company._id } }); i++) folder = `${base}-${i}`;
-  await Company.updateOne({ _id: company._id }, { $set: { s3Folder: folder } });
-  company.s3Folder = folder;
+  if (company?.s3Enabled === false) throw new S3OffError();
+  const folder = companyFolder(company.code);
+  if (company.s3Folder !== folder) {
+    const { Company } = await import("../models");
+    await Company.updateOne({ _id: company._id }, { $set: { s3Folder: folder } });
+    company.s3Folder = folder;
+  }
   return folder;
 }
 
+/** Creates the company's folder tree in S3 (zero-byte "folder" markers): <code>/, logo/, banner/, brain/. Idempotent. */
+export async function ensureCompanyFolder(company: any) {
+  if (!process.env.S3_BUCKET) return null;
+  const folder = await folderFor(company);
+  for (const k of ["", "logo/", "banner/", "brain/"]) await s3().send(new PutObjectCommand({ Bucket: bucket(), Key: `${folder}/${k}`, Body: "", ServerSideEncryption: "AES256" }));
+  const { Company } = await import("../models");
+  await Company.updateOne({ _id: company._id }, { $set: { s3CreatedAt: new Date() } });
+  return folder;
+}
+
+/** Where a client's attachments of one type live: <base path>/<Company Code>/<Client Code>/<Attachment Type>/ */
+export async function attachmentFolder(company: any, clientCode: string, type: string) {
+  return `${await folderFor(company)}/${seg(clientCode)}/${seg(type)}`;
+}
+
 /**
- * Layout:  <Company-Name>/logo/…   <Company-Name>/banner/…   <Company-Name>/brain/…   (knowledge base)
+ * Layout:  <base>/<Company Code>/logo/…  /banner/…  /brain/… (knowledge base)  /<Client Code>/<Attachment Type>/…
  * Objects are encrypted at rest (SSE-S3) and the bucket stays private — files are served through the API.
  */
 export async function putObject(prefix: string, fileName: string, body: Buffer | string, contentType = "application/octet-stream") {
@@ -86,14 +108,14 @@ async function moveObject(from: string, to: string) {
 const fileOf = (key: string) => key.split("/").pop() || key;
 
 /**
- * Moves a company's existing files into  <Company Name>/logo · /banner · /brain  (idempotent; safe to re-run).
- * Covers companies created before the folder layout and the earlier hyphenated folder names.
+ * Moves a company's existing files into  <base>/<Company Code>/logo · /banner · /brain  (idempotent; safe to re-run).
+ * Covers the earlier company-name folders. Skipped for companies with S3 switched off.
  */
 export async function relayoutCompany(companyId: any) {
   if (!process.env.S3_BUCKET) return { moved: 0 };
   const { Company, CompanyAgent } = await import("../models");
   const c: any = await Company.findById(companyId);
-  if (!c) return { moved: 0 };
+  if (!c || c.s3Enabled === false) return { moved: 0 };
   const folder = await folderFor(c);
   let moved = 0;
   const target = (key: string, sub: string) => (key.startsWith(`${folder}/${sub}/`) ? null : `${folder}/${sub}/${fileOf(key)}`);
@@ -132,6 +154,28 @@ export async function relayoutCompany(companyId: any) {
     if (dirty) {
       ca.markModified("knowledge");
       await ca.save();
+    }
+  }
+  // client attachments → <folder>/<Client Code>/<Attachment Type>/
+  const { ClientPayment } = await import("../models");
+  for (const p of await ClientPayment.find({ companyId: c._id, "attachments.0": { $exists: true } })) {
+    let dirty = false;
+    for (const at of p.attachments || []) {
+      const want = `${folder}/${seg(p.clientCode)}/${seg(at.type || "Payment")}/`;
+      if (!at.key || at.key.startsWith(want)) continue;
+      try {
+        const to = want + fileOf(at.key);
+        await moveObject(at.key, to);
+        at.key = to;
+        dirty = true;
+        moved++;
+      } catch (e: any) {
+        console.warn("S3 move failed", at.key, e?.message);
+      }
+    }
+    if (dirty) {
+      p.markModified("attachments");
+      await p.save();
     }
   }
   });

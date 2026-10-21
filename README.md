@@ -580,3 +580,54 @@ reads p95 5–95 ms, writes p95 34–43 ms. Run the same command against product
 - **Licences stay in sync**: changing No of Licenses on the Lead / Client updates that service's payment details
   (licences and amount) and its **upcoming unpaid dues**; paid and over due dues are never rewritten.
 - Payment Details list shows Licenses and Rate; editing keeps licences read-only (they come from the client).
+
+## 16. Role sub-modules, Sales Order / Invoice / Pay-In, attachments & S3 switch (Oct 2026)
+
+### 16.1 Sub-modules in Role Management
+Every company module can declare `subs` in `shared/constants.ts` (`COMPANY_MODULES`). Role Management lists them **automatically** as indented rows under their module — add a sub-module there and it appears in the grid, the API checks and `/auth/me` on the next deploy.
+
+| Module | Sub-modules (applicable actions) |
+|---|---|
+| Leads | Import (C), Export (R), Bulk status update (U) |
+| Client | Clients (R U), Service Board (R U), Support Tickets (CRUD), Sales Order (CRUD), Invoice (CRUD), Pay-In (R U D) |
+| Report | Report builder (R), AI reports (R), Download Excel/CSV (R) |
+| Role Management | Roles (CRUD), Users (CRUD) |
+| WhatsApp Webhook | Webhooks (CRUD), Post (C) |
+| AI Agent | Models (CRUD), Endpoint (CRUD) |
+
+Rules:
+- Permission keys are `"<module>:<sub>"`, e.g. `clients:invoice`. A colon is used because MongoDB keys can't contain dots.
+- Actions that don't apply to a sub-module show "—" and are always stored as false.
+- A sub-module **follows its module** until a role sets it (the grid shows "follows module" / "reset"). It can never exceed the module or the plan.
+- On the server, `can("clients:invoice", "update")` falls back to `clients` where no sub-key exists (e.g. on Super Admin).
+- Invoice vs Pay-In is checked **per row**: a paid record is Pay-In, anything else is Invoice. Marking an invoice paid needs Invoice › Update.
+- The UI hides tabs and buttons a role can't use: Client tabs, Sales Order/Invoice/Pay-In, Models/Endpoint, Webhooks/Post, DIY/Agentic report, Import/Export and Excel/CSV.
+
+### 16.2 Client billing renamed
+"Payment Details" is now **Sales Order**, "Payment" is now **Invoice** and "Transaction History" is now **Pay-In**. API paths are unchanged (`/clients-plans`, `/clients-payments`).
+
+### 16.3 Invoice → Paid pop-up with attachments
+Choosing **Paid** in an invoice's status dropdown opens a pop-up with these fields:
+- Paid on
+- Payment mode
+- Transaction ID
+- Remarks
+- Attachments: up to 10 files, 8 MB each (PDF, images, Word, Excel)
+
+The pop-up posts to `POST /api/co/clients-payments/:id/pay` as multipart, with a `data` JSON field and `files`.
+
+Files go to `<S3_BASE_PATH>/<Company Code>/<Client Code>/<Attachment Type>/`. The type is set by where the file comes from: `Payment`, `Profile Photo`, `Support Ticket` or `Document` (`ATTACHMENT_TYPES`).
+
+Managing attachments afterwards:
+- The 📎 button opens the list: view, download, and remove or add files (needs update access).
+- Deleting an invoice deletes its files too.
+
+### 16.4 S3 per company (Super Admin)
+**Company › Branding & domain › File storage (S3) › "S3 storage required"** is on by default.
+- **On:** saving creates `<S3_BASE_PATH>/<Company Code>/` with `logo/`, `banner/` and `brain/`.
+- **Off:** nothing is created in S3, and uploads (logo, banner, AI knowledge, attachments) answer *409 — S3 storage is turned off for this company*.
+- **Turning it on later:** saving creates the folder then.
+
+Every company's files live in one folder named by its code. On first start the `s3_layout_v3` migration moves older files there. If S3 is set on, the folder was never created, or the company code changes, a save re-checks and re-lays the folder.
+
+Env: `S3_BUCKET`, `S3_REGION`, `S3_BASE_PATH` (optional prefix), plus AWS credentials.

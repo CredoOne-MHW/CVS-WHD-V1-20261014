@@ -55,11 +55,13 @@ r.get("/me", requireAuth, h(async (req, res) => {
   const nav = (a.scope === "super" ? SA_MODULES : COMPANY_MODULES).filter((m) => a.perms[m.key]?.read);
   if (a.scope === "super") await loadPlatformBranding();
   let branding: any = platformBranding();
+  let companyCode: string | undefined;
   if (a.scope === "company") {
     const c = await Company.findById(a.companyId).lean<any>();
     if (c) branding = { ...publicBranding(c), ...tenantUrls(c) };
+    companyCode = c?.code;
   }
-  res.json({ ...a, nav, branding });
+  res.json({ ...a, nav, branding, companyCode });
 }));
 
 /** Super Admin → "Force Login" into a company's admin console. The SA session is parked in a second cookie. */

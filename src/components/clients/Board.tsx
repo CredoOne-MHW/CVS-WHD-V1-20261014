@@ -17,7 +17,7 @@ export function Board() {
   const [over, setOver] = useState<string | null>(null);
   const [edit, setEdit] = useState(false);
   const [open, setOpen] = useState<string | null>(null);
-  const perm = usePerm("clients");
+  const perm = usePerm("clients:board");
   const toast = useToast();
   const t = useRef<any>(undefined);
 

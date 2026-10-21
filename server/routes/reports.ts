@@ -15,7 +15,7 @@ export function reportRoutes(scope: "super" | "company") {
     res.json(datasetsFor(req.auth!));
   }));
 
-  r.post("/run", can("reports", "read"), h(async (req, res) => {
+  r.post("/run", can("reports:builder", "read"), h(async (req, res) => {
     res.locals.logRead = true;
     res.locals.action = "Run report";
     const rep = await runReport(req.auth!, req.body, { maxRows: 2000 });
@@ -23,7 +23,7 @@ export function reportRoutes(scope: "super" | "company") {
     res.json(rep);
   }));
 
-  r.post("/export", can("reports", "read"), h(async (req, res) => {
+  r.post("/export", can("reports:export", "read"), h(async (req, res) => {
     const format = req.query.format === "csv" ? "csv" : "xlsx";
     const spec = parse(specSchema, req.body);
     const rep = await runReport(req.auth!, { ...spec, limit: 50000 }, { maxRows: 50000 });
@@ -37,7 +37,7 @@ export function reportRoutes(scope: "super" | "company") {
   }));
 
   if (scope === "company") {
-    r.post("/agentic", can("reports", "read"), h(async (req, res) => {
+    r.post("/agentic", can("reports:ai", "read"), h(async (req, res) => {
       const b = parse(z.object({ agentId: z.string(), prompt: z.string().min(4).max(1500) }), req.body);
       if (!(await rateLimit(`agentic:${req.auth!.userId}`, 20, 60))) throw new HttpError(429, "Too many AI reports in a minute — wait a moment");
       res.locals.logRead = true;

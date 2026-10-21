@@ -284,7 +284,7 @@ export function WebhookCard({ hook, base, eventLabel, testPhone, onChanged }: { 
   const [sample, setSample] = useState(sampleFor(hook.event));
   const [busy, setBusy] = useState<"" | "save" | "test">("");
   const [del, setDel] = useState(false);
-  const perm = usePerm("wa_webhooks");
+  const perm = usePerm("wa_webhooks:webhooks");
   const toast = useToast();
   useEffect(() => {
     setF(hook);
@@ -439,7 +439,7 @@ export function WebhookBoard({ base, createAlign = "right", allowEventTypes = fa
   const [evModal, setEvModal] = useState(false);
   const [newEv, setNewEv] = useState("");
   const [testPhone, setTestPhone] = useState("");
-  const perm = usePerm("wa_webhooks");
+  const perm = usePerm("wa_webhooks:webhooks");
   const toast = useToast();
 
   const load = () => {

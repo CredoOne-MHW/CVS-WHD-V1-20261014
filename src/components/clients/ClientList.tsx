@@ -114,7 +114,7 @@ export function ClientProfile({ id, onClose, onSaved }: { id: string | null; onC
   const [d, setD] = useState<any>(null);
   const [form, setForm] = useState<any>(null);
   const [busy, setBusy] = useState(false);
-  const perm = usePerm("clients");
+  const perm = usePerm("clients:clients");
   const toast = useToast();
   useEffect(() => {
     setD(null);
@@ -229,7 +229,7 @@ export function ClientProfile({ id, onClose, onSaved }: { id: string | null; onC
                 <span className="text-ink-500">Open tickets</span> <span className="font-semibold">{d.tickets.filter((t: any) => !["Resolved", "Closed"].includes(t.status)).length}</span>
               </p>
               <p className="mt-1.5 flex items-center justify-between">
-                <span className="text-ink-500">Payment plans</span> <span className="font-semibold">{d.plans.length}</span>
+                <span className="text-ink-500">Sales order lines</span> <span className="font-semibold">{d.plans.length}</span>
               </p>
             </div>
             {d.tickets.length > 0 && (

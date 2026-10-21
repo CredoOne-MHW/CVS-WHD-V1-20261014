@@ -1,12 +1,12 @@
 "use client";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Plus, Pencil, Trash2, BellRing, Search, Repeat, Zap } from "lucide-react";
+import { Plus, Pencil, Trash2, BellRing, Search, Repeat, Zap, Paperclip, X, Download } from "lucide-react";
 import { api, qs, fmtDate, inr } from "@/lib/api";
 import { Btn, Modal, Field, Empty, Pager, Spinner, Confirm, Stat, useToast } from "../ui";
-import { usePerm } from "../Shell";
+import { usePerm, useMe } from "../Shell";
 import { Tabs } from "../Logs";
 import { ServicePicker } from "../ServicePicker";
-import { CLIENT_FREQUENCIES, PAYMENT_MODES, applyDiscount, clientFreqLabel, linesOf, round2 } from "@shared/clients";
+import { CLIENT_FREQUENCIES, PAYMENT_MODES, applyDiscount, clientFreqLabel, linesOf, round2, ATTACHMENT_ACCEPT, ATTACHMENT_MAX_MB } from "@shared/clients";
 import { ClientSelect, PAY_STATUS } from "./common";
 
 type View = "recurring" | "on_demand" | "history";
@@ -14,21 +14,18 @@ const today = () => new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Kol
 const istDate = (d?: string) => (d ? new Date(new Date(d).getTime() + 5.5 * 3600e3).toISOString().slice(0, 10) : "");
 const fromIst = (s: string) => (s ? new Date(s + "T00:00:00+05:30").toISOString() : undefined);
 
-/** Client › Subscription Management: Payment Details · Payment (Recurring | On-Demand) · Transaction History. */
+/** Client › Subscription Management: Sales Order · Invoice (Recurring | On-Demand) · Pay-In. */
 export function Billing() {
-  const [tab, setTab] = useState<"details" | "payment" | "history">("details");
+  const so = usePerm("clients:sales_order"), inv = usePerm("clients:invoice"), pin = usePerm("clients:payin");
+  // Each tab is its own sub-module in Role Management — show only what the role can read.
+  const tabs = [so.read && { key: "details" as const, label: "Sales Order" }, inv.read && { key: "payment" as const, label: "Invoice" }, pin.read && { key: "history" as const, label: "Pay-In" }].filter(Boolean) as { key: "details" | "payment" | "history"; label: string }[];
+  const [pick, setTab] = useState<"details" | "payment" | "history">("details");
+  const tab = tabs.some((t) => t.key === pick) ? pick : tabs[0]?.key;
   const [sub, setSub] = useState<"recurring" | "on_demand">("recurring");
+  if (!tabs.length) return <Empty title="No access" hint="Your role has no access to Sales Order, Invoice or Pay-In." />;
   return (
     <>
-      <Tabs
-        value={tab}
-        onChange={setTab}
-        tabs={[
-          { key: "details", label: "Payment Details" },
-          { key: "payment", label: "Payment" },
-          { key: "history", label: "Transaction History" },
-        ]}
-      />
+      <Tabs value={tab!} onChange={setTab} tabs={tabs} />
       {tab === "details" && <PlanTable />}
       {tab === "payment" && (
         <>
@@ -52,7 +49,7 @@ export function Billing() {
   );
 }
 
-/* ───────────── Payment Details ───────────── */
+/* ───────────── Sales Order (was Payment Details) ───────────── */
 
 function PlanTable() {
   const [f, setF] = useState({ q: "", type: "", page: 1 });
@@ -60,7 +57,7 @@ function PlanTable() {
   const [form, setForm] = useState<any>(null);
   const [del, setDel] = useState<any>(null);
   const [busy, setBusy] = useState(false);
-  const perm = usePerm("clients");
+  const perm = usePerm("clients:sales_order");
   const toast = useToast();
   const load = useCallback(() => api(`/co/clients-plans${qs(f)}`).then(setData), [f]);
   useEffect(() => {
@@ -82,7 +79,7 @@ function PlanTable() {
         const bad = rows.find((x: any) => x.rate === "" || isNaN(Number(x.rate)));
         if (bad) throw new Error(`Enter the rate for “${bad.serviceType}”`);
         const r = await api<any>("/co/clients-plans/batch", { body: { clientId: form.clientId, lines: rows.map(row) } });
-        toast("ok", `Saved ${r.created} service${r.created > 1 ? "s" : ""}${rows.some((x: any) => x.type === "recurring") ? " — dues appear under Payment › Recurring" : ""}`);
+        toast("ok", `Saved ${r.created} service${r.created > 1 ? "s" : ""}${rows.some((x: any) => x.type === "recurring") ? " — invoices appear under Invoice › Recurring" : ""}`);
       }
       setForm(null);
       load();
@@ -189,14 +186,14 @@ function PlanTable() {
             <Spinner className="h-6 w-6" />
           </div>
         )}
-        {data && !data.items.length && <Empty title="No payment details yet" hint="Create one per client and service — recurring ones generate their dues automatically." />}
+        {data && !data.items.length && <Empty title="No sales orders yet" hint="Create one per client — each service gets its rate and terms; recurring ones raise their invoices automatically." />}
       </div>
       {data?.total > 0 && <Pager page={data.page} limit={data.limit} total={data.total} onPage={(page) => setF({ ...f, page })} />}
 
       <Modal
         open={!!form}
         onClose={() => setForm(null)}
-        title={form?._id ? "Edit payment details" : "Create payment details"}
+        title={form?._id ? "Edit sales order" : "Create sales order"}
         size="lg"
         footer={
           <>
@@ -230,8 +227,8 @@ function PlanTable() {
       </Modal>
       <Confirm
         open={!!del}
-        title="Delete these payment details?"
-        body={del ? `${del.clientCode} · ${del.serviceType} · ${inr(del.amount)}. Unpaid dues generated from it are removed; paid ones stay in Transaction History.` : ""}
+        title="Delete this sales order?"
+        body={del ? `${del.clientCode} · ${del.serviceType} · ${inr(del.amount)}. Unpaid invoices raised from it are removed; paid ones stay in Pay-In.` : ""}
         confirmLabel="Delete"
         danger
         onClose={() => setDel(null)}
@@ -258,7 +255,7 @@ function PlanRow({ r, onChange, edit }: { r: any; onChange: (p: any) => void; ed
           {!edit && <input type="checkbox" className="h-4 w-4 accent-hive-700" checked={!!r.on && !r.exists} disabled={r.exists} onChange={(e) => onChange({ on: e.target.checked })} />}
           <span className="font-semibold text-ink-900">{r.serviceType}</span>
         </label>
-        {r.exists ? <span className="text-xs font-semibold text-ink-500">Payment details already set up — edit them from the list</span> : amount != null ? <span className="text-sm font-bold tabular-nums text-hive-800">Payment Amount {inr(amount)}</span> : null}
+        {r.exists ? <span className="text-xs font-semibold text-ink-500">Already in a sales order — edit it from the list</span> : amount != null ? <span className="text-sm font-bold tabular-nums text-hive-800">Payment Amount {inr(amount)}</span> : null}
       </div>
       {!off && (
         <div className="mt-3 grid gap-3 sm:grid-cols-3">
@@ -302,6 +299,216 @@ function PlanRow({ r, onChange, edit }: { r: any; onChange: (p: any) => void; ed
   );
 }
 
+/** Pick files (multiple), shown as removable chips; checks type and size before upload. */
+function FilePick({ files, setFiles }: { files: File[]; setFiles: (f: File[]) => void }) {
+  const toast = useToast();
+  return (
+    <div>
+      <label className="flex cursor-pointer flex-col items-center justify-center rounded-2xl border-2 border-dashed border-hive-200 bg-hive-50/50 px-4 py-5 text-center hover:bg-hive-50">
+        <Paperclip className="mb-1 h-5 w-5 text-hive-600" />
+        <span className="text-sm font-semibold">Attach files</span>
+        <span className="text-xs text-ink-500">PDF, images, Word, Excel · up to {ATTACHMENT_MAX_MB} MB each · max 10</span>
+        <input
+          type="file"
+          multiple
+          accept={ATTACHMENT_ACCEPT}
+          className="hidden"
+          onChange={(e) => {
+            const add = Array.from(e.target.files || []);
+            const big = add.find((f) => f.size > ATTACHMENT_MAX_MB * 1024 * 1024);
+            if (big) toast("err", `${big.name} is larger than ${ATTACHMENT_MAX_MB} MB`);
+            setFiles([...files, ...add.filter((f) => f.size <= ATTACHMENT_MAX_MB * 1024 * 1024)].slice(0, 10));
+            e.target.value = "";
+          }}
+        />
+      </label>
+      {files.length > 0 && (
+        <ul className="mt-2 space-y-1.5">
+          {files.map((f, i) => (
+            <li key={i} className="flex items-center gap-2 rounded-lg bg-hive-50/70 px-3 py-1.5 text-sm">
+              <Paperclip className="h-3.5 w-3.5 text-hive-600" />
+              <span className="flex-1 truncate">{f.name}</span>
+              <span className="text-xs text-ink-400">{(f.size / 1024).toFixed(0)} KB</span>
+              <button type="button" aria-label={`Remove ${f.name}`} onClick={() => setFiles(files.filter((_, j) => j !== i))}>
+                <X className="h-4 w-4 text-ink-400 hover:text-red-600" />
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
+/** Invoice → Paid: when, how, transaction ID, remarks and proof of payment (S3 …/<Client Code>/Payment/). */
+function PaidModal({ p, onClose, onDone }: { p: any; onClose: () => void; onDone: (files: number) => void }) {
+  const [f, setF] = useState<any>(null);
+  const [files, setFiles] = useState<File[]>([]);
+  const [busy, setBusy] = useState(false);
+  const me: any = useMe();
+  const toast = useToast();
+  useEffect(() => {
+    if (p) {
+      setF({ paidAt: today(), mode: p.mode || "", txnId: p.txnId || "", remarks: p.remarks || "" });
+      setFiles([]);
+    }
+  }, [p]);
+  async function save() {
+    setBusy(true);
+    try {
+      const fd = new FormData();
+      fd.append("data", JSON.stringify({ ...f, paidAt: fromIst(f.paidAt) }));
+      files.forEach((x) => fd.append("files", x));
+      await api(`/co/clients-payments/${p._id}/pay`, { form: fd });
+      onDone(files.length);
+    } catch (e: any) {
+      toast("err", e.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+  return (
+    <Modal
+      open={!!p}
+      onClose={onClose}
+      title="Mark invoice as Paid"
+      size="md"
+      footer={
+        <>
+          <Btn variant="secondary" onClick={onClose}>
+            Cancel
+          </Btn>
+          <Btn loading={busy} onClick={save}>
+            Mark Paid
+          </Btn>
+        </>
+      }
+    >
+      {p && f && (
+        <div className="grid gap-4 sm:grid-cols-2">
+          <div className="rounded-xl bg-hive-50/70 px-4 py-3 text-sm sm:col-span-2">
+            <p className="font-semibold">
+              {p.clientName || p.clientCode} · <span className="tabular-nums">{inr(p.gross)}</span>
+            </p>
+            <p className="text-ink-500">
+              {p.services.join(", ")} · due {fmtDate(p.dueDate, false)}
+            </p>
+          </div>
+          <Field label="Paid on" required>
+            <input type="date" className="input" max={today()} value={f.paidAt} onChange={(e) => setF({ ...f, paidAt: e.target.value })} />
+          </Field>
+          <Field label="Payment Mode">
+            <select className="input" value={f.mode} onChange={(e) => setF({ ...f, mode: e.target.value })}>
+              <option value="">Select…</option>
+              {PAYMENT_MODES.map((m) => (
+                <option key={m}>{m}</option>
+              ))}
+            </select>
+          </Field>
+          <Field label="Transaction ID" className="sm:col-span-2">
+            <input className="input font-mono" maxLength={80} value={f.txnId} onChange={(e) => setF({ ...f, txnId: e.target.value })} />
+          </Field>
+          <Field label="Remarks" className="sm:col-span-2">
+            <textarea className="input min-h-[60px]" maxLength={1000} value={f.remarks} onChange={(e) => setF({ ...f, remarks: e.target.value })} />
+          </Field>
+          <div className="sm:col-span-2">
+            <p className="label">Attachment</p>
+            <FilePick files={files} setFiles={setFiles} />
+            <p className="mt-1.5 text-xs text-ink-500">
+              Saved to the client’s <b>Payment</b> folder: <span className="mono">{me?.companyCode ? `${me.companyCode}/` : ""}{p.clientCode}/Payment/</span>
+            </p>
+          </div>
+        </div>
+      )}
+    </Modal>
+  );
+}
+
+/** Files attached to an invoice: download, remove, add more (paid invoices). */
+function AttachmentsModal({ p, canEdit, onClose, onChanged }: { p: any; canEdit: boolean; onClose: () => void; onChanged: () => void }) {
+  const [list, setList] = useState<any[]>([]);
+  const [files, setFiles] = useState<File[]>([]);
+  const [busy, setBusy] = useState(false);
+  const toast = useToast();
+  useEffect(() => {
+    setList(p?.attachments || []);
+    setFiles([]);
+  }, [p]);
+  async function upload() {
+    setBusy(true);
+    try {
+      const fd = new FormData();
+      fd.append("data", "{}");
+      files.forEach((x) => fd.append("files", x));
+      const r = await api<any>(`/co/clients-payments/${p._id}/pay`, { form: fd });
+      setList(r.attachments || []);
+      setFiles([]);
+      toast("ok", "Attachment saved");
+      onChanged();
+    } catch (e: any) {
+      toast("err", e.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+  return (
+    <Modal open={!!p} onClose={onClose} title={p ? `Attachments · ${p.clientName || p.clientCode}` : ""} size="md">
+      {p && (
+        <div className="space-y-4">
+          {list.length ? (
+            <ul className="divide-y divide-ink-400/10 rounded-xl border border-ink-400/15">
+              {list.map((a) => (
+                <li key={a._id} className="flex items-center gap-3 px-3 py-2.5 text-sm">
+                  <Paperclip className="h-4 w-4 text-hive-600" />
+                  <div className="min-w-0 flex-1">
+                    <a className="block truncate font-semibold text-hive-800 hover:underline" href={`/api/co/clients-payments/${p._id}/attachments/${a._id}?inline=1`} target="_blank" rel="noreferrer">
+                      {a.fileName}
+                    </a>
+                    <p className="text-xs text-ink-500">
+                      {a.type} · {(a.size / 1024).toFixed(0)} KB · {fmtDate(a.at)}
+                      {a.by ? ` · ${a.by}` : ""}
+                    </p>
+                  </div>
+                  <a className="btn-ghost" href={`/api/co/clients-payments/${p._id}/attachments/${a._id}`} title="Download" aria-label="Download">
+                    <Download className="h-4 w-4" />
+                  </a>
+                  {canEdit && (
+                    <button
+                      className="btn-ghost text-red-600"
+                      title="Remove"
+                      aria-label="Remove"
+                      onClick={async () => {
+                        if (!confirm(`Remove ${a.fileName}?`)) return;
+                        await api(`/co/clients-payments/${p._id}/attachments/${a._id}`, { method: "DELETE" });
+                        setList(list.filter((x) => x._id !== a._id));
+                        onChanged();
+                      }}
+                    >
+                      <Trash2 className="h-4 w-4" />
+                    </button>
+                  )}
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <p className="text-sm text-ink-500">No attachments yet.</p>
+          )}
+          {canEdit && p.status === "paid" && (
+            <>
+              <FilePick files={files} setFiles={setFiles} />
+              {files.length > 0 && (
+                <Btn loading={busy} onClick={upload}>
+                  Upload {files.length} file{files.length > 1 ? "s" : ""}
+                </Btn>
+              )}
+            </>
+          )}
+        </div>
+      )}
+    </Modal>
+  );
+}
+
 /* ───────────── Payments (Recurring · On-Demand · History) ───────────── */
 const BLANK_PAY = { clientId: "", services: [] as string[], amount: "", discountType: "fixed", discountFixed: "", discountPct: "", status: "unpaid", mode: "", txnId: "", remarks: "", dueDate: today() };
 
@@ -311,7 +518,11 @@ function PaymentTable({ view }: { view: View }) {
   const [form, setForm] = useState<any>(null);
   const [del, setDel] = useState<any>(null);
   const [busy, setBusy] = useState(false);
-  const perm = usePerm("clients");
+  const [paying, setPaying] = useState<any>(null); // Invoice → Paid pop-up
+  const [files, setFiles] = useState<any>(null); // attachments of one invoice
+  const invPerm = usePerm("clients:invoice"), payinPerm = usePerm("clients:payin");
+  const perm = view === "history" ? payinPerm : invPerm; // the tab's own sub-module
+  const rowPerm = (p: any) => (p.status === "paid" ? payinPerm : invPerm); // a paid row is Pay-In
   const toast = useToast();
   const load = useCallback(() => api(`/co/clients-payments${qs({ ...f, view })}`).then(setData), [f, view]);
   useEffect(() => {
@@ -319,9 +530,10 @@ function PaymentTable({ view }: { view: View }) {
   }, [load]);
 
   async function setStatus(p: any, status: string) {
+    if (status === "paid") return setPaying(p); // Paid → pop-up with date, mode, transaction ID and attachments
     try {
       await api(`/co/clients-payments/${p._id}`, { method: "PUT", body: { status } });
-      toast("ok", status === "paid" ? "Marked Paid — moved to Transaction History" : view === "history" ? `Moved back to Payment as ${PAY_STATUS[status].label}` : `Status → ${PAY_STATUS[status].label}`);
+      toast("ok", view === "history" ? `Moved back to Invoice as ${PAY_STATUS[status].label}` : `Status → ${PAY_STATUS[status].label}`);
       load();
     } catch (e: any) {
       toast("err", e.message);
@@ -368,7 +580,7 @@ function PaymentTable({ view }: { view: View }) {
         if (form._id) await api(`/co/clients-payments/${form._id}`, { method: "PUT", body });
         else await api("/co/clients-payments", { body });
       }
-      toast("ok", form.status === "paid" && view !== "history" ? "Saved — paid entries move to Transaction History" : "Saved");
+      toast("ok", form.status === "paid" && view !== "history" ? "Saved — paid invoices move to Pay-In" : "Saved");
       setForm(null);
       load();
     } catch (e: any) {
@@ -411,7 +623,7 @@ function PaymentTable({ view }: { view: View }) {
               <Plus className="h-4 w-4" /> Create
             </Btn>
           )}
-          {view === "recurring" && <p className="ml-auto text-xs text-ink-500">Generated automatically from recurring Payment Details.</p>}
+          {view === "recurring" && <p className="ml-auto text-xs text-ink-500">Raised automatically from recurring Sales Orders.</p>}
         </div>
         <div className="overflow-x-auto">
           <table className="w-full min-w-[1000px]">
@@ -455,7 +667,7 @@ function PaymentTable({ view }: { view: View }) {
                     </>
                   )}
                   <td className="td">
-                    <select className={`rounded-lg border-0 py-1 pl-2 pr-7 text-xs font-semibold ring-1 ring-inset ring-ink-400/20 ${PAY_STATUS[p.status].cls}`} value={p.status} disabled={!perm.update} onChange={(e) => setStatus(p, e.target.value)} aria-label="Payment status">
+                    <select className={`rounded-lg border-0 py-1 pl-2 pr-7 text-xs font-semibold ring-1 ring-inset ring-ink-400/20 ${PAY_STATUS[p.status].cls}`} value={p.status} disabled={!rowPerm(p).update} onChange={(e) => setStatus(p, e.target.value)} aria-label="Payment status">
                       {Object.entries(PAY_STATUS).map(([k, v]) => (
                         <option key={k} value={k}>
                           {v.label}
@@ -466,17 +678,23 @@ function PaymentTable({ view }: { view: View }) {
                   {view === "on_demand" && <td className="td">{p.mode || "NA"}</td>}
                   <td className="td">
                     <div className="flex justify-end gap-1">
-                      {perm.update && (
+                      {rowPerm(p).update && (
                         <button className="btn-ghost" title={view === "history" ? "Edit status" : "Edit"} aria-label="Edit" onClick={() => openEdit(p)}>
                           <Pencil className="h-4 w-4" />
                         </button>
                       )}
-                      {perm.delete && (
+                      {(p.attachments?.length > 0 || p.status === "paid") && (
+                        <button className="btn-ghost relative" title={p.attachments?.length ? `${p.attachments.length} attachment(s)` : "Attachments"} aria-label="Attachments" onClick={() => setFiles(p)}>
+                          <Paperclip className="h-4 w-4" />
+                          {p.attachments?.length > 0 && <span className="absolute -right-0.5 -top-0.5 grid h-4 min-w-4 place-items-center rounded-full bg-hive-700 px-1 text-[10px] font-bold text-white">{p.attachments.length}</span>}
+                        </button>
+                      )}
+                      {rowPerm(p).delete && (
                         <button className="btn-ghost text-red-600" title="Delete" aria-label="Delete" onClick={() => setDel(p)}>
                           <Trash2 className="h-4 w-4" />
                         </button>
                       )}
-                      {perm.update && (
+                      {rowPerm(p).update && (
                         <button className="btn-ghost" title={p.status === "paid" ? "Send receipt on WhatsApp" : p.lastReminderAt ? `Reminder · last sent ${fmtDate(p.lastReminderAt)}` : "Reminder"} aria-label="Reminder" onClick={() => remind(p)}>
                           <BellRing className="h-4 w-4" />
                         </button>
@@ -492,12 +710,22 @@ function PaymentTable({ view }: { view: View }) {
               <Spinner className="h-6 w-6" />
             </div>
           )}
-          {data && !data.items.length && <Empty title={view === "history" ? "No payments received yet" : "Nothing due"} hint={view === "recurring" ? "Recurring Payment Details create their dues here automatically." : view === "on_demand" ? "Create a one-off payment for a client." : "Payments marked Paid appear here."} />}
+          {data && !data.items.length && <Empty title={view === "history" ? "No payments received yet" : "No invoices due"} hint={view === "recurring" ? "Recurring Sales Orders raise their invoices here automatically." : view === "on_demand" ? "Create a one-off invoice for a client." : "Invoices marked Paid appear here, with their attachments."} />}
         </div>
         {data?.total > 0 && <Pager page={data.page} limit={data.limit} total={data.total} onPage={(page) => setF({ ...f, page })} />}
       </div>
 
       <PaymentForm form={form} setForm={setForm} view={view} busy={busy} onSave={save} />
+      <PaidModal
+        p={paying}
+        onClose={() => setPaying(null)}
+        onDone={(n) => {
+          setPaying(null);
+          toast("ok", `Marked Paid${n ? ` · ${n} attachment${n > 1 ? "s" : ""} saved` : ""} — moved to Pay-In`);
+          load();
+        }}
+      />
+      <AttachmentsModal p={files} canEdit={!!files && rowPerm(files).update} onClose={() => setFiles(null)} onChanged={load} />
       <Confirm
         open={!!del}
         title="Delete this payment?"
@@ -522,7 +750,7 @@ function PaymentForm({ form, setForm, view, busy, onSave }: { form: any; setForm
   const statusOnly = !!form?._id && view === "history";
   const pickable = !!form && (!form._id || form.kind === "on_demand");
 
-  // Amount fills in from the client's Payment Details for the chosen services (still editable)
+  // Amount fills in from the client's Sales Order for the chosen services (still editable)
   useEffect(() => {
     if (!form || !pickable || !form.clientId || !form.services?.length) return;
     const key = `${form.clientId}|${form.services.join(",")}`;
@@ -557,7 +785,7 @@ function PaymentForm({ form, setForm, view, busy, onSave }: { form: any; setForm
     <Modal
       open
       onClose={() => setForm(null)}
-      title={statusOnly ? "Update payment status" : form._id ? "Edit payment" : "Create On-Demand payment"}
+      title={statusOnly ? "Update invoice status" : form._id ? "Edit invoice" : "Create On-Demand invoice"}
       size="md"
       footer={
         <>
@@ -579,7 +807,7 @@ function PaymentForm({ form, setForm, view, busy, onSave }: { form: any; setForm
               Paid {fmtDate(form.paidAt)} {form.mode ? `· ${form.mode}` : ""} {form.txnId ? `· ${form.txnId}` : ""}
             </span>
           </p>
-          <Field label="Payment Status" hint="Only the status can change here. Unpaid / Over-Due moves it back to the Payment list.">
+          <Field label="Payment Status" hint="Only the status can change here. Unpaid / Over-Due moves it back to Invoice.">
             <select className="input" value={form.status} onChange={(e) => set("status", e.target.value)}>
               {Object.entries(PAY_STATUS).map(([k, v]) => (
                 <option key={k} value={k}>
@@ -594,10 +822,10 @@ function PaymentForm({ form, setForm, view, busy, onSave }: { form: any; setForm
           <Field label="Client" required className="sm:col-span-2">
             <ClientSelect value={form.clientId} disabled={!pickable} onChange={(v) => set("clientId", v)} />
           </Field>
-          <Field label="Service Type" required className="sm:col-span-2" hint={pricing?.missing?.length ? `No price in Payment Details for: ${pricing.missing.join(", ")} — enter the amount` : "Multi-select · search or add new"}>
+          <Field label="Service Type" required className="sm:col-span-2" hint={pricing?.missing?.length ? `No price in the Sales Order for: ${pricing.missing.join(", ")} — enter the amount` : "Multi-select · search or add new"}>
             {pickable ? <ServicePicker value={form.services} onChange={(v) => set("services", v)} placeholder="Select service type(s)…" /> : <input className="input" disabled value={form.services.join(", ")} />}
           </Field>
-          <Field label="Payment Amount (₹)" required hint={pickable ? "Filled from the client's Payment Details — can be changed" : undefined}>
+          <Field label="Payment Amount (₹)" required hint={pickable ? "Filled from the client's Sales Order — can be changed" : undefined}>
             <input className="input tabular-nums" inputMode="decimal" value={form.amount} onChange={(e) => setForm({ ...form, amount: e.target.value.replace(/[^\d.]/g, ""), ...linked(e.target.value.replace(/[^\d.]/g, ""), form.discountType, form.discountType === "percent" ? form.discountPct : form.discountFixed) })} />
           </Field>
           {pickable && (

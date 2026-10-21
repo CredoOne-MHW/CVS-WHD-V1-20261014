@@ -1,6 +1,6 @@
 "use client";
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Plus, Pencil, Power, BellRing, LogIn, Trash2, Search, Bot, MoreHorizontal, Globe2, ImagePlus, X, Building2, KeyRound, Palette } from "lucide-react";
+import { Plus, Pencil, Power, BellRing, LogIn, Trash2, Search, Bot, MoreHorizontal, Globe2, ImagePlus, X, Building2, KeyRound, Palette, HardDrive } from "lucide-react";
 import { api, qs, fmtDate } from "@/lib/api";
 import { PageHeader, Btn, Modal, Field, Badge, Empty, Pager, Confirm, Spinner, useToast } from "@/components/ui";
 import { usePerm } from "@/components/Shell";
@@ -25,7 +25,7 @@ const BLANK_BRANDING = {
   supportEmail: "",
   supportPhone: "",
 };
-const BLANK = { name: "", code: "", contactPerson: "", phone: "", whatsapp: "", email: "", plan: "Trial", gstin: "", address: "", loginEmail: "", password: "", slug: "", customDomain: "", branding: { ...BLANK_BRANDING } };
+const BLANK = { name: "", code: "", contactPerson: "", phone: "", whatsapp: "", email: "", plan: "Trial", s3Enabled: true, gstin: "", address: "", loginEmail: "", password: "", slug: "", customDomain: "", branding: { ...BLANK_BRANDING } };
 type Kind = "logo" | "banner" | "favicon";
 const slugify = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 63);
 
@@ -91,18 +91,21 @@ export default function Companies() {
     setBusy(true);
     try {
       const body = { ...form, branding: { ...form.branding, shortName: form.branding.shortName || form.name } };
-      for (const k of ["_id", "createdAt", "updatedAt", "deletedAt", "domain", "brandingPublic", "allocations", "leadCount", "connectors", "platformUrl", "customUrl", "status", "trialEndsAt", "s3Folder", "dbName", "dbReadyAt", "__v"]) delete body[k];
+      for (const k of ["_id", "createdAt", "updatedAt", "deletedAt", "domain", "brandingPublic", "allocations", "leadCount", "connectors", "platformUrl", "customUrl", "status", "trialEndsAt", "s3Folder", "s3CreatedAt", "s3", "dbName", "dbReadyAt", "__v", "slugAliases", "lastScheduledKey"]) delete body[k];
+      body.s3Enabled = form.s3Enabled !== false;
       if (!body.password) delete body.password;
       if (!body.slug) delete body.slug;
       for (const k of ["logoKey", "bannerKey", "faviconKey", "updatedAt"]) delete body.branding[k];
       const saved = form._id ? await api(`/sa/companies/${form._id}`, { method: "PUT", body }) : await api("/sa/companies", { body });
       const id = form._id || saved._id;
       for (const kind of Object.keys(files) as Kind[]) {
+        if (form.s3Enabled === false) break; // images need S3
         const fd = new FormData();
         fd.append("file", files[kind]!);
         await api(`/sa/companies/${id}/brand-asset/${kind}`, { form: fd });
       }
-      toast("ok", form._id ? "Company updated" : "Company created");
+      const s3 = saved?.s3;
+      toast(s3?.error ? "err" : "ok", `${form._id ? "Company updated" : "Company created"}${s3?.created ? ` · S3 folder ${s3.folder} created${s3.moved ? ` (${s3.moved} file(s) moved in)` : ""}` : s3?.error ? ` · S3 folder not created: ${s3.error}` : ""}`);
       const created = !form._id;
       setForm(null);
       load();
@@ -396,12 +399,33 @@ export default function Companies() {
 
                   <section>
                     <h3 className="mb-3 flex items-center gap-2 font-bold">
+                      <HardDrive className="h-4 w-4 text-hive-700" /> File storage (S3)
+                    </h3>
+                    <label className="flex items-start gap-3 rounded-2xl border border-ink-400/15 bg-white p-4">
+                      <input type="checkbox" className="mt-0.5 h-4 w-4 accent-hive-700" checked={form.s3Enabled !== false} onChange={(e) => set("s3Enabled", e.target.checked)} />
+                      <span className="text-sm">
+                        <b>S3 storage required</b>
+                        <span className="block text-ink-500">
+                          {form.s3Enabled !== false ? (
+                            <>
+                              The company’s folder <span className="mono text-ink-700">{(form.code || "<Company Code>").toUpperCase()}/</span> {form.s3CreatedAt ? "exists" : "is created on Save"} — logo/, banner/, brain/ (AI knowledge) and <span className="mono">&lt;Client Code&gt;/&lt;Attachment Type&gt;/</span> (e.g. payment receipts).
+                            </>
+                          ) : (
+                            <>No S3 folder is created. Logo/banner uploads, AI knowledge files and attachments are turned off for this company. Tick this any time — the folder is created when you Save.</>
+                          )}
+                        </span>
+                      </span>
+                    </label>
+                  </section>
+
+                  <section className={form.s3Enabled === false ? "pointer-events-none opacity-50" : ""}>
+                    <h3 className="mb-3 flex items-center gap-2 font-bold">
                       <ImagePlus className="h-4 w-4 text-hive-700" /> Images
                     </h3>
                     <p className="-mt-1 mb-3 text-xs text-ink-500">
-                      Stored in S3 under <span className="mono">{form.s3Folder || form.name || "<Company name>"}/logo</span> and{" "}
-                      <span className="mono">{form.s3Folder || form.name || "<Company name>"}/banner</span>; AI knowledge files go to{" "}
-                      <span className="mono">…/brain</span>.
+                      Stored in S3 under <span className="mono">{(form.code || "<Company Code>").toUpperCase()}/logo</span> and{" "}
+                      <span className="mono">…/banner</span>; AI knowledge files go to <span className="mono">…/brain</span>.
+                      {form.s3Enabled === false && " Needs S3 storage (above)."}
                     </p>
                     <div className="grid gap-4 sm:grid-cols-3">
                       {(

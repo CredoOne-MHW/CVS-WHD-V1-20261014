@@ -89,7 +89,9 @@ const CompanySchema = new Schema(
     slug: { type: String, lowercase: true, trim: true, unique: true, sparse: true }, // "short name" — from the company name
     slugAliases: { type: [String], default: undefined, index: true }, // earlier short names: old <slug>.<base> links keep working
     customDomain: { type: String, lowercase: true, trim: true, unique: true, sparse: true },
-    s3Folder: String, // "<Company-Name>" — fixed at creation; logo/, banner/, brain/ live under it
+    s3Folder: String, // "<base>/<Company Code>" — logo/, banner/, brain/, <Client Code>/<Attachment Type>/ live under it
+    s3Enabled: { type: Boolean, default: true }, // Super Admin › "S3 storage required"; off = no S3 folder, uploads refused
+    s3CreatedAt: Date, // when the S3 folder tree was created
     dbName: String, // the company's own MongoDB database (= company code at creation; never changes)
     dbReadyAt: Date, // set once the database exists and the company's data lives there
     branding: {
@@ -381,6 +383,8 @@ const ClientPaymentSchema = new Schema(
     txnId: String,
     remarks: String,
     lastReminderAt: Date,
+    // proof of payment etc. — S3: <base>/<Company Code>/<Client Code>/Payment/<file>
+    attachments: { type: [{ type: { type: String }, key: String, fileName: String, size: Number, mime: String, at: { type: Date, default: Date.now }, by: String }], default: undefined },
   },
   ts
 );

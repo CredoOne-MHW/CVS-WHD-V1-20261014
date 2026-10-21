@@ -253,7 +253,7 @@ const ACTIONS: Record<string, string> = {
   Conversion: "Review the last 10 lost leads for a common objection and update the call script.",
   Sources: "Shift budget toward the best-converting source; pause or fix sources that bring leads but no conversions.",
   "Lost deals": "Address the top lost reason directly — e.g. a price-match offer or a faster appointment slot.",
-  Collections: "Send payment reminders today (Client › Subscription Management › Reminder).",
+  Collections: "Send payment reminders today (Client › Subscription Management › Invoice › Reminder).",
   Support: "Respond to every open grievance today and move stale tickets forward so clients are notified.",
   Clients: "Welcome new clients personally and confirm their next service date.",
   WhatsApp: "Open WhatsApp Logs, fix the webhook if needed and resend undelivered messages.",
