@@ -5,7 +5,8 @@ import { api, qs, fmtDate, inr } from "@/lib/api";
 import { Btn, Modal, Field, Badge, Empty, Pager, Spinner, useToast } from "../ui";
 import { usePerm } from "../Shell";
 import { useServices } from "../ServicePicker";
-import { BusinessFields, ServiceField, bizFrom, bizPayload, bizError } from "../BusinessFields";
+import { BusinessFields, ServiceField, bizFrom, bizPayload, bizError, linesError, linesPayload } from "../BusinessFields";
+import { linesOf } from "@shared/clients";
 import { STAGE_DOT, TICKET_STYLE, PAY_STATUS } from "./common";
 
 const EVENT_ICON: Record<string, any> = { lead: UserPlus, status: Flag, note: StickyNote, ticket: LifeBuoy, payment: IndianRupee, paid: CircleDollarSign };
@@ -73,7 +74,7 @@ export function ClientList() {
                   </td>
                   <td className="td max-w-[220px]">
                     <div className="flex flex-wrap gap-1">
-                      {(c.services || []).length ? c.services.map((s: string) => <Badge key={s}>{s}</Badge>) : <span className="text-ink-400">NA</span>}
+                      {linesOf(c).length ? linesOf(c).map((s) => <Badge key={s.service}>{s.service}{s.licenses > 1 ? ` × ${s.licenses}` : ""}</Badge>) : <span className="text-ink-400">NA</span>}
                     </div>
                   </td>
                   <td className="td">
@@ -121,17 +122,17 @@ export function ClientProfile({ id, onClose, onSaved }: { id: string | null; onC
     api(`/co/clients/${id}`).then((x) => {
       setD(x);
       const c = x.client;
-      setForm({ name: c.name || "", phone: c.phone || "", whatsapp: c.whatsapp || "", email: c.email || "", address: c.address || "", services: c.services || [], biz: bizFrom(c.business), remark: "" });
+      setForm({ name: c.name || "", phone: c.phone || "", whatsapp: c.whatsapp || "", email: c.email || "", address: c.address || "", serviceLines: linesOf(c), biz: bizFrom(c.business), remark: "" });
     });
   }, [id]);
 
   async function save() {
-    const err = bizError(form.biz);
+    const err = linesError(form.serviceLines) || bizError(form.biz);
     if (err) return toast("err", err);
     setBusy(true);
     try {
-      const { biz, ...rest } = form;
-      await api(`/co/clients/${id}`, { method: "PUT", body: { ...rest, remark: rest.remark || undefined, business: bizPayload(biz) } });
+      const { biz, serviceLines, ...rest } = form;
+      await api(`/co/clients/${id}`, { method: "PUT", body: { ...rest, serviceLines: linesPayload(serviceLines), remark: rest.remark || undefined, business: bizPayload(biz) } });
       toast("ok", "Client updated");
       onSaved?.();
       onClose();
@@ -194,7 +195,7 @@ export function ClientProfile({ id, onClose, onSaved }: { id: string | null; onC
             <Field label="Address" className="sm:col-span-2">
               <input className="input" placeholder="NA" value={form.address} disabled={!perm.update} onChange={(e) => u("address", e.target.value)} />
             </Field>
-            <ServiceField services={form.services} onChange={(s) => u("services", s)} />
+            <ServiceField lines={form.serviceLines} onChange={(s) => u("serviceLines", s)} />
             <BusinessFields v={form.biz} set={(biz) => u("biz", biz)} />
             {perm.update && (
               <Field label="Add a note to the journey" className="sm:col-span-2">
