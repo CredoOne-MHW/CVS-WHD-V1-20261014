@@ -25,7 +25,8 @@ import { mcpSession } from "../../lib/mcp";
 import { runPull, PULL_TYPES, wooBase } from "../../lib/pull";
 import { suppress, fromProspecting } from "../../lib/suppress";
 import { testProspect, runProspectNow, BLOCKED_SITES } from "../../lib/prospect";
-import clientRoutes, { businessBody, applyBusiness, safeLead, assertServices } from "./clients";
+import clientRoutes, { businessBody, applyBusiness, safeLead, assertServices, applyServiceLines, syncPlanLicenses, serviceLinesBody } from "./clients";
+import { linesOf } from "../../../shared/clients";
 import { promoteClients } from "../../lib/clients";
 import { webhookRoutes, waLogRoutes, activityRoutes, roleRoutes } from "../shared";
 import { reportRoutes } from "../reports";
@@ -121,11 +122,12 @@ const leadBody = z.object({
   nextFollowUpAt: z.coerce.date().optional().nullable(),
   consentWhatsapp: z.boolean().optional(),
   services: z.array(z.string().max(80)).max(30).optional(),
+  serviceLines: serviceLinesBody.optional(),
   business: businessBody.optional(),
 });
 
 const exportRow = (l: any) => ({
-    Name: l.name || "NA", "WhatsApp No": l.whatsapp || "NA", "Phone No": l.phone || "NA", Email: l.email || "NA", Address: l.address || "NA", Comments: l.comments || "NA", Source: l.source, Campaign: l.campaign || "NA", Medium: l.medium || "NA", Referral: l.referral || "NA", "Profile / post": l.profileUrl || "NA", Status: l.status, "Lost reason": l.lostReasonOther || l.lostReason, Score: l.score, Service: (l.services || []).join(", ") || "NA", "Company GST": l.business?.gst || "NA", "Trade licence": l.business?.tradeLicence || "NA", "Company PAN": l.business?.pan || "NA", "Registered address": l.business?.registeredAddress || "NA", "Communication address": l.business?.communicationAddress || "NA", "Owner email": l.business?.ownerEmail || "NA", "Owner number": l.business?.ownerPhone || "NA", "Owner PAN": l.business?.ownerPan || "NA", "Owner Aadhaar": l.business?.ownerAadhaarLast4 ? `XXXX XXXX ${l.business.ownerAadhaarLast4}` : "NA", "Created (IST)": new Date(l.createdAt).toLocaleString("en-IN", { timeZone: "Asia/Kolkata" }),
+    Name: l.name || "NA", "WhatsApp No": l.whatsapp || "NA", "Phone No": l.phone || "NA", Email: l.email || "NA", Address: l.address || "NA", Comments: l.comments || "NA", Source: l.source, Campaign: l.campaign || "NA", Medium: l.medium || "NA", Referral: l.referral || "NA", "Profile / post": l.profileUrl || "NA", Status: l.status, "Lost reason": l.lostReasonOther || l.lostReason, Score: l.score, Service: linesOf(l).map((x) => `${x.service} × ${x.licenses}`).join(", ") || "NA", "Company GST": l.business?.gst || "NA", "Trade licence": l.business?.tradeLicence || "NA", "Company PAN": l.business?.pan || "NA", "Registered address": l.business?.registeredAddress || "NA", "Communication address": l.business?.communicationAddress || "NA", "Owner email": l.business?.ownerEmail || "NA", "Owner number": l.business?.ownerPhone || "NA", "Owner PAN": l.business?.ownerPan || "NA", "Owner Aadhaar": l.business?.ownerAadhaarLast4 ? `XXXX XXXX ${l.business.ownerAadhaarLast4}` : "NA", "Created (IST)": new Date(l.createdAt).toLocaleString("en-IN", { timeZone: "Asia/Kolkata" }),
 });
 
 function leadQuery(req: any) {
@@ -184,13 +186,15 @@ r.get("/leads/:id", can("leads", "read"), h(async (req, res) => {
 
 r.post("/leads", can("leads", "create"), h(async (req, res) => {
   const b = parse(leadBody, req.body);
-  const { business, services, ...rest } = b;
-  const svc = services ? await assertServices(req.auth!.companyId, services) : undefined; // validate before saving anything
+  const { business, services, serviceLines, ...rest } = b;
+  const lines = serviceLines || services?.map((s) => ({ service: s, licenses: 1 }));
+  if (lines) await assertServices(req.auth!.companyId, lines.map((l) => l.service)); // validate before saving anything
   const { lead, created } = await upsertLead(req.auth!.companyId!, { ...rest, source: b.source || "manual", consent: b.consentWhatsapp != null ? { whatsapp: b.consentWhatsapp, text: "Recorded by staff" } : undefined } as any, { by: req.auth!.name });
-  if (business || services) {
-    if (svc) lead.services = svc;
+  if (business || lines) {
+    if (lines) await applyServiceLines(lead, lines);
     applyBusiness(lead, business);
     await lead.save();
+    if (lines) await syncPlanLicenses(lead);
   }
   const moved = lead.status === WON_STATUS ? await promoteClients(lead.companyId, [lead._id]) : [];
   res.locals.item = lead.name || lead.phone;
@@ -207,13 +211,14 @@ r.put("/leads/:id", can("leads", "update"), h(async (req, res) => {
     if (!b.lostReason) throw badRequest("Select a lost reason");
     if (b.lostReason === "Other" && !b.lostReasonOther?.trim()) throw badRequest("Describe the reason");
   }
-  const { remark, consentWhatsapp, business, services, ...fields } = b;
+  const { remark, consentWhatsapp, business, services, serviceLines, ...fields } = b;
   // a partial update (e.g. the Status dropdown sends only { status }) must not blank fields it didn't send
   for (const k of Object.keys(fields)) if (!(k in (req.body || {}))) delete (fields as any)[k];
   if (fields.phone) fields.phone = normalizePhone(fields.phone);
   if (fields.whatsapp) fields.whatsapp = normalizePhone(fields.whatsapp);
   lead.set(fields);
-  if (services) lead.services = await assertServices(lead.companyId, services);
+  if (serviceLines) await applyServiceLines(lead, serviceLines);
+  else if (services) await applyServiceLines(lead, services.map((sv) => ({ service: sv, licenses: linesOf(lead).find((l) => l.service.toLowerCase() === sv.toLowerCase())?.licenses || 1 })));
   applyBusiness(lead, business);
   if (b.status && b.status !== LOST_STATUS) lead.set({ lostReason: undefined, lostReasonOther: undefined });
   if (consentWhatsapp != null) lead.consent = { ...(lead.consent || {}), whatsapp: consentWhatsapp, text: "Updated by staff", capturedAt: new Date() };
@@ -221,6 +226,7 @@ r.put("/leads/:id", can("leads", "update"), h(async (req, res) => {
     lead.remarks.push({ by: req.auth!.name, text: remark || (b.status === LOST_STATUS ? `Lost: ${b.lostReason === "Other" ? b.lostReasonOther : b.lostReason}` : ""), statusFrom: b.status && b.status !== from ? from : undefined, statusTo: b.status && b.status !== from ? b.status : undefined });
   }
   await lead.save();
+  if (serviceLines || services) await syncPlanLicenses(lead);
   res.locals.item = lead.name || lead.phone;
   if (b.status && b.status !== from && lead.whatsapp && lead.consent?.whatsapp !== false) { // never message someone who hasn't opted in
     const c = await Company.findById(lead.companyId).lean<any>();

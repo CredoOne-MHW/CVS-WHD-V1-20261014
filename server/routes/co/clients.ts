@@ -15,7 +15,7 @@ import { fireEvent } from "../../lib/whatsapp";
 import { cached, invalidate } from "../../lib/cache";
 import { getBoard, newColumnId, promoteClients, throttled, notifyClient, refreshBilling, ensureRecurringDues, refreshOverdue, nextSeq, clientPhone } from "../../lib/clients";
 import { normalizePhone } from "../../../shared/constants";
-import { CLIENT_FREQ_KEYS, PAYMENT_MODES, SUPPORT_CATEGORIES, TICKET_STATUS_LIST, GST_RE, PAN_RE, aadhaarValid, maskAadhaar, applyDiscount, clientFreqLabel, round2 } from "../../../shared/clients";
+import { CLIENT_FREQ_KEYS, PAYMENT_MODES, SUPPORT_CATEGORIES, TICKET_STATUS_LIST, GST_RE, PAN_RE, aadhaarValid, maskAadhaar, applyDiscount, clientFreqLabel, round2, linesOf } from "../../../shared/clients";
 
 const r = Router();
 const oid = (s: any) => new mongoose.Types.ObjectId(String(s));
@@ -95,6 +95,53 @@ async function assertServices(companyId: any, names?: string[]) {
 }
 export { assertServices };
 
+export const serviceLinesBody = z
+  .array(z.object({ service: z.string().trim().min(1, "Pick a service or product").max(80), licenses: z.coerce.number().int("No of Licenses must be a whole number").min(1, "No of Licenses must be at least 1").max(1_000_000) }))
+  .max(30);
+
+/**
+ * Save the service / product lines of a lead or client (validated against the Service master; each service once).
+ * Keeps the plain `services` list in sync, and — for a client — carries licence changes into its Payment Details.
+ */
+export async function applyServiceLines(lead: any, lines: { service: string; licenses: number }[]) {
+  const names = await assertServices(lead.companyId, lines.map((l) => l.service));
+  const seen = new Set<string>();
+  const out = lines.map((l, i) => {
+    const service = names[names.findIndex((n) => n.toLowerCase() === l.service.trim().toLowerCase())] ?? names[i];
+    if (seen.has(service.toLowerCase())) throw badRequest(`“${service}” is listed twice — add its licences on one row`);
+    seen.add(service.toLowerCase());
+    return { service, licenses: l.licenses };
+  });
+  lead.serviceLines = out;
+  lead.services = out.map((l) => l.service);
+}
+
+/** Licences changed on the client → its payment details (rate × licences) and upcoming unpaid dues follow. */
+export async function syncPlanLicenses(client: any) {
+  if (!client.isClient) return 0;
+  const lic = new Map(linesOf(client).map((l) => [l.service.toLowerCase(), l.licenses]));
+  const plans = await ClientPlan.find({ companyId: client.companyId, clientId: client._id });
+  const startToday = new Date(new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Kolkata" }) + "T00:00:00+05:30");
+  let changed = 0;
+  for (const p of plans) {
+    const n = lic.get(String(p.serviceType).toLowerCase());
+    if (!n || n === p.licenses) continue;
+    p.licenses = n;
+    if (p.rate != null) p.amount = round2(p.rate * n);
+    await p.save();
+    changed++;
+    if (p.rate == null) continue;
+    // only upcoming, unpaid dues change — issued history and over dues are never rewritten
+    const dues = await ClientPayment.find({ planId: p._id, status: "unpaid", dueDate: { $gte: startToday } });
+    for (const d of dues) {
+      const x = applyDiscount(p.amount, d.discountType || "fixed", d.discountValue || 0);
+      d.set({ amount: p.amount, discountAmount: x.discountAmount, gross: x.gross });
+      await d.save();
+    }
+  }
+  return changed;
+}
+
 /* ───────────── Service master ───────────── */
 const svcKey = (cid: string) => `svc:${cid}`;
 r.get("/service-types", canAny([["leads", "read"], ["clients", "read"]]), h(async (req, res) => {
@@ -120,7 +167,7 @@ r.delete("/service-types/:id", canAny([["leads", "update"], ["clients", "update"
 }));
 
 /* ───────────── Clients: list, picker, profile + journey, edit ───────────── */
-const CLIENT_LIST_FIELDS = "name phone whatsapp email clientCode clientSince serviceStage stageAt services source campaign business.gst business.ownerPhone";
+const CLIENT_LIST_FIELDS = "name phone whatsapp email clientCode clientSince serviceStage stageAt services serviceLines source campaign business.gst business.ownerPhone";
 
 r.get("/clients", can("clients", "read"), h(async (req, res) => {
   const cid = tenant(req).companyId;
@@ -207,20 +254,23 @@ const clientEdit = z.object({
   email: z.string().email().optional().or(z.literal("")),
   address: z.string().max(500).optional(),
   services: z.array(z.string().max(80)).max(30).optional(),
+  serviceLines: serviceLinesBody.optional(),
   business: businessBody.optional(),
   remark: z.string().max(2000).optional(),
 });
 r.put("/clients/:id", can("clients", "update"), h(async (req, res) => {
   const b = parse(clientEdit, req.body);
   const c = await loadClient(req);
-  const { business, services, remark, ...f } = b;
+  const { business, services, serviceLines, remark, ...f } = b;
   if (f.phone) f.phone = normalizePhone(f.phone);
   if (f.whatsapp) f.whatsapp = normalizePhone(f.whatsapp);
   c.set(f);
-  if (services) c.services = await assertServices(c.companyId, services);
+  if (serviceLines) await applyServiceLines(c, serviceLines);
+  else if (services) await applyServiceLines(c, services.map((s) => ({ service: s, licenses: linesOf(c).find((l) => l.service.toLowerCase() === s.toLowerCase())?.licenses || 1 })));
   applyBusiness(c, business);
   if (remark) c.remarks.push({ by: req.auth!.name, text: remark });
   await c.save();
+  if (serviceLines || services) await syncPlanLicenses(c);
   res.locals.item = `${c.clientCode} ${c.name}`;
   res.json(safeLead(c));
 }));
@@ -368,20 +418,22 @@ const planBody = z
   .object({
     clientId: z.string(),
     serviceType: z.string().trim().min(1, "Pick a service type").max(80),
-    amount: z.coerce.number().min(0, "Amount can't be negative").max(1e9),
+    rate: z.coerce.number().min(0, "Rate can't be negative").max(1e9).optional(),
+    amount: z.coerce.number().min(0, "Amount can't be negative").max(1e9).optional(),
     type: z.enum(["recurring", "on_demand"]),
     frequency: z.enum(CLIENT_FREQ_KEYS),
     startDate: z.coerce.date().optional(),
     active: z.boolean().optional(),
   })
   .superRefine((v, ctx) => {
+    if (v.rate == null && v.amount == null) ctx.addIssue({ code: "custom", path: ["rate"], message: "Enter the rate" });
     if (v.type === "recurring" && v.frequency === "on_demand") ctx.addIssue({ code: "custom", path: ["frequency"], message: "Pick how often a recurring payment repeats" });
     if (v.type === "on_demand" && v.frequency !== "on_demand") ctx.addIssue({ code: "custom", path: ["frequency"], message: "On-demand payments use the On-demand frequency" });
   });
 
 async function clientFor(req: Request, id: string) {
   if (!isId(id)) throw badRequest("Pick a client");
-  const c = await Lead.findOne({ _id: id, ...tenant(req), deletedAt: null, isClient: true }).select("name clientCode phone whatsapp business.ownerPhone companyId").lean<any>();
+  const c = await Lead.findOne({ _id: id, ...tenant(req), deletedAt: null, isClient: true }).select("name clientCode phone whatsapp business.ownerPhone companyId services serviceLines").lean<any>();
   if (!c) throw badRequest("Client not found");
   return c;
 }
@@ -399,15 +451,45 @@ r.get("/clients-plans", can("clients", "read"), h(async (req, res) => {
   res.json({ items, total, page, limit });
 }));
 
+/** Licences for a service come from the client (Lead / Client › Service lines); amount = rate × licences. */
+function priced(c: any, svc: string, b: { rate?: number; amount?: number }) {
+  const licenses = linesOf(c).find((l) => l.service.toLowerCase() === svc.toLowerCase())?.licenses || 1;
+  const rate = b.rate != null ? round2(b.rate) : undefined;
+  return { licenses, rate, amount: rate != null ? round2(rate * licenses) : round2(b.amount || 0) };
+}
+
+async function createPlan(c: any, b: z.infer<typeof planBody>) {
+  const [svc] = await assertServices(c.companyId, [b.serviceType]);
+  if (await ClientPlan.exists({ companyId: c.companyId, clientId: c._id, serviceType: svc, type: b.type, active: { $ne: false } })) throw badRequest(`${c.clientCode} already has ${b.type === "recurring" ? "recurring" : "on-demand"} payment details for “${svc}” — edit those instead`);
+  const startDate = b.type === "recurring" ? b.startDate || new Date() : undefined;
+  const plan = await ClientPlan.create({ ...b, ...priced(c, svc, b), serviceType: svc, startDate, companyId: c.companyId, clientId: c._id, clientCode: c.clientCode, clientName: c.name });
+  if (plan.type === "recurring") await ensureRecurringDues(c.companyId, [plan._id]);
+  return plan;
+}
+
 r.post("/clients-plans", can("clients", "create"), h(async (req, res) => {
   const b = parse(planBody, req.body);
   const c = await clientFor(req, b.clientId);
-  const [svc] = await assertServices(c.companyId, [b.serviceType]);
-  const startDate = b.type === "recurring" ? b.startDate || new Date() : undefined;
-  const plan = await ClientPlan.create({ ...b, serviceType: svc, startDate, companyId: c.companyId, clientCode: c.clientCode, clientName: c.name });
-  if (plan.type === "recurring") await ensureRecurringDues(c.companyId, [plan._id]);
-  res.locals.item = `${c.clientCode} · ${svc} · ₹${b.amount}`;
+  const plan = await createPlan(c, b);
+  res.locals.item = `${c.clientCode} · ${plan.serviceType} · ₹${plan.amount}`;
   res.status(201).json(plan);
+}));
+
+/** Payment details for several of a client's services at once (one row per service / product). */
+r.post("/clients-plans/batch", can("clients", "create"), h(async (req, res) => {
+  const b = parse(z.object({ clientId: z.string(), lines: z.array(z.any()).min(1, "Add at least one service").max(30) }), req.body);
+  const c = await clientFor(req, b.clientId);
+  const lines = b.lines.map((l, i) => {
+    const r = planBody.safeParse({ ...l, clientId: b.clientId });
+    if (!r.success) throw badRequest(`Row ${i + 1}${l?.serviceType ? ` (${l.serviceType})` : ""}: ${Object.values(r.error.flatten().fieldErrors).flat()[0] || "check the values"}`);
+    return r.data;
+  });
+  const names = lines.map((l) => l.serviceType.toLowerCase() + ":" + l.type);
+  if (new Set(names).size !== names.length) throw badRequest("A service appears twice with the same payment type");
+  const created = [];
+  for (const l of lines) created.push(await createPlan(c, l));
+  res.locals.item = `${c.clientCode} · ${created.length} service(s)`;
+  res.status(201).json({ created: created.length, items: created });
 }));
 
 r.put("/clients-plans/:id", can("clients", "update"), h(async (req, res) => {
@@ -417,7 +499,7 @@ r.put("/clients-plans/:id", can("clients", "update"), h(async (req, res) => {
   if (!plan) throw notFound();
   const c = await clientFor(req, b.clientId);
   const [svc] = await assertServices(c.companyId, [b.serviceType]);
-  plan.set({ ...b, serviceType: svc, clientCode: c.clientCode, clientName: c.name, startDate: b.type === "recurring" ? b.startDate || plan.startDate || new Date() : undefined });
+  plan.set({ ...b, ...priced(c, svc, b), serviceType: svc, clientCode: c.clientCode, clientName: c.name, startDate: b.type === "recurring" ? b.startDate || plan.startDate || new Date() : undefined });
   await plan.save();
   // upcoming unpaid dues follow the new amount / service; history is never rewritten
   await ClientPayment.updateMany({ planId: plan._id, status: { $ne: "paid" } }, { $set: { amount: plan.amount, gross: plan.amount, discountAmount: 0, discountValue: 0, services: [svc], clientId: c._id, clientCode: c.clientCode, clientName: c.name } });
