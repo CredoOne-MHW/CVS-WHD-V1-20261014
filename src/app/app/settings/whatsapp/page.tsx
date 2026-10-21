@@ -9,12 +9,15 @@ import { usePerm } from "@/components/Shell";
 import { LEAD_STATUSES } from "@shared/constants";
 
 export default function WhatsAppSettings() {
-  const [tab, setTab] = useState<"hooks" | "post">("hooks");
+  const [pick, setTab] = useState<"hooks" | "post">("hooks");
+  const hooksPerm = usePerm("wa_webhooks:webhooks"), postPerm = usePerm("wa_webhooks:post");
+  const tabs = [hooksPerm.read && { key: "hooks" as const, label: "Webhooks" }, postPerm.create && { key: "post" as const, label: "Post" }].filter(Boolean) as { key: "hooks" | "post"; label: string }[];
+  const tab = tabs.some((t) => t.key === pick) ? pick : tabs[0]?.key;
   return (
     <>
       <PageHeader title="WhatsApp Webhook" subtitle="Connect your WhatsApp API, choose which events send messages, and post to leads." />
-      <Tabs value={tab} onChange={setTab} tabs={[{ key: "hooks", label: "Webhooks" }, { key: "post", label: "Post" }]} />
-      {tab === "hooks" ? <WebhookBoard base="/co" createAlign="right" allowEventTypes /> : <Post />}
+      {tabs.length > 1 && <Tabs value={tab!} onChange={setTab} tabs={tabs} />}
+      {tab === "hooks" ? <WebhookBoard base="/co" createAlign="right" allowEventTypes /> : tab === "post" ? <Post /> : null}
     </>
   );
 }
@@ -32,7 +35,7 @@ function Post() {
   const [save, setSave] = useState(true);
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState<any>(null);
-  const perm = usePerm("wa_webhooks");
+  const perm = usePerm("wa_webhooks:post");
   const toast = useToast();
 
   useEffect(() => {
@@ -168,7 +171,7 @@ function Post() {
           <textarea className="input min-h-[200px]" value={message} onChange={(e) => setMessage(e.target.value)} />
         </Field>
         <p className="rounded-xl bg-honey-100/70 p-3 text-xs text-ink-700">Only message people who agreed to hear from you on WhatsApp. Business-initiated messages need an approved template on your WhatsApp provider.</p>
-        {perm.update && (
+        {perm.create && (
           <Btn className="w-full" loading={busy} disabled={!webhookId || !message.trim() || (mode === "leads" ? !sel.size : !file)} onClick={send}>
             <Send className="h-4 w-4" /> Send {mode === "leads" && sel.size ? `to ${sel.size}` : ""}
           </Btn>

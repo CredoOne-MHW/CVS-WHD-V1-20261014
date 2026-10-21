@@ -2,7 +2,8 @@
 import { Suspense } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { Users, KanbanSquare, LifeBuoy, CreditCard } from "lucide-react";
-import { PageHeader, Spinner } from "@/components/ui";
+import { PageHeader, Spinner, Empty } from "@/components/ui";
+import { usePerm } from "@/components/Shell";
 import dynamic from "next/dynamic";
 
 // each tab's code loads only when that tab is opened
@@ -20,19 +21,26 @@ const TABS = [
   { key: "clients", label: "Clients", Icon: Users, sub: "Every converted lead, with its full journey" },
   { key: "board", label: "Service Board", Icon: KanbanSquare, sub: "Drag clients between service statuses — edit the columns any time" },
   { key: "support", label: "Support Tickets", Icon: LifeBuoy, sub: "Requests and grievances from the client support page" },
-  { key: "subscription", label: "Subscription Management", Icon: CreditCard, sub: "Payment details, dues and transaction history" },
+  { key: "subscription", label: "Subscription Management", Icon: CreditCard, sub: "Sales orders, invoices and pay-ins" },
 ] as const;
 
 function ClientsInner() {
   const sp = useSearchParams();
   const router = useRouter();
-  const tab = (TABS.find((t) => t.key === sp?.get("tab"))?.key || "clients") as (typeof TABS)[number]["key"];
-  const cur = TABS.find((t) => t.key === tab)!;
+  // Each tab is a sub-module in Role Management; a role sees only the ones it can read.
+  const pc = usePerm("clients:clients"), pb = usePerm("clients:board"), pt = usePerm("clients:tickets");
+  const so = usePerm("clients:sales_order"), inv = usePerm("clients:invoice"), pin = usePerm("clients:payin");
+  const read = { clients: pc.read, board: pb.read, support: pt.read, subscription: so.read || inv.read || pin.read };
+  const tabs = TABS.filter((t) => read[t.key]);
+  const want = sp?.get("tab") || "clients";
+  const tab = (tabs.find((t) => t.key === want) || tabs[0])?.key;
+  const cur = TABS.find((t) => t.key === tab);
+  if (!cur) return (<><PageHeader title="Client" /><Empty title="No access" hint="Your role has no access to any Client section." /></>);
   return (
     <>
       <PageHeader title="Client" subtitle={cur.sub} />
       <nav className="no-scrollbar mb-5 flex gap-1 overflow-x-auto overflow-y-hidden shadow-[inset_0_-1px_0_rgba(122,133,119,0.18)]" aria-label="Client sections">
-        {TABS.map(({ key, label, Icon }) => (
+        {tabs.map(({ key, label, Icon }) => (
           <button
             key={key}
             onClick={() => router.replace(key === "clients" ? "/app/clients" : `/app/clients?tab=${key}`, { scroll: false })}

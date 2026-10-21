@@ -12,7 +12,7 @@ import { nextRenewal, FREQ_KEYS } from "../../../shared/billing";
 import { renewAllocations } from "../../lib/billing";
 import { dbNameFromCode, validateDbName, provisionDb, inCompanyDb, forEachCompanyDb, migrateAll, dbOf } from "../../lib/tenantdb";
 import subscriptionRoutes from "./subscriptions";
-import { putObject, deleteObject, folderFor, companyFolder, relayoutCompany, relayoutAll } from "../../lib/s3";
+import { putObject, deleteObject, folderFor, companyFolder, relayoutCompany, relayoutAll, ensureCompanyFolder } from "../../lib/s3";
 import { baseDomain, baseSource, configuredBases, tenantUrls, clearTenantCache, publicBranding, platformBranding, loadPlatformBranding, setPlatformBranding } from "../../lib/tenant";
 import { vercelSync, vercelVerify, vercelRemove, vercelConfigured, splitDomain, recordsFor, checkRecords, platformRecords, newVerifyToken, cnameTargetFor, VERIFY_LABEL, FALLBACK_A, FALLBACK_CNAME } from "../../lib/domains";
 import { fireEvent } from "../../lib/whatsapp";
@@ -89,6 +89,7 @@ const companyBody = z.object({
   plan: z.string().min(1).default(PLAN_TIERS[0]),
   gstin: z.string().regex(/^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z][1-9A-Z]Z[0-9A-Z]$/, "Invalid GSTIN").optional().or(z.literal("")),
   address: z.string().max(500).optional(),
+  s3Enabled: z.boolean().optional(), // "S3 storage required"
   loginEmail: z.string().email().optional().or(z.literal("")),
   password: z.string().min(8, "Min 8 characters").optional(),
   slug: z.string().toLowerCase().regex(/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/, "Platform address: 2–63 lowercase letters, numbers or hyphens").optional(),
@@ -157,14 +158,6 @@ async function syncSupport(c: any, old?: any) {
   for (const d of stale) await vercelRemove(d).catch(() => undefined);
 }
 
-/** S3 base folder = the company name as typed ("WELLNESSHIVE DIAGNOSTICA LLP"), unique across companies. */
-async function uniqueFolder(name: string) {
-  const base = companyFolder(name);
-  let folder = base;
-  for (let i = 2; await Company.exists({ s3Folder: folder }); i++) folder = `${base}-${i}`;
-  return folder;
-}
-
 /** Platform address label from the COMPANY NAME: "Sini Labs Technologies LLP" → sini-labs-technologies-llp (DNS label ≤ 63). */
 export const slugFrom = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 63).replace(/-+$/, "");
 
@@ -217,7 +210,8 @@ r.post("/companies", can("companies", "create"), h(async (req, res) => {
     dbReadyAt: new Date(),
     slug,
     customDomain,
-    s3Folder: await uniqueFolder(b.name),
+    s3Enabled: b.s3Enabled !== false,
+    s3Folder: b.s3Enabled !== false ? companyFolder(b.code) : undefined,
     domain: customDomain ? { verifyToken: newVerifyToken() } : undefined,
     branding: { shortName: b.name, ...(b.branding || {}), updatedAt: new Date() },
     loginEmail: undefined,
@@ -232,11 +226,13 @@ r.post("/companies", can("companies", "create"), h(async (req, res) => {
   }
   await syncDomain(company._id, customDomain);
   await syncSupport(company);
+  // S3: the company's folder tree <base>/<Company Code>/ is created now (unless Super Admin unticked S3)
+  const s3 = company.s3Enabled ? await ensureCompanyFolder(company).then((folder) => ({ created: !!folder, folder })).catch((e: any) => ({ created: false, error: e?.message })) : { created: false, off: true };
   clearTenantCache();
   res.locals.item = company.name;
   const urls = tenantUrls(company);
   if (b.whatsapp) fireEvent("super", undefined, "company_created", { phone: b.whatsapp, name: b.contactPerson, company: b.name, message: `Welcome, ${b.contactPerson || b.name}! Your ${b.plan} workspace is ready.\nLogin: ${urls.customUrl || urls.platformUrl || ""}\nUser: ${loginEmail}` }).catch(() => undefined);
-  res.status(201).json({ ...company.toObject(), ...urls });
+  res.status(201).json({ ...company.toObject(), ...urls, s3 });
 }));
 
 r.put("/companies/:id", can("companies", "update"), h(async (req, res) => {
@@ -245,7 +241,7 @@ r.put("/companies/:id", can("companies", "update"), h(async (req, res) => {
   if (!c) throw notFound();
   const { loginEmail, password, branding, ...rest } = b;
   const oldDomain = c.customDomain;
-  const before = { slug: c.slug, customDomain: c.customDomain };
+  const before = { slug: c.slug, customDomain: c.customDomain, s3Enabled: c.s3Enabled !== false, code: c.code };
   const newDomain = rest.customDomain === undefined ? oldDomain : rest.customDomain || undefined;
   await assertDomainFree(String(c._id), rest.slug, newDomain || undefined);
   // the database name is fixed at creation; changing the code later only renames the label
@@ -260,6 +256,13 @@ r.put("/companies/:id", can("companies", "update"), h(async (req, res) => {
     await syncDomain(c._id, newDomain);
   }
   if (newDomain !== before.customDomain || c.slug !== before.slug) await syncSupport(c, before);
+  // S3 switched on (or never created / code renamed): create <base>/<Company Code>/ now and bring existing files into it
+  let s3: any = { created: false, off: c.s3Enabled === false };
+  if (c.s3Enabled !== false && (!before.s3Enabled || !c.s3CreatedAt || c.code !== before.code)) {
+    s3 = await ensureCompanyFolder(c)
+      .then(async (folder) => ({ created: !!folder, folder, moved: (await relayoutCompany(c._id).catch(() => ({ moved: 0 }))).moved }))
+      .catch((e: any) => ({ created: false, error: e?.message }));
+  }
   clearTenantCache();
   const owner = await User.findOne({ companyId: c._id, isOwner: true });
   if (owner) {
@@ -275,7 +278,7 @@ r.put("/companies/:id", can("companies", "update"), h(async (req, res) => {
   }
   await invalidateAuth();
   res.locals.item = c.name;
-  res.json(c);
+  res.json({ ...c.toObject(), s3 });
 }));
 
 r.post("/companies/:id/status", can("companies", "update"), h(async (req, res) => {

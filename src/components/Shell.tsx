@@ -44,7 +44,11 @@ export interface Me {
 
 const MeCtx = createContext<Me | null>(null);
 export const useMe = () => useContext(MeCtx)!;
-export const usePerm = (module: string) => useMe()?.perms?.[module] || { create: false, read: false, update: false, delete: false };
+/** Permission of a module or sub-module ("clients:invoice" — falls back to "clients" when not defined). */
+export const usePerm = (module: string) => {
+  const p = useMe()?.perms;
+  return p?.[module] || (module.includes(":") ? p?.[module.split(":")[0]] : undefined) || { create: false, read: false, update: false, delete: false };
+};
 
 const initials = (s: string) =>
   s

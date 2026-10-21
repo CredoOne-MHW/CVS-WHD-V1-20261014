@@ -1,7 +1,7 @@
 import type { Request, Response, NextFunction } from "express";
 import jwt from "jsonwebtoken";
 import { User, Company, Plan, Role } from "../models";
-import { COMPANY_MODULES, SA_MODULES, fullPerm, noPerm, type Action, type PermMap } from "../../shared/constants";
+import { COMPANY_MODULES, SA_MODULES, fullPerm, noPerm, withSubPerms, type Action, type PermMap } from "../../shared/constants";
 import { HttpError, forbidden } from "../lib/http";
 import { setTenantDb } from "../lib/context";
 import { dbOf, migrateCompany } from "../lib/tenantdb";
@@ -80,9 +80,10 @@ export async function companyPerms(planName: string, roleId?: any): Promise<Perm
   for (const m of COMPANY_MODULES) base[m.key] = plan?.permissions?.[m.key] ?? noPerm();
   // Billing is read-only for companies and always visible, whatever the plan grid says (roles can still hide it).
   base.subscription = { create: false, read: true, update: false, delete: false };
-  if (!roleId) return base;
+  if (!roleId) return withSubPerms(COMPANY_MODULES, base);
   const role = await cached(`auth:role:${roleId}`, 120, () => Role.findById(roleId).lean<any>());
-  return role ? andPerms(base, role.permissions || {}) : base;
+  // sub-modules ("clients:invoice"…) inherit the module unless the role sets them
+  return role ? withSubPerms(COMPANY_MODULES, andPerms(base, role.permissions || {}), role.permissions || {}) : withSubPerms(COMPANY_MODULES, base);
 }
 
 async function superPerms(roleId?: any): Promise<PermMap> {
@@ -146,9 +147,11 @@ export const requireScope = (scope: "super" | "company") => (req: Request, _res:
   req.auth?.scope === scope ? next() : next(forbidden());
 
 /** Tags the request with its module (for activity logs) and enforces the CRUD scope. */
+/** Permission of a module or sub-module ("clients:invoice"); a sub-module nobody defined falls back to its module. */
+export const permOf = (perms: PermMap | undefined, key: string) => perms?.[key] ?? (key.includes(":") ? perms?.[key.split(":")[0]] : undefined);
 export const can = (module: string, action: Action) => (req: Request, res: Response, next: NextFunction) => {
-  res.locals.module = module;
-  if (!req.auth?.perms?.[module]?.[action]) return next(forbidden(`No ${action} access to ${module}`));
+  res.locals.module = module.split(":")[0];
+  if (!permOf(req.auth?.perms, module)?.[action]) return next(forbidden(`No ${action} access to ${module.replace(":", " › ")}`));
   next();
 };
 

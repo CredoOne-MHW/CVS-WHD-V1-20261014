@@ -43,6 +43,15 @@ export function applyDiscount(amount: number, type: "fixed" | "percent", value: 
   return { discountAmount, percent, gross: round2(a - discountAmount) };
 }
 /** A service / product the lead or client opted for, with its number of licences. */
+/**
+ * Attachment types — the S3 folder under <Company Code>/<Client Code>/<type>/ is picked automatically from where the file
+ * is added (an Invoice marked Paid → "Payment"; a client photo → "Profile Photo"; …). Add a type here for a new place.
+ */
+export const ATTACHMENT_TYPES = ["Payment", "Profile Photo", "Support Ticket", "Document"] as const;
+export type AttachmentType = (typeof ATTACHMENT_TYPES)[number];
+export const ATTACHMENT_ACCEPT = ".pdf,.png,.jpg,.jpeg,.webp,.heic,.doc,.docx,.xls,.xlsx,.csv,.txt";
+export const ATTACHMENT_MAX_MB = 8;
+
 export type ServiceLine = { service: string; licenses: number };
 /** Service lines of a lead/client — older records only have service names (1 licence each). */
 export const linesOf = (l: { serviceLines?: ServiceLine[] | null; services?: string[] | null }): ServiceLine[] =>

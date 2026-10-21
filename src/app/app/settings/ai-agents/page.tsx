@@ -23,15 +23,19 @@ export default function CompanyAiAgents() {
   const [del, setDel] = useState<any>(null);
   const [chat, setChat] = useState<any>(null);
   const [usage, setUsage] = useState<any>(null);
-  const [tab, setTab] = useState<"models" | "endpoint">("models");
+  const [pick, setTab] = useState<"models" | "endpoint">("models");
   const [epOpen, setEpOpen] = useState(false);
   const [busy, setBusy] = useState(false);
-  const perm = usePerm("ai_agents");
+  // Models and Endpoint are separate sub-modules in Role Management.
+  const modelsPerm = usePerm("ai_agents:models"), endpointPerm = usePerm("ai_agents:endpoint");
+  const tabs = [modelsPerm.read && { key: "models" as const, label: "Models" }, endpointPerm.read && { key: "endpoint" as const, label: "Endpoint" }].filter(Boolean) as { key: "models" | "endpoint"; label: string }[];
+  const tab = (tabs.some((t) => t.key === pick) ? pick : tabs[0]?.key) || "models";
+  const perm = tab === "models" ? modelsPerm : endpointPerm;
   const toast = useToast();
   const [storage, setStorage] = useState<{ brain: string } | null>(null);
   const [tables, setTables] = useState<DataTable[] | null>(null);
   const [me, setMe] = useState<string>("");
-  const load = () => api("/co/ai-agents").then(setList);
+  const load = () => api("/co/ai-agents").then(setList).catch(() => setList([]));
   useEffect(() => {
     load();
     api("/co/ai-agents/models").then(setModels);
@@ -82,7 +86,7 @@ export default function CompanyAiAgents() {
           )
         }
       />
-      <Tabs value={tab} onChange={setTab} tabs={[{ key: "models", label: "Models" }, { key: "endpoint", label: "Endpoint" }]} />
+      {tabs.length > 1 && <Tabs value={tab} onChange={setTab} tabs={tabs} />}
       {tab === "endpoint" ? (
         <EndpointsTab agents={list || []} models={models} perm={perm} open={epOpen} setOpen={setEpOpen} />
       ) : (

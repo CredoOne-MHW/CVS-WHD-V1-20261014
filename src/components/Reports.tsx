@@ -3,6 +3,7 @@ import { useEffect, useMemo, useState } from "react";
 import { Play, FileSpreadsheet, FileText, Plus, X, Sparkles, Wand2, Table2, BarChart3 } from "lucide-react";
 import { api, download, fmtDate } from "@/lib/api";
 import { Btn, Field, Spinner, Empty, Badge, useToast, BarList, Columns } from "./ui";
+import { usePerm } from "./Shell";
 
 interface FieldDef {
   key: string;
@@ -55,6 +56,7 @@ const fmtCell = (v: any, type: string) => (v == null || v === "" ? "—" : type 
 /** Result view shared by DIY and Agentic: chart (when grouped) + table + export. */
 export function ReportResult({ base, report }: { base: "/sa" | "/co"; report: Report }) {
   const toast = useToast();
+  const canExport = usePerm("reports:export").read; // Report › Export sub-module (falls back to Report on Super Admin)
   const [busy, setBusy] = useState("");
   const grouped = report.columns.some((c) => c.key === "count" || /^(sum|avg|min|max)_/.test(c.key));
   const metric = report.columns.find((c) => c.key === "count" || /^(sum|avg|min|max)_/.test(c.key));
@@ -80,14 +82,14 @@ export function ReportResult({ base, report }: { base: "/sa" | "/co"; report: Re
             {report.truncated ? " · preview — export for all rows" : ""}
           </p>
         </div>
-        <div className="flex gap-2">
+        {canExport && <div className="flex gap-2">
           <Btn variant="secondary" loading={busy === "xlsx"} onClick={() => exp("xlsx")}>
             <FileSpreadsheet className="h-4 w-4" /> Excel
           </Btn>
           <Btn variant="secondary" loading={busy === "csv"} onClick={() => exp("csv")}>
             <FileText className="h-4 w-4" /> CSV
           </Btn>
-        </div>
+        </div>}
       </div>
       {report.explanation && <p className="border-b border-ink-400/10 bg-hive-50/50 px-5 py-3 text-sm text-ink-700">{report.explanation}</p>}
       {report.insights && <div className="whitespace-pre-line border-b border-ink-400/10 px-5 py-4 text-sm leading-relaxed text-ink-900">{report.insights}</div>}
