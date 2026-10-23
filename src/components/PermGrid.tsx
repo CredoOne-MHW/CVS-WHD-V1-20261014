@@ -23,7 +23,8 @@ export function PermGrid({ modules, value, onChange, caps, disabled, withSubs }:
   const applicable = (r: Row, a: keyof Perm) => !r.parent || !!r.actions?.includes(a as Action);
   const capOk = (k: string, a: keyof Perm) => !caps || !!caps[k]?.[a];
   /** Can this box be ticked at all? */
-  const allowed = (r: Row, a: keyof Perm) => (r.parent ? applicable(r, a) && capOk(r.parent, a) && !!value?.[r.parent]?.[a] : capOk(r.key, a));
+  // a sub-module cap exists when the company's caps are given (plan + Super Admin overrides per sub-module)
+  const allowed = (r: Row, a: keyof Perm) => (r.parent ? applicable(r, a) && capOk(r.parent, a) && (!caps?.[r.key] || !!caps[r.key][a]) && !!value?.[r.parent]?.[a] : capOk(r.key, a));
   /** What the role effectively gets (subs inherit from the module unless set). */
   const get = (r: Row, a: keyof Perm): boolean => {
     if (!r.parent) return !!value?.[r.key]?.[a];
@@ -90,7 +91,7 @@ export function PermGrid({ modules, value, onChange, caps, disabled, withSubs }:
                 <tr className={sub ? "bg-ink-400/[0.03] hover:bg-hive-50/40" : "hover:bg-hive-50/40"}>
                   <td className={sub ? "td py-2 pl-9" : "td"}>
                     {sub ? (
-                      <span className="text-sm text-ink-600">
+                      <span className="text-sm text-ink-500">
                         <span className="mr-1.5 text-ink-400">↳</span>
                         {r.label}
                         {custom ? (
@@ -111,7 +112,7 @@ export function PermGrid({ modules, value, onChange, caps, disabled, withSubs }:
                   {ACTIONS.map((a) => (
                     <td key={a} className={sub ? "td py-2 text-center" : "td text-center"}>
                       {sub && !applicable(r, a) ? (
-                        <span className="text-ink-300" title={`${a} does not apply to ${r.label}`}>—</span>
+                        <span className="text-ink-400" title={`${a} does not apply to ${r.label}`}>—</span>
                       ) : (
                         <input
                           type="checkbox"

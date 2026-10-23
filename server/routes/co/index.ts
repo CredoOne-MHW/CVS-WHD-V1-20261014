@@ -25,6 +25,9 @@ import { mcpSession } from "../../lib/mcp";
 import { runPull, PULL_TYPES, wooBase } from "../../lib/pull";
 import { suppress, fromProspecting } from "../../lib/suppress";
 import { testProspect, runProspectNow, BLOCKED_SITES } from "../../lib/prospect";
+import ssoRoutes from "./sso";
+import { disconnect as ssoDisconnect } from "../../lib/oauth";
+import { isSsoType } from "../../../shared/sso";
 import clientRoutes, { businessBody, applyBusiness, safeLead, assertServices, applyServiceLines, syncPlanLicenses, serviceLinesBody } from "./clients";
 import { linesOf } from "../../../shared/clients";
 import { promoteClients } from "../../lib/clients";
@@ -45,6 +48,7 @@ r.use("/integrations", (req, res, next) => {
 });
 // Vercel caps request bodies at ~4.5 MB; keep uploads under that.
 r.use(clientRoutes); // Client module + service master
+r.use(ssoRoutes); // sign-in connectors (Facebook, Instagram, LinkedIn, Google Sheets)
 
 const upload = ctxUpload(multer({ storage: multer.memoryStorage(), limits: { fileSize: 4 * 1024 * 1024, files: 10 } }));
 const oid = (s: string) => new mongoose.Types.ObjectId(s);
@@ -450,6 +454,9 @@ const serializeConnector = (c: any, req: any) => ({
   endpoint: `${baseUrl(req)}/api/intake/${c.key}`,
   formUrl: c.type === "qr_campaign" ? `${baseUrl(req)}/f/${c.key}` : undefined,
   configSecretEnc: undefined,
+  // sign-in connectors: tokens never leave the server
+  oauth: c.oauth ? { provider: c.oauth.provider, account: c.oauth.account, status: c.oauth.status, error: c.oauth.error, expiresAt: c.oauth.expiresAt, connectedAt: c.oauth.connectedAt, connectedBy: c.oauth.connectedBy, scopes: c.oauth.scopes } : undefined,
+  sso: c.sso ? { ...c.sso, pages: (c.sso.pages || []).map((p: any) => ({ id: p.id, name: p.name, ig: p.ig, subscribed: p.subscribed, error: p.error })) } : undefined,
   platformKeyMasked: c.configSecretEnc ? maskSecret(decrypt(c.configSecretEnc)) : undefined,
   // push platforms (IndiaMART, JustDial, Sulekha) get one self-authenticating URL: …/intake/<key>/<token>
   pushUrlMasked: TOKEN_URL_TYPES.includes(c.type) ? `${baseUrl(req)}/api/intake/${c.key}/${maskSecret(decrypt(c.secretEnc))}` : undefined,
@@ -472,6 +479,7 @@ const connectorBody = z.object({
   secret: z.string().max(500).optional(), // our API key / push token, or Meta page token / Google key / MCP token; generated if blank
   platformKey: z.string().trim().max(500).optional(), // IndiaMART Pull API key / TradeIndia key (encrypted)
   active: z.boolean().optional(),
+  authMode: z.literal("key").optional(), // older website-form / WhatsApp connectors: switch to API-key-only
   config: z.record(z.any()).optional(), // validated per type below
 });
 
@@ -546,14 +554,18 @@ async function connectorConfig(type: string, cfg: any) {
   return undefined;
 }
 const PULL: string[] = [...PULL_TYPES];
+/** REST API / webhook connectors: every delivery carries the API key or an HMAC signature. */
+const REST_TYPES = ["rest_api", "website_form", "whatsapp"];
 
 r.post("/integrations", can("integrations", "create"), h(async (req, res) => {
   const b = parse(connectorBody, req.body);
+  if (isSsoType(b.type)) throw badRequest("Use Connect — this channel is connected by signing in on the platform");
+  if (CONNECTOR_TYPES.find((t) => t.type === b.type)?.hidden) throw badRequest("This setup is retired — use the Facebook or Instagram sign-in connector instead");
   if (b.type === "tradeindia" && !b.platformKey) throw badRequest("Enter your TradeIndia Key (My Inquiry API)");
   const config = await connectorConfig(b.type, b.config);
   if (b.type === "web_prospect") await assertModelAllocated(req, b.config?.aiAgentId);
   const secret = b.secret || (["mcp", "web_prospect"].includes(b.type) ? "" : randomKey(24));
-  const doc = await Connector.create({ ...b, config, secret: undefined, platformKey: undefined, configSecretEnc: b.platformKey ? encrypt(b.platformKey) : undefined, ...tenant(req), key: `${b.type.slice(0, 3)}_${randomKey(10)}`, secretEnc: secret ? encrypt(secret) : undefined, verifyToken: b.type === "meta_leads" ? randomKey(12) : undefined });
+  const doc = await Connector.create({ ...b, config, secret: undefined, platformKey: undefined, configSecretEnc: b.platformKey ? encrypt(b.platformKey) : undefined, ...tenant(req), key: `${b.type.slice(0, 3)}_${randomKey(10)}`, secretEnc: secret ? encrypt(secret) : undefined, verifyToken: b.type === "meta_leads" ? randomKey(12) : undefined, authMode: REST_TYPES.includes(b.type) ? "key" : undefined });
   await ConnectorKey.create({ key: doc.key, companyId: doc.companyId, db: currentDb(), type: doc.type, active: doc.active !== false });
   res.locals.item = doc.name;
   // the full secret is shown once, on creation
@@ -592,6 +604,8 @@ r.post("/integrations/:id/rotate", can("integrations", "update"), h(async (req, 
 }));
 
 r.delete("/integrations/:id", can("integrations", "delete"), h(async (req, res) => {
+  const cur = await Connector.findOne({ _id: req.params.id, ...tenant(req) }).lean<any>();
+  if (cur && isSsoType(cur.type) && cur.oauth?.status !== "revoked") await ssoDisconnect(cur, req.auth!.email); // withdraw consent first: unsubscribe Pages, delete tokens
   const d = await Connector.findOneAndDelete({ _id: req.params.id, ...tenant(req) });
   if (!d) throw notFound();
   await ConnectorKey.deleteOne({ key: d.key });
@@ -626,6 +640,13 @@ r.post("/integrations/:id/run", can("integrations", "update"), h(async (req, res
     res.locals.action = "Run now";
     res.locals.item = c.name;
     return res.json(await runProspectNow(c));
+  }
+  if (isSsoType(c.type)) {
+    if (!(await rateLimit(`pull:${c._id}`, 1, 60))) throw new HttpError(429, "Please wait a minute before fetching again");
+    if (c.oauth?.status === "revoked") throw badRequest("Disconnected — connect again to receive leads");
+    res.locals.action = "Fetch now";
+    res.locals.item = c.name;
+    return res.json(await runPull(c));
   }
   if (!PULL.includes(c.type)) throw badRequest("This connector receives leads by push — nothing to run");
   // IndiaMART allows one Pull call per 5 minutes per key

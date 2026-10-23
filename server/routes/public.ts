@@ -18,6 +18,8 @@ import { runPullConnectors } from "../lib/pull";
 import { prospectWorker } from "../lib/prospect";
 import { requestHost, resolveHost, baseDomain, publicBranding, platformBranding, loadPlatformBranding } from "../lib/tenant";
 import { LOST_STATUS, WON_STATUS } from "../../shared/constants";
+import { getCompliance, platformUrl } from "../lib/oauth";
+import { CONSENT_VERSION } from "../../shared/sso";
 
 const r = Router();
 
@@ -85,7 +87,9 @@ r.post(["/intake/:key", "/intake/:key/:token"], h(async (req, res) => {
   const c = await loadConnector(req.params.key);
   const secret = decrypt(c.secretEnc);
   const body = { ...(req.body || {}), ...(PUSH_PLATFORMS.includes(c.type) && req.body && !Object.keys(req.body).length ? req.query : {}) };
-  const isBrowserForm = ["website_form", "qr_campaign"].includes(c.type) && !!req.headers.origin;
+  // Hosted QR forms post without a key (honeypot-protected). Website forms are REST API / webhook now (API key or
+  // signature); only website-form connectors created before that change may still post from a browser without a key.
+  const isBrowserForm = (c.type === "qr_campaign" || (c.type === "website_form" && c.authMode !== "key")) && !!req.headers.origin;
   const tokenOk = !!req.params.token && req.params.token === secret;
 
   // Shops sign every delivery: base64 HMAC-SHA256 of the raw body.
@@ -114,13 +118,22 @@ r.post(["/intake/:key", "/intake/:key/:token"], h(async (req, res) => {
     req.query.key === secret ||
     (c.type === "google_ads" && body.google_key === secret) ||
     hmacValid(secret, req.rawBody || "", (req.headers["x-signature"] || req.headers["x-hub-signature-256"]) as string) ||
-    (c.type === "meta_leads" && body.object === "page") || // Meta posts after the verify handshake; lead data is re-fetched with the page token
-    (c.type === "whatsapp" && body.object === "whatsapp_business_account");
+    (c.type === "meta_leads" && body.object === "page") || // retired App-ID setup: lead data is re-fetched with the page token
+    (c.type === "whatsapp" && c.authMode !== "key" && body.object === "whatsapp_business_account"); // older WhatsApp connectors only
 
-  if (!authed && !isBrowserForm) throw new HttpError(401, c.type === "google_ads" ? "Invalid key — paste the connector's key into the Google Ads lead form webhook" : "Invalid connector key or signature");
-  if (isBrowserForm && (body._hp || body.website_url_hp)) return res.json({ ok: true }); // bot honeypot: pretend success
+  if (!authed && !isBrowserForm)
+    throw new HttpError(
+      401,
+      c.type === "google_ads"
+        ? "Invalid key — paste the connector's key into the Google Ads lead form webhook"
+        : c.type === "whatsapp"
+          ? "Missing or invalid API key — use the Callback URL with ?key=… (or send x-api-key) from the connector's Setup tab"
+          : "Missing or invalid API key — send the x-api-key header (or ?key=…) shown on the connector's Setup tab"
+    );
+  const formPost = isBrowserForm || c.type === "website_form";
+  if (formPost && (body._hp || body.website_url_hp)) return res.json({ ok: true }); // bot honeypot: pretend success
 
-  if (req.headers.accept?.includes("text/html") && isBrowserForm) {
+  if (req.headers.accept?.includes("text/html") && formPost) {
     await processIntake(c, cleanPayload(body)); // classic HTML form post → back to the hosted thank-you page
     return res.redirect(303, `/f/${c.key}?ok=1`);
   }
@@ -247,6 +260,15 @@ r.post("/public/support/tickets", h(async (req, res) => {
 /* ───────────── White-label branding (login page, favicon, theme) ───────────── */
 
 /** Which login to show for this host: the platform (Super Admin) or a company's branded login. */
+/** Privacy / terms / data-deletion pages: who to contact (editable in Super Admin › Platform Apps). */
+r.get("/public/privacy", h(async (req, res) => {
+  await loadPlatformBranding();
+  const c = await getCompliance();
+  const b: any = platformBranding();
+  res.setHeader("Cache-Control", "public, max-age=60, s-maxage=60");
+  res.json({ ...c, product: b.name || "CredoOne", consentVersion: CONSENT_VERSION, platformUrl: platformUrl(req) });
+}));
+
 r.get("/public/branding", h(async (req, res) => {
   const host = requestHost(req);
   const t = await resolveHost(host);

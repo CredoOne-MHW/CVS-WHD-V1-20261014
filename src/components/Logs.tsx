@@ -239,7 +239,7 @@ export function ActivityLogs({ base, side, companyFilter }: { base: "/sa" | "/co
 
 export function Tabs<T extends string>({ value, onChange, tabs }: { value: T; onChange: (v: T) => void; tabs: { key: T; label: string }[] }) {
   return (
-    <div className="mb-5 inline-flex rounded-xl border border-ink-400/20 bg-white p-1" role="tablist">
+    <div className="mb-5 inline-flex max-w-full flex-wrap gap-0.5 rounded-xl border border-ink-400/20 bg-white p-1" role="tablist">
       {tabs.map((t) => (
         <button key={t.key} role="tab" aria-selected={value === t.key} onClick={() => onChange(t.key)} className={`rounded-lg px-4 py-2 text-sm font-semibold transition ${value === t.key ? "bg-hive-700 text-white" : "text-ink-700 hover:bg-hive-50"}`}>
           {t.label}

@@ -240,3 +240,23 @@ body {
 /* horizontally scrollable tab bars: scroll by swipe / shift-wheel, no visible scroller */
 .no-scrollbar { scrollbar-width: none; -ms-overflow-style: none; }
 .no-scrollbar::-webkit-scrollbar { display: none; }
+
+/* Knowledge Base articles (compiled from content/kb/*.md) */
+.kb-doc { @apply text-[14.5px] leading-relaxed text-ink-700; }
+.kb-doc h2 { @apply mb-3 mt-8 text-lg font-extrabold text-ink-900 first:mt-0; }
+.kb-doc h3 { @apply mb-2 mt-6 font-bold text-ink-900; }
+.kb-doc p { @apply my-3; }
+.kb-doc ul { @apply my-3 ml-5 list-disc space-y-1.5; }
+.kb-doc ol { @apply my-3 ml-5 list-decimal space-y-2; }
+.kb-doc li > ul, .kb-doc li > ol { @apply my-1.5; }
+.kb-doc strong { @apply font-bold text-ink-900; }
+.kb-doc a { @apply font-semibold text-hive-700 underline-offset-2 hover:underline; }
+.kb-doc code { @apply rounded-md bg-hive-50 px-1.5 py-0.5 font-mono text-[12.5px] font-semibold text-hive-900 break-all; }
+.kb-doc pre { @apply my-4 overflow-x-auto rounded-2xl bg-hive-950 p-4 text-[12.5px] leading-relaxed text-white; }
+.kb-doc pre code { @apply bg-transparent p-0 font-normal text-white break-normal; }
+.kb-doc blockquote { @apply my-4 rounded-2xl border border-honey-300 bg-honey-100/60 px-4 py-3 text-ink-900; }
+.kb-doc blockquote p { @apply my-0; }
+.kb-doc table { @apply my-4 block w-full overflow-x-auto rounded-2xl border border-ink-400/15 text-[13.5px]; }
+.kb-doc th { @apply whitespace-nowrap border-b border-ink-400/15 bg-[#f7f8f6] px-3 py-2.5 text-left font-bold text-ink-900; }
+.kb-doc td { @apply border-b border-ink-400/10 px-3 py-2.5 align-top; }
+.kb-doc tr:last-child td { @apply border-b-0; }

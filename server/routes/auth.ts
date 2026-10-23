@@ -52,7 +52,8 @@ r.post("/logout", (req, res) => {
 
 r.get("/me", requireAuth, h(async (req, res) => {
   const a = req.auth!;
-  const nav = (a.scope === "super" ? SA_MODULES : COMPANY_MODULES).filter((m) => a.perms[m.key]?.read);
+  // paused modules (Super Admin › Company › Modules) stay in the menu, marked “Paused”, so the company knows why
+  const nav = (a.scope === "super" ? SA_MODULES : COMPANY_MODULES).filter((m) => a.perms[m.key]?.read || a.paused?.includes(m.key)).map((m) => (a.paused?.includes(m.key) ? { ...m, paused: true } : m));
   if (a.scope === "super") await loadPlatformBranding();
   let branding: any = platformBranding();
   let companyCode: string | undefined;
