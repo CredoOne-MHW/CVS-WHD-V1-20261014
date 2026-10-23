@@ -631,3 +631,74 @@ Managing attachments afterwards:
 Every company's files live in one folder named by its code. On first start the `s3_layout_v3` migration moves older files there. If S3 is set on, the folder was never created, or the company code changes, a save re-checks and re-lays the folder.
 
 Env: `S3_BUCKET`, `S3_REGION`, `S3_BASE_PATH` (optional prefix), plus AWS credentials.
+
+## 17. Sign-in connectors, Platform Apps, REST webhooks, company Modules, Knowledge Base (Oct 2026)
+
+### 17.1 Platform Apps (Super Admin › Settings › Platform Apps)
+Credovation's **Meta**, **LinkedIn** and **Google** apps are entered once. Companies never see App IDs or secrets.
+- Values are stored in `PlatformSetting` (`app:meta`, `app:linkedin`, `app:google`); secrets are encrypted and never returned.
+- Each card shows the callback URL (`<platform>/api/oauth/<provider>/callback`) and, for Meta and LinkedIn, the webhook URL (`/api/oauth/<provider>/webhook`).
+- **Test** checks the keys with the platform. For Meta it also checks App Domains and subscribes the app's Page `leadgen` webhook automatically.
+- **Privacy contact** (`PlatformSetting compliance`): email, grievance officer, legal name and address.
+  - Default email is `support@credovation.tech`.
+  - Shown on every consent notice and on the public `/privacy`, `/terms` and `/data-deletion` pages (use these URLs in the Meta, Google and LinkedIn app settings).
+- `PLATFORM_URL` (optional) fixes the address used in callbacks. Otherwise it is `https://<base domain>`.
+
+### 17.2 Sign-in (SSO) connectors
+New Integration cards, each a separate connector:
+- **Facebook Lead Ads** and **Instagram Lead Ads** (Meta app)
+- **LinkedIn Lead Gen Forms** (LinkedIn app, Lead Sync API)
+- **Google Sheets / Forms** (Google app, `spreadsheets.readonly`)
+
+Flow (`server/lib/oauth.ts`, `server/routes/oauth.ts`, `server/routes/co/sso.ts`, `src/components/SsoConnect.tsx`):
+1. Consent notice (DPDP Act). Nothing is pre-ticked: **I agree to all & connect**, or tick each purpose and Continue.
+2. Recorded per connector: who, when, IP, user agent, notice version `CONSENT_VERSION` and purposes.
+3. A popup opens on the platform's own login page.
+4. The callback stores the token encrypted in a one-hour `OAuthState`.
+5. The company picks Pages, accounts or a sheet → `POST /api/co/sso/state/:id/finish`.
+
+How leads arrive:
+- **Meta:** Pages are subscribed (`/{page}/subscribed_apps`, leadgen), and Page tokens are stored encrypted per Page. Signed webhooks arrive at `/api/oauth/meta/webhook` and are routed by Page (`SsoRoute`).
+  - When both Facebook and Instagram are connected for a Page, Instagram-placement leads go to the Instagram connector and the rest to Facebook.
+  - When only one is connected, it takes both placements.
+- **LinkedIn:** owner-level `leadNotifications` (best effort), plus a signed webhook at `/api/oauth/linkedin/webhook` (challengeCode validation and X-LI-Signature).
+- **Safety net:** a pull every 15 minutes (the `pull-frequent` cron) for all four types. Google Sheets is pull-only and reads each row once.
+
+Login state:
+- Expired logins mark the connector **Reconnect**.
+- **Disconnect** withdraws consent: tokens are deleted, Pages unsubscribed (unless the other Meta connector still uses them), routes removed, and the withdrawal recorded.
+
+The old App-ID / page-token `meta_leads` type is hidden and can't be created; existing ones keep working.
+
+Test hook: `OAUTH_MOCK_BASE` points every platform call at a stand-in server.
+
+### 17.3 Website / Landing Page Form and WhatsApp = REST API / webhook
+New connectors get `authMode: "key"`. Every call must carry:
+- `x-api-key`, or
+- `?key=` (Meta Cloud API Callback URL, plain HTML forms), or
+- an `x-signature` HMAC.
+
+Otherwise the call gets 401.
+- Website forms keep the `_hp` honeypot and the thank-you redirect.
+- Older connectors keep their previous checks until **Require API key** is clicked on their Setup tab.
+
+### 17.4 Company › Modules (Super Admin)
+A new tab on create/edit company. Each module and sub-module can be:
+- **Plan default** (or **Follows module** for sub-modules)
+- **Custom** — CRUD set explicitly; can restrict or extend the plan
+- **Paused**
+
+How it is applied:
+- Stored in `Company.moduleAccess` and applied in `companyCaps()`/`companyPerms()` in `server/middleware/auth.ts`, for the owner too.
+- Role grids and role saves are capped by it.
+- Paused modules stay in the menu marked **Paused** and show a notice. Their data is kept.
+
+### 17.5 Knowledge Base tabs per deploy
+- Articles live in `content/kb/*.md` (front matter: title, slug, order, summary).
+- `scripts/build-kb.mjs` (run in `prebuild`) compiles them into `shared/kb.generated.json`.
+- Super Admin › Knowledge Base shows one tab per file next to White Label and Company domains, filled with this deployment's URLs (`{{metaCallback}}`, `{{privacyUrl}}` …).
+- To add a tab, add a file. Deep link: `/sa/knowledgebase?tab=<slug>`.
+- The Markdown is kept too (`md` in the generated JSON):
+  - `GET /api/sa/knowledgebase/markdown?tab=<slug>|all[&download=1]` returns it with the live addresses filled in.
+  - The page offers **Download .md**, **Copy Markdown** and **Full guide (.md)**.
+  - It is rebuilt on every deploy, like the tabs.

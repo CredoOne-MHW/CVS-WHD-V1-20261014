@@ -5,10 +5,13 @@ import { mcpSession, toolItems } from "./mcp";
 import { runInDb } from "./context";
 import { HttpError } from "./http";
 import { assertPublicUrl } from "./net";
+import { runSso } from "./oauth";
+import { SSO_TYPES, isSsoType } from "../../shared/sso";
 
 /** Connectors whose leads we fetch (as opposed to platforms that push to us). */
-export const PULL_TYPES = ["indiamart", "tradeindia", "woocommerce", "mcp"] as const;
-const FREQUENT = ["indiamart", "tradeindia", "woocommerce"]; // every 15 minutes
+export const PULL_TYPES = ["indiamart", "tradeindia", "woocommerce", "mcp", ...SSO_TYPES] as const;
+// every 15 minutes — sign-in connectors too: their webhook is real-time, this is the safety net (and the only path for Google Sheets)
+const FREQUENT = ["indiamart", "tradeindia", "woocommerce", ...SSO_TYPES];
 const DAILY = ["mcp"]; // 02:00 IST
 
 type Tally = { found: number; created: number; duplicates: number; failed: number };
@@ -160,7 +163,7 @@ async function runMcp(c: any) {
 export async function runPull(c: any) {
   let result: any;
   try {
-    result = c.type === "indiamart" ? await runIndiaMart(c) : c.type === "tradeindia" ? await runTradeIndia(c) : c.type === "woocommerce" ? await runWooCommerce(c) : c.type === "mcp" ? await runMcp(c) : { ok: false, error: "Not a pull connector" };
+    result = isSsoType(c.type) ? await runSso(c) : c.type === "indiamart" ? await runIndiaMart(c) : c.type === "tradeindia" ? await runTradeIndia(c) : c.type === "woocommerce" ? await runWooCommerce(c) : c.type === "mcp" ? await runMcp(c) : { ok: false, error: "Not a pull connector" };
   } catch (e: any) {
     result = { ok: false, error: e.message };
   }

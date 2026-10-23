@@ -3,7 +3,7 @@ import { runInMain, setTenantDb } from "../lib/context";
 import { dbOf, forEachCompanyDb } from "../lib/tenantdb";
 import { z } from "zod";
 import { Webhook, WaLog, ActivityLog, EventType, Role, Company, Plan } from "../models";
-import { can, invalidateAuth, permOf } from "../middleware/auth";
+import { can, invalidateAuth, permOf, companyCaps } from "../middleware/auth";
 import { h, parse, notFound, badRequest, forbidden, paging, dateRange, escapeRegex } from "../lib/http";
 import { encrypt, decrypt } from "../lib/crypto";
 import { buildPayloads, dispatch, resendLog } from "../lib/whatsapp";
@@ -220,22 +220,24 @@ export function activityRoutes(scope: Scope) {
 
 const permSchema = z.record(z.object({ create: z.boolean(), read: z.boolean(), update: z.boolean(), delete: z.boolean() }));
 
-/** Clamp a role grid to what the plan allows. */
-export async function clampToPlan(planName: string, perms: PermMap): Promise<PermMap> {
-  const plan = await Plan.findOne({ name: planName }).lean<any>();
+/** Clamp a role grid to what the company may use (plan + Super Admin's per-company overrides, sub-modules included). */
+export async function clampToPlan(planName: string, perms: PermMap, access?: any): Promise<PermMap> {
+  const { caps } = await companyCaps(planName, access);
   const out: PermMap = {};
   for (const m of COMPANY_MODULES) {
     const p = perms[m.key] || ({} as any);
-    const cap = plan?.permissions?.[m.key] || {};
+    const cap = caps[m.key] || ({} as any);
     out[m.key] = Object.fromEntries(ACTIONS.map((a) => [a, !!(p[a] && cap[a])])) as any;
-    // sub-modules the role sets explicitly (others inherit the module): only applicable actions, within the plan
+    // sub-modules the role sets explicitly (others inherit the module): only applicable actions, within the caps
     for (const s of m.subs || []) {
-      const ps = perms[`${m.key}:${s.key}`];
-      if (ps) out[`${m.key}:${s.key}`] = Object.fromEntries(ACTIONS.map((a) => [a, !!(ps[a] && s.actions.includes(a) && cap[a] && p[a])])) as any;
+      const k = `${m.key}:${s.key}`;
+      const ps = perms[k];
+      if (ps) out[k] = Object.fromEntries(ACTIONS.map((a) => [a, !!(ps[a] && s.actions.includes(a) && cap[a] && p[a] && caps[k]?.[a] !== false)])) as any;
     }
   }
   return out;
 }
+const accessOf = async (req: Request, scope: Scope) => (scope === "company" ? (await runInMain(() => Company.findById(req.auth!.companyId).select("moduleAccess").lean<any>()))?.moduleAccess : undefined);
 
 export function roleRoutes(scope: Scope) {
   const r = Router();
@@ -247,17 +249,19 @@ export function roleRoutes(scope: Scope) {
     const q: any = base(req);
     if (scope === "super" && req.query.plan) q.plan = req.query.plan;
     const roles = await Role.find(q).sort({ name: 1 }).lean();
-    const plan = scope === "company" ? await Plan.findOne({ name: req.auth!.plan }).lean<any>() : req.query.plan ? await Plan.findOne({ name: req.query.plan }).lean<any>() : null;
+    const plan = scope === "company" ? null : req.query.plan ? await Plan.findOne({ name: req.query.plan }).lean<any>() : null;
     let templates: any[] = [];
     if (scope === "company") templates = await runInMain(() => Role.find({ scope: "super", plan: req.auth!.plan }).lean()); // platform templates
-    res.json({ roles, modules: COMPANY_MODULES, planCaps: plan?.permissions || null, templates });
+    // company grid: capped by the plan and the Super Admin's overrides for this company (paused modules can't be granted)
+    const caps = scope === "company" ? (await companyCaps(req.auth!.plan!, await accessOf(req, scope))).caps : plan?.permissions || null;
+    res.json({ roles, modules: COMPANY_MODULES, planCaps: caps, templates });
   }));
 
   r.post("/", can("roles:roles", "create"), h(async (req, res) => {
     const b = parse(z.object({ name: z.string().min(2).max(60), plan: z.string().optional(), permissions: permSchema }), req.body);
     const planName = scope === "company" ? req.auth!.plan! : b.plan;
     if (!planName) throw badRequest("Select a plan");
-    const role = await Role.create({ ...base(req), name: b.name, plan: planName, permissions: await clampToPlan(planName, b.permissions as PermMap) });
+    const role = await Role.create({ ...base(req), name: b.name, plan: planName, permissions: await clampToPlan(planName, b.permissions as PermMap, await accessOf(req, scope)) });
     res.locals.item = role.name;
     res.status(201).json(role);
   }));
@@ -267,7 +271,7 @@ export function roleRoutes(scope: Scope) {
     const role = await Role.findOne({ _id: req.params.id, ...base(req) });
     if (!role) throw notFound();
     if (b.name) role.name = b.name;
-    if (b.permissions) role.permissions = await clampToPlan(role.plan, b.permissions as PermMap);
+    if (b.permissions) role.permissions = await clampToPlan(role.plan, b.permissions as PermMap, await accessOf(req, scope));
     role.markModified("permissions");
     await role.save();
     await invalidateAuth();

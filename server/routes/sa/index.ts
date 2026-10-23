@@ -1,7 +1,9 @@
 import { Router } from "express";
 import bcrypt from "bcryptjs";
 import { z } from "zod";
-import { Company, User, Plan, Lead, WaLog, AiAgent, AiAllocation, AiUsage, AiProvider, Connector, PlatformSetting } from "../../models";
+import { Company, User, Plan, Lead, WaLog, AiAgent, AiAllocation, AiUsage, AiProvider, Connector, PlatformSetting, ConnectorKey } from "../../models";
+import { appSummary, saveApp, removeApp, testApp, getCompliance, saveCompliance, platformUrl, callbackUrl, webhookUrl, GRAPH_VERSION, LINKEDIN_VERSION } from "../../lib/oauth";
+import { SSO_TYPES } from "../../../shared/sso";
 import { cached, invalidate } from "../../lib/cache";
 import { can, requireScope, invalidateAuth } from "../../middleware/auth";
 import { h, parse, notFound, badRequest, paging, escapeRegex, HttpError } from "../../lib/http";
@@ -79,6 +81,18 @@ r.post("/companies/migrate-databases", can("companies", "update"), h(async (_req
 }));
 
 /* ───────────── Companies ───────────── */
+const MODULE_KEYS = new Set(COMPANY_MODULES.flatMap((m) => [m.key, ...(m.subs || []).map((s) => `${m.key}:${s.key}`)]));
+/** Sub-module overrides keep only the actions that apply to that sub-module. */
+function cleanAccess(a: Record<string, any>) {
+  const out: Record<string, any> = {};
+  for (const [k, v] of Object.entries(a || {})) {
+    const [m, sub] = k.split(":");
+    const acts = sub ? COMPANY_MODULES.find((x) => x.key === m)?.subs?.find((x) => x.key === sub)?.actions : ACTIONS;
+    out[k] = v.mode === "paused" ? { mode: "paused" } : { mode: "custom", perm: Object.fromEntries(ACTIONS.map((x) => [x, !!v.perm[x] && !!acts?.includes(x)])) };
+  }
+  return out;
+}
+
 const companyBody = z.object({
   name: z.string().min(2).max(150),
   code: z.string().min(2).max(20).regex(/^[A-Za-z0-9_-]+$/, "Letters, numbers, - and _ only"),
@@ -90,6 +104,13 @@ const companyBody = z.object({
   gstin: z.string().regex(/^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z][1-9A-Z]Z[0-9A-Z]$/, "Invalid GSTIN").optional().or(z.literal("")),
   address: z.string().max(500).optional(),
   s3Enabled: z.boolean().optional(), // "S3 storage required"
+  // Modules tab: per-company override of the plan (module or "module:sub" keys)
+  moduleAccess: z
+    .record(
+      z.string().refine((k) => MODULE_KEYS.has(k), "Unknown module"),
+      z.discriminatedUnion("mode", [z.object({ mode: z.literal("custom"), perm: z.object({ create: z.boolean(), read: z.boolean(), update: z.boolean(), delete: z.boolean() }) }), z.object({ mode: z.literal("paused") })])
+    )
+    .optional(),
   loginEmail: z.string().email().optional().or(z.literal("")),
   password: z.string().min(8, "Min 8 characters").optional(),
   slug: z.string().toLowerCase().regex(/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/, "Platform address: 2–63 lowercase letters, numbers or hyphens").optional(),
@@ -173,6 +194,12 @@ r.get("/companies", can("companies", "read"), h(async (req, res) => {
   res.json({ items: items.map((c: any) => ({ ...c, ...tenantUrls(c), loginEmail: loginBy[String(c._id)] })), total, page, limit });
 }));
 
+/** Modules tab: what a plan gives by default (the company's overrides are applied on top). */
+r.get("/companies/plan-caps", can("companies", "read"), h(async (req, res) => {
+  const plan = await Plan.findOne({ name: String(req.query.plan || "") }).lean<any>();
+  res.json({ modules: COMPANY_MODULES, caps: plan?.permissions || {} });
+}));
+
 r.get("/companies/:id", can("companies", "read"), h(async (req, res) => {
   const c = await Company.findOne({ _id: req.params.id, deletedAt: null }).lean<any>();
   if (!c) throw notFound();
@@ -212,6 +239,7 @@ r.post("/companies", can("companies", "create"), h(async (req, res) => {
     customDomain,
     s3Enabled: b.s3Enabled !== false,
     s3Folder: b.s3Enabled !== false ? companyFolder(b.code) : undefined,
+    moduleAccess: cleanAccess(b.moduleAccess || {}),
     domain: customDomain ? { verifyToken: newVerifyToken() } : undefined,
     branding: { shortName: b.name, ...(b.branding || {}), updatedAt: new Date() },
     loginEmail: undefined,
@@ -246,6 +274,10 @@ r.put("/companies/:id", can("companies", "update"), h(async (req, res) => {
   await assertDomainFree(String(c._id), rest.slug, newDomain || undefined);
   // the database name is fixed at creation; changing the code later only renames the label
   c.set({ ...rest, customDomain: newDomain, code: rest.code ? rest.code.toUpperCase() : c.code });
+  if (rest.moduleAccess) {
+    c.set("moduleAccess", cleanAccess(rest.moduleAccess));
+    c.markModified("moduleAccess");
+  }
   // renamed short name: the old address keeps working (and can't be given to another company)
   if (rest.slug && before.slug && rest.slug !== before.slug) c.set("slugAliases", [...new Set([...(c.slugAliases || []), before.slug])].filter((x) => x !== rest.slug).slice(-5));
   if (branding) c.set("branding", { ...(c.toObject().branding || {}), ...branding, updatedAt: new Date() });
@@ -633,6 +665,50 @@ r.put("/platform-branding", can("branding", "update"), h(async (req, res) => {
   res.json(platformBranding());
 }));
 
+/* ───────────── Platform Apps: Credovation's Meta / LinkedIn / Google apps for every company's sign-in connectors ───────────── */
+const PROVIDERS = ["meta", "linkedin", "google"] as const;
+r.get("/platform-apps", can("platform_apps", "read"), h(async (req, res) => {
+  const counts = await ConnectorKey.aggregate([{ $match: { type: { $in: SSO_TYPES }, active: true } }, { $group: { _id: "$type", n: { $sum: 1 } } }]);
+  const used = Object.fromEntries(counts.map((x: any) => [x._id, x.n]));
+  const base = platformUrl(req);
+  res.json({
+    apps: await Promise.all(PROVIDERS.map((p) => appSummary(p, req))),
+    used,
+    compliance: await getCompliance(),
+    platformUrl: base,
+    pages: { privacy: `${base}/privacy`, terms: `${base}/terms`, dataDeletion: `${base}/data-deletion` },
+    graphVersion: GRAPH_VERSION,
+    linkedinVersion: LINKEDIN_VERSION,
+  });
+}));
+r.put("/platform-apps/compliance", can("platform_apps", "update"), h(async (req, res) => {
+  const b = parse(z.object({ email: z.string().trim().email("Enter a valid email"), officer: z.string().trim().min(2).max(80), legalName: z.string().trim().min(2).max(150), address: z.string().trim().min(2).max(300) }), req.body);
+  await saveCompliance(b);
+  res.locals.item = `Privacy contact · ${b.email}`;
+  res.json(await getCompliance());
+}));
+r.put("/platform-apps/:provider", can("platform_apps", "update"), h(async (req, res) => {
+  const p = req.params.provider as (typeof PROVIDERS)[number];
+  if (!PROVIDERS.includes(p)) throw notFound();
+  const b = parse(z.object({ clientId: z.string().trim().min(4, "Enter the ID").max(200).regex(/^[A-Za-z0-9._-]+$/, "Letters, numbers, dots, dashes and underscores only"), clientSecret: z.string().trim().max(500).optional().or(z.literal("")) }), req.body);
+  await saveApp(p, { clientId: b.clientId, clientSecret: b.clientSecret || undefined }, req.auth!.email);
+  res.locals.item = `${p} app`;
+  res.json(await appSummary(p, req));
+}));
+r.delete("/platform-apps/:provider", can("platform_apps", "delete"), h(async (req, res) => {
+  const p = req.params.provider as (typeof PROVIDERS)[number];
+  if (!PROVIDERS.includes(p)) throw notFound();
+  await removeApp(p);
+  res.locals.item = `${p} app`;
+  res.json({ ok: true });
+}));
+r.post("/platform-apps/:provider/test", can("platform_apps", "read"), h(async (req, res) => {
+  const p = req.params.provider as (typeof PROVIDERS)[number];
+  if (!PROVIDERS.includes(p)) throw notFound();
+  res.locals.action = "Test";
+  res.json(await testApp(p, req));
+}));
+
 /* ───────────── Domain & DNS for one company ───────────── */
 async function domainReport(c: any, live: boolean) {
   if (c.customDomain && !c.domain?.verifyToken) {
@@ -703,7 +779,61 @@ r.get("/knowledgebase/config", can("knowledgebase", "read"), h(async (req, res) 
     platform: platformRecords(),
     branding: platformBranding(),
     example: { ...recordsFor(example), cnameTarget: cnameTargetFor(example) },
+    // values filled into the Knowledge Base articles ({{metaCallback}} …) — this deployment's real addresses
+    kbVars: await (async () => {
+      const pu = platformUrl(req);
+      const c = await getCompliance();
+      return {
+        platformUrl: pu,
+        baseDomain: new URL(pu || "https://localhost").hostname,
+        metaCallback: callbackUrl("meta", req),
+        metaWebhook: webhookUrl("meta", req),
+        linkedinCallback: callbackUrl("linkedin", req),
+        linkedinWebhook: webhookUrl("linkedin", req),
+        googleCallback: callbackUrl("google", req),
+        privacyUrl: `${pu}/privacy`,
+        termsUrl: `${pu}/terms`,
+        dataDeletionUrl: `${pu}/data-deletion`,
+        privacyEmail: c.email,
+      };
+    })(),
   });
+}));
+
+/**
+ * Knowledge Base as Markdown: one article (?tab=<slug>) or the whole guide (?tab=all), with this deployment's real
+ * addresses filled in. Built from content/kb/*.md on every deploy, so it always matches the running code.
+ */
+r.get("/knowledgebase/markdown", can("knowledgebase", "read"), h(async (req, res) => {
+  const kb: any = (await import("../../../shared/kb.generated.json")).default;
+  const pu = platformUrl(req);
+  const c = await getCompliance();
+  const vars: Record<string, string> = {
+    platformUrl: pu,
+    baseDomain: new URL(pu || "https://localhost").hostname,
+    metaCallback: callbackUrl("meta", req),
+    metaWebhook: webhookUrl("meta", req),
+    linkedinCallback: callbackUrl("linkedin", req),
+    linkedinWebhook: webhookUrl("linkedin", req),
+    googleCallback: callbackUrl("google", req),
+    privacyUrl: `${pu}/privacy`,
+    termsUrl: `${pu}/terms`,
+    dataDeletionUrl: `${pu}/data-deletion`,
+    privacyEmail: c.email,
+  };
+  const fill = (t: string) => t.replace(/\{\{(\w+)\}\}/g, (m0, k) => vars[k] ?? m0);
+  const want = String(req.query.tab || "all");
+  const tabs = (kb.tabs as any[]).filter((t) => want === "all" || t.slug === want);
+  if (!tabs.length) throw notFound("No such article");
+  const built = new Date(kb.builtAt).toISOString().slice(0, 10);
+  const head = want === "all" ? `# ${platformBranding().name || "CredoOne"} — Knowledge Base\n\nBuilt ${built}${kb.commit ? ` · ${kb.commit}` : ""} · ${pu}\n` : "";
+  const body = tabs.map((t) => `${want === "all" ? "\n---\n\n" : ""}# ${t.title}\n\n${t.summary ? `_${t.summary}_\n\n` : ""}${fill(t.md || "")}\n`).join("");
+  const name = want === "all" ? "knowledge-base" : want;
+  res.setHeader("Content-Type", "text/markdown; charset=utf-8");
+  if (req.query.download) res.setHeader("Content-Disposition", `attachment; filename="${name}-${built}.md"`);
+  res.locals.action = "Download Markdown";
+  res.locals.item = name;
+  res.send(head + body);
 }));
 
 /** One-click: add <base> and *.<base> to the Vercel project. */

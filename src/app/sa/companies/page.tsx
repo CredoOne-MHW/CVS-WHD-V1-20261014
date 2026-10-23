@@ -11,6 +11,7 @@ import { TemplatePicker } from "@/components/TemplatePicker";
 import { LogoDisc } from "@/components/LogoDisc";
 import { TemplateThumb, templateOf, LOGIN_TEMPLATES, type LoginBrand } from "@/components/LoginTemplates";
 import { LayoutTemplate } from "lucide-react";
+import { ModuleAccessGrid } from "@/components/ModuleAccess";
 
 const BLANK_BRANDING = {
   shortName: "",
@@ -25,7 +26,7 @@ const BLANK_BRANDING = {
   supportEmail: "",
   supportPhone: "",
 };
-const BLANK = { name: "", code: "", contactPerson: "", phone: "", whatsapp: "", email: "", plan: "Trial", s3Enabled: true, gstin: "", address: "", loginEmail: "", password: "", slug: "", customDomain: "", branding: { ...BLANK_BRANDING } };
+const BLANK = { name: "", code: "", contactPerson: "", phone: "", whatsapp: "", email: "", plan: "Trial", s3Enabled: true, gstin: "", address: "", loginEmail: "", password: "", slug: "", customDomain: "", branding: { ...BLANK_BRANDING }, moduleAccess: {} };
 type Kind = "logo" | "banner" | "favicon";
 const slugify = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 63);
 
@@ -35,7 +36,7 @@ export default function Companies() {
   const [plans, setPlans] = useState<string[]>(["Trial", "Standard", "Pro", "Enterprise"]);
   const [base, setBase] = useState("");
   const [form, setForm] = useState<any>(null);
-  const [tab, setTab] = useState<"company" | "login" | "brand">("company");
+  const [tab, setTab] = useState<"company" | "login" | "brand" | "modules">("company");
   const [files, setFiles] = useState<Partial<Record<Kind, File>>>({});
   const [previews, setPreviews] = useState<Partial<Record<Kind, string>>>({});
   const [slugTouched, setSlugTouched] = useState(false);
@@ -311,8 +312,10 @@ export default function Companies() {
                 { key: "company", label: "Company details" },
                 { key: "login", label: "Login credentials" },
                 { key: "brand", label: "Branding & domain" },
+                { key: "modules", label: "Modules" },
               ]}
             />
+            {tab === "modules" && <ModuleAccessGrid plan={form.plan} value={form.moduleAccess || {}} onChange={(v) => set("moduleAccess", v)} disabled={!perm.update} />}
             {tab === "company" && (
               <div className="grid gap-5 sm:grid-cols-2">
                 <Field label="Company name" required>

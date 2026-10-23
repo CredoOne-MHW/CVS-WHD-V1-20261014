@@ -94,6 +94,33 @@ export async function adapt(connector: any, payload: any): Promise<{ leads: Lead
       if (!out.length && payload?.field_data) out.push(mapFields(Object.fromEntries(payload.field_data.map((f: any) => [f.name, f.values?.[0]])), fm));
       return { leads: out, naturalId: ids.filter(Boolean).join(",") || undefined };
     }
+    case "facebook_leads":
+    case "instagram_leads": {
+      // Sign-in connectors: the lead is fetched with the Page's token (webhook or 15-minute pull) before it gets here.
+      // A delivery that couldn't be fetched yet ({ meta_pending }) is fetched on retry.
+      const o = await import("./oauth");
+      let lead = payload?.meta_lead;
+      let page = payload?.page;
+      if (!lead && payload?.meta_pending) {
+        page = (connector.sso?.pages || []).find((p: any) => p.id === String(payload.meta_pending.page_id));
+        const token = decrypt(page?.tokenEnc);
+        if (!token) throw new Error("This Page is no longer connected — reconnect the connector");
+        lead = await o.metaLead(String(payload.meta_pending.leadgen_id), token);
+      }
+      if (!lead) return { leads: [], ignore: "No lead in this delivery" };
+      const rec = o.metaLeadRecord(lead, page?.name);
+      return { leads: [applyMap(mapFields(rec, fm), rec, fm)], naturalId: `fb:${lead.id}` };
+    }
+    case "linkedin_leads": {
+      const rec = payload?.linkedin_lead;
+      if (!rec) return { leads: [], ignore: "No lead in this delivery" };
+      return { leads: [applyMap({ ...mapFields(rec, fm), profileUrl: rec.profileUrl }, rec, fm)], naturalId: rec._linkedin?.id ? `li:${rec._linkedin.id}` : undefined };
+    }
+    case "google_sheets": {
+      const rec = payload?.sheet_row;
+      if (!rec) return { leads: [], ignore: "Empty row" };
+      return { leads: [mapFields(rec, fm)] };
+    }
     case "google_ads":
       return googleAdsLead(connector, payload);
     case "web_prospect": {

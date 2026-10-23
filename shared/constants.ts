@@ -96,12 +96,13 @@ export const SA_MODULES: ModuleDef[] = [
   { key: "ai_agents", label: "AI Agents", group: "Main", path: "/sa/ai-agents", icon: "Bot" },
   { key: "plans", label: "Plan", group: "Main", path: "/sa/plans", icon: "Layers" },
   { key: "reports", label: "Report", group: "Main", path: "/sa/reports", icon: "BarChart3" },
-  { key: "knowledgebase", label: "Knowledgebase", group: "Main", path: "/sa/knowledgebase", icon: "BookOpenText" },
+  { key: "knowledgebase", label: "Knowledge Base", group: "Main", path: "/sa/knowledgebase", icon: "BookOpenText" },
   { key: "roles", label: "Role Management", group: "Settings", path: "/sa/settings/roles", icon: "ShieldCheck" },
   { key: "activity_logs", label: "Activity Logs", group: "Settings", path: "/sa/settings/activity-logs", icon: "ScrollText" },
   { key: "wa_webhooks", label: "WhatsApp Webhook", group: "Settings", path: "/sa/settings/whatsapp", icon: "Webhook" },
   { key: "wa_logs", label: "WhatsApp Logs", group: "Settings", path: "/sa/settings/whatsapp-logs", icon: "MessagesSquare" },
   { key: "subscriptions", label: "Subscription Management", group: "Settings", path: "/sa/settings/subscriptions", icon: "CreditCard" },
+  { key: "platform_apps", label: "Platform Apps", group: "Settings", path: "/sa/settings/platform-apps", icon: "KeyRound" },
   { key: "branding", label: "Platform Branding", group: "Settings", path: "/sa/settings/branding", icon: "Palette" },
   { key: "system", label: "System Health", group: "Settings", path: "/sa/settings/system", icon: "Activity" },
 ];
@@ -145,16 +146,22 @@ export interface ConnectorDef {
   label: string;
   description: string;
   icon: string;
-  inbound: "webhook" | "upload" | "manual" | "meta" | "google" | "pull" | "push" | "push_pull";
+  inbound: "webhook" | "upload" | "manual" | "meta" | "google" | "pull" | "push" | "push_pull" | "sso";
+  provider?: "meta" | "linkedin" | "google"; // sign-in (SSO) connectors: the Platform App they sign in through
+  hidden?: boolean; // kept only so existing connectors keep working; can't be created any more
 }
 
 export const CONNECTOR_TYPES: ConnectorDef[] = [
-  { type: "website_form", label: "Website / Landing Page Form", description: "POST form submissions from any site or landing page.", icon: "Globe", inbound: "webhook" },
+  { type: "facebook_leads", label: "Facebook Lead Ads", description: "Sign in with Facebook, pick your Pages — every Lead Ad form submission arrives in seconds.", icon: "Facebook", inbound: "sso", provider: "meta" },
+  { type: "instagram_leads", label: "Instagram Lead Ads", description: "Sign in with Facebook, pick the Instagram accounts — Instagram lead forms arrive in seconds.", icon: "Instagram", inbound: "sso", provider: "meta" },
+  { type: "linkedin_leads", label: "LinkedIn Lead Gen Forms", description: "Sign in with LinkedIn, pick your ad accounts or Pages — Lead Gen Form responses sync automatically.", icon: "Linkedin", inbound: "sso", provider: "linkedin" },
+  { type: "google_sheets", label: "Google Sheets / Forms", description: "Sign in with Google, pick a sheet (e.g. your Google Form responses) — new rows become leads every 15 minutes.", icon: "Sheet", inbound: "sso", provider: "google" },
+  { type: "website_form", label: "Website / Landing Page Form", description: "REST API / webhook: POST each form submission as JSON with your API key.", icon: "Globe", inbound: "webhook" },
   { type: "manual", label: "Manual Entry", description: "Add leads by hand from the Leads screen.", icon: "PencilLine", inbound: "manual" },
   { type: "bulk_import", label: "Excel / CSV Import", description: "Upload .xlsx or .csv using the sample template.", icon: "FileSpreadsheet", inbound: "upload" },
   { type: "rest_api", label: "REST API / Webhook", description: "Generic JSON endpoint. Create as many as you need.", icon: "Braces", inbound: "webhook" },
-  { type: "whatsapp", label: "WhatsApp Business Platform", description: "Inbound messages from your WhatsApp Cloud API / BSP.", icon: "MessageCircle", inbound: "webhook" },
-  { type: "meta_leads", label: "Facebook & Instagram Lead Forms", description: "Meta Lead Ads webhook (leadgen) with verify token.", icon: "Facebook", inbound: "meta" },
+  { type: "whatsapp", label: "WhatsApp Business Platform", description: "REST API / webhook: your WhatsApp Cloud API or BSP posts inbound messages with your API key.", icon: "MessageCircle", inbound: "webhook" },
+  { type: "meta_leads", label: "Facebook & Instagram Lead Forms (App ID — retired)", description: "Older App ID / token setup. Replaced by the Facebook and Instagram sign-in connectors.", icon: "Facebook", inbound: "meta", hidden: true },
   { type: "google_ads", label: "Google Ads Lead Forms", description: "People who searched your keywords on Google and filled your lead form — delivered instantly.", icon: "Search", inbound: "google" },
   { type: "email", label: "Email Inquiries", description: "Inbound-parse webhook (SendGrid, Mailgun, Postmark).", icon: "Mail", inbound: "webhook" },
   { type: "telephony", label: "Telephone / Call Center", description: "Missed-call & IVR webhooks (Exotel, Knowlarity, Ozonetel…).", icon: "PhoneCall", inbound: "webhook" },
@@ -210,14 +217,49 @@ export function permRows(modules: ModuleDef[]) {
   return out;
 }
 
-/** Effective sub-module permissions: the module's permission ∧ the sub-module's applicable actions ∧ the role's choice (if any). */
-export function withSubPerms(modules: ModuleDef[], perms: PermMap, rolePerms?: PermMap | null): PermMap {
+/**
+ * Effective sub-module permissions: the module's permission ∧ the sub-module's applicable actions
+ * ∧ the company's sub-module limit (Super Admin › Company › Modules, if set) ∧ the role's choice (if any).
+ */
+export function withSubPerms(modules: ModuleDef[], perms: PermMap, rolePerms?: PermMap | null, limits?: PermMap | null): PermMap {
   const out: PermMap = { ...perms };
   for (const m of modules)
     for (const s of m.subs || []) {
       const k = `${m.key}:${s.key}`;
       const own = rolePerms?.[k];
-      out[k] = Object.fromEntries(ACTIONS.map((a) => [a, s.actions.includes(a) && !!perms[m.key]?.[a] && (own ? !!own[a] : true)])) as Perm;
+      const lim = limits?.[k];
+      out[k] = Object.fromEntries(ACTIONS.map((a) => [a, s.actions.includes(a) && !!perms[m.key]?.[a] && (lim ? !!lim[a] : true) && (own ? !!own[a] : true)])) as Perm;
     }
   return out;
 }
+
+/**
+ * Super Admin › Company › Modules: per-company override of the plan, by module or sub-module key.
+ *  - absent        → follow the plan (sub-modules follow their module)
+ *  - "custom"      → these CRUD actions instead of the plan's (can restrict or extend)
+ *  - "paused"      → no access at all; the module shows as “Paused” to the company, data is kept
+ */
+export type ModuleOverride = { mode: "custom"; perm: Perm } | { mode: "paused" };
+export type ModuleAccess = Record<string, ModuleOverride>;
+
+/** Plan grid + company overrides → module permissions, sub-module limits and the paused keys. */
+export function companyBase(modules: ModuleDef[], plan: PermMap | undefined | null, access?: ModuleAccess | null) {
+  const base: PermMap = {};
+  const limits: PermMap = {};
+  const paused: string[] = [];
+  for (const m of modules) {
+    const o = access?.[m.key];
+    base[m.key] = o?.mode === "paused" ? noPerm() : o?.mode === "custom" ? pick(o.perm) : pick(plan?.[m.key]);
+    if (o?.mode === "paused") paused.push(m.key);
+    for (const s of m.subs || []) {
+      const k = `${m.key}:${s.key}`;
+      const so = access?.[k];
+      if (so?.mode === "paused") {
+        limits[k] = noPerm();
+        paused.push(k);
+      } else if (so?.mode === "custom") limits[k] = pick(so.perm);
+    }
+  }
+  return { base, limits, paused };
+}
+const pick = (p?: Partial<Perm> | null): Perm => ({ create: !!p?.create, read: !!p?.read, update: !!p?.update, delete: !!p?.delete });

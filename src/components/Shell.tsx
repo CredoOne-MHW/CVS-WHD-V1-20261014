@@ -2,7 +2,7 @@
 import { createContext, useContext, useEffect, useRef, useState, type ReactNode } from "react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
-import { Menu, LogOut, ChevronRight, ChevronDown, ShieldAlert, Globe, X } from "lucide-react";
+import { PauseCircle, Menu, LogOut, ChevronRight, ChevronDown, ShieldAlert, Globe, X } from "lucide-react";
 import { icon } from "./icons";
 import { Assistant } from "./Assistant";
 import { BillingAlert } from "./BillingAlert";
@@ -38,7 +38,8 @@ export interface Me {
   isOwner: boolean;
   impersonatedBy?: string;
   perms: PermMap;
-  nav: { key: string; label: string; group: string; path: string; icon: string }[];
+  nav: { key: string; label: string; group: string; path: string; icon: string; paused?: boolean }[];
+  paused?: string[];
   branding: Branding;
 }
 
@@ -162,12 +163,14 @@ export default function Shell({ scope, children }: { scope: "super" | "company";
                         aria-label={full ? undefined : n.label}
                         className={`group flex items-center rounded-xl text-[13.5px] font-semibold transition ${full ? "gap-3 px-3 py-2.5" : "h-11 w-11 justify-center"} ${active ? "bg-white text-hive-900 shadow-lg shadow-black/10" : "text-white/75 hover:bg-white/10 hover:text-white"}`}
                       >
-                        <Icon className={`h-[18px] w-[18px] shrink-0 ${active ? "text-hive-700" : "text-white/60 group-hover:text-white"}`} />
-                        {full && n.label}
+                        <Icon className={`h-[18px] w-[18px] shrink-0 ${active ? "text-hive-700" : "text-white/60 group-hover:text-white"} ${n.paused ? "opacity-50" : ""}`} />
+                        {full && <span className={n.paused ? "opacity-60" : ""}>{n.label}</span>}
+                        {full && n.paused && <span className="ml-auto rounded-full bg-white/15 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-white/80">Paused</span>}
                       </Link>
                       {!full && (
                         <span role="tooltip" className="pointer-events-none absolute left-[54px] top-1/2 z-50 -translate-y-1/2 whitespace-nowrap rounded-lg bg-ink-900 px-2.5 py-1.5 text-xs font-semibold text-white opacity-0 shadow-lift transition group-hover/item:opacity-100">
                           {n.label}
+                          {n.paused ? " · Paused" : ""}
                         </span>
                       )}
                     </li>
@@ -258,7 +261,17 @@ export default function Shell({ scope, children }: { scope: "super" | "company";
         </header>
 
         <main id="main" className="mx-auto max-w-[1480px] px-4 py-7 sm:px-6 lg:px-8 lg:py-8">
-          {current ? children : <div className="card p-10 text-center text-ink-500">Your plan or role does not include this module.</div>}
+          {current?.paused ? (
+            <div className="card mx-auto max-w-lg p-10 text-center">
+              <PauseCircle className="mx-auto h-10 w-10 text-honey-600" />
+              <h2 className="mt-3 text-lg font-bold text-ink-900">{current.label} is paused</h2>
+              <p className="mt-1 text-sm text-ink-500">Your platform administrator has paused this module for your company. Your data is kept — it will be back as soon as it is resumed.</p>
+            </div>
+          ) : current ? (
+            children
+          ) : (
+            <div className="card p-10 text-center text-ink-500">Your plan or role does not include this module.</div>
+          )}
         </main>
         {scope === "company" && (
           <ErrorBoundary where="billing-alert" fallback={() => null}>
