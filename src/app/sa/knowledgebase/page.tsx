@@ -1,11 +1,34 @@
 "use client";
 import { useEffect, useState, type ReactNode } from "react";
 import Link from "next/link";
-import { Check, Copy, ExternalLink, Info, TriangleAlert, Rocket, RefreshCw, Globe2, Server, ShieldCheck, Building2 } from "lucide-react";
+import { Check, Copy, FileDown, ExternalLink, Info, TriangleAlert, Rocket, RefreshCw, Globe2, Server, ShieldCheck, Building2 } from "lucide-react";
 import { api } from "@/lib/api";
 import { PageHeader, Badge, Btn, Spinner, Empty, useToast } from "@/components/ui";
 import { Tabs } from "@/components/Logs";
 import { DnsModal } from "@/components/DnsPanel";
+import KB_JSON from "@shared/kb.generated.json";
+
+const KB = KB_JSON as { builtAt: string; commit: string | null; tabs: { slug: string; title: string; order: number; summary: string; html: string; md?: string }[] };
+const mdUrl = (tab: string) => `/api/sa/knowledgebase/markdown?tab=${encodeURIComponent(tab)}&download=1`;
+
+/** Copies the article's Markdown (live addresses filled in) — handy for docs, tickets or the project knowledge base. */
+function CopyMd({ tab }: { tab: string }) {
+  const [ok, setOk] = useState(false);
+  return (
+    <button
+      type="button"
+      className="btn-secondary"
+      onClick={async () => {
+        const r = await fetch(`/api/sa/knowledgebase/markdown?tab=${encodeURIComponent(tab)}`, { credentials: "include" });
+        await navigator.clipboard.writeText(await r.text());
+        setOk(true);
+        setTimeout(() => setOk(false), 1500);
+      }}
+    >
+      {ok ? <Check className="h-4 w-4 text-hive-600" /> : <Copy className="h-4 w-4" />} {ok ? "Copied" : "Copy Markdown"}
+    </button>
+  );
+}
 
 function Copyable({ v }: { v: string }) {
   const [ok, setOk] = useState(false);
@@ -85,27 +108,59 @@ function RecordTable({ rows }: { rows: { type: string; host: string; value: stri
   );
 }
 
+const escapeHtml = (v: string) => v.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!);
+/** {{metaCallback}} … → this deployment's real values (escaped). Unknown placeholders stay visible. */
+const fillKb = (html: string, vars: Record<string, string>) => html.replace(/\{\{(\w+)\}\}/g, (m, k) => (vars[k] != null ? escapeHtml(String(vars[k])) : m));
+
+/**
+ * Knowledge Base. Two built-in tabs (White Label, Company domains) plus one tab per file in content/kb/*.md —
+ * compiled on every build (scripts/build-kb.mjs), so new features and steps appear here with each deploy.
+ */
 export default function Knowledgebase() {
-  const [tab, setTab] = useState<"white" | "domains">("white");
+  const tabs = [{ key: "white", label: "White Label" }, { key: "domains", label: "Company domains" }, ...KB.tabs.map((t) => ({ key: t.slug, label: t.title }))];
+  const [tab, setTabState] = useState<string>("white");
   const [cfg, setCfg] = useState<any>(null);
   useEffect(() => {
     api("/sa/knowledgebase/config").then(setCfg);
-  }, []);
+    const q = new URLSearchParams(window.location.search).get("tab");
+    if (q && tabs.some((t) => t.key === q)) setTabState(q);
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  const setTab = (k: string) => {
+    setTabState(k);
+    try {
+      window.history.replaceState(null, "", k === "white" ? window.location.pathname : `?tab=${k}`);
+    } catch {}
+  };
+  const doc = KB.tabs.find((t) => t.slug === tab);
   return (
     <>
-      <PageHeader title="Knowledgebase" subtitle="How-to guides for running the platform" />
-      <Tabs
-        value={tab}
-        onChange={setTab}
-        tabs={[
-          { key: "white", label: "White Label" },
-          { key: "domains", label: "Company domains" },
-        ]}
+      <PageHeader
+        title="Knowledge Base"
+        subtitle={`How-to guides for running the platform · updated with every deploy (${new Date(KB.builtAt).toLocaleDateString("en-IN", { day: "numeric", month: "short", year: "numeric" })}${KB.commit ? ` · ${KB.commit}` : ""})`}
+        actions={
+          <a href={mdUrl("all")} className="btn-secondary" title="Every article as one Markdown file, with this deployment's addresses filled in">
+            <FileDown className="h-4 w-4" /> Full guide (.md)
+          </a>
+        }
       />
+      <Tabs value={tab} onChange={setTab} tabs={tabs} />
       {!cfg ? (
         <div className="flex justify-center py-20 text-hive-700">
           <Spinner className="h-6 w-6" />
         </div>
+      ) : doc ? (
+        <article className="card p-6 sm:p-8">
+          <div className="mb-5 flex flex-wrap items-start gap-3">
+            {doc.summary && <p className="min-w-0 flex-1 rounded-2xl bg-hive-50/70 px-4 py-3 text-sm text-ink-700">{doc.summary}</p>}
+            <div className="flex shrink-0 gap-2">
+              <CopyMd tab={doc.slug} />
+              <a href={mdUrl(doc.slug)} className="btn-secondary">
+                <FileDown className="h-4 w-4" /> Download .md
+              </a>
+            </div>
+          </div>
+          <div className="kb-doc" dangerouslySetInnerHTML={{ __html: fillKb(doc.html, cfg.kbVars || {}) }} />
+        </article>
       ) : tab === "white" ? (
         <WhiteLabel cfg={cfg} />
       ) : (

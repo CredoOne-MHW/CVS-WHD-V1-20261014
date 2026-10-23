@@ -243,10 +243,10 @@ async function bootstrap() {
 
   // One-time (v2): move existing logos/banners/knowledge files into <Company Name>/logo · /banner · /brain.
   // Runs in the background so the first request isn't delayed; idempotent if an instance stops midway.
-  if (process.env.S3_BUCKET && !done.has("s3_layout_v2")) {
+  if (process.env.S3_BUCKET && !done.has("s3_layout_v3")) {
     import("./s3")
       .then(({ relayoutAll }) => relayoutAll())
-      .then(() => meta.updateOne({ _id: "s3_layout_v2" }, { $set: { at: new Date() } }, { upsert: true }))
+      .then(() => meta.updateOne({ _id: "s3_layout_v3" }, { $set: { at: new Date() } }, { upsert: true }))
       .catch((e) => console.warn("S3 relayout:", e?.message));
   }
 }

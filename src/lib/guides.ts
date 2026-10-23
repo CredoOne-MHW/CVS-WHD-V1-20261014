@@ -11,6 +11,7 @@ const MCP_ALT =
 
 export const GUIDES: Record<string, Guide> = {
   meta_leads: {
+    note: "Retired: use the “Facebook Lead Ads” or “Instagram Lead Ads” connector — you just sign in with Facebook, no App ID, token or webhook setup. Existing connectors of this kind keep working.",
     summary: "Every Facebook or Instagram Lead Ad submission arrives in seconds through Meta’s leadgen webhook. Instagram lead ads use your Facebook Page’s forms, so one connector covers both.",
     steps: [
       { title: "Create this connector", body: "Click Connect. You get a Callback URL and a Verify token (shown on the connector’s Setup tab)." },
@@ -29,16 +30,59 @@ export const GUIDES: Record<string, Guide> = {
     ],
   },
   whatsapp: {
-    summary: "Every inbound WhatsApp message to your business number becomes a lead (or updates the existing one) — Meta Cloud API or any BSP.",
+    summary: "REST API / webhook: every inbound WhatsApp message to your business number is posted to your endpoint with your API key, and becomes (or updates) a lead — Meta Cloud API or any BSP.",
     steps: [
-      { title: "Create this connector", body: "Click Connect and copy the secret shown once — it is your webhook Verify token." },
-      { title: "Meta Cloud API: open your app", body: "developers.facebook.com → your Business app → add product “WhatsApp” → link your WhatsApp Business Account and phone number." },
-      { title: "Set the webhook", body: "WhatsApp → Configuration → Webhook → Edit → paste the Callback URL and Verify token → Verify and save.", code: "Callback URL: {{endpoint}}\nVerify token: {{secret}}" },
+      { title: "Create this connector", body: "Click Connect and copy the API key shown once. It is both the key on every call and the webhook Verify token." },
+      { title: "Meta Cloud API: open your app", body: "developers.facebook.com → your Business app → WhatsApp → Configuration → Webhook → Edit." },
+      { title: "Set the Callback URL with your key", body: "Meta can’t send custom headers, so the key goes in the URL. Paste both values → Verify and save.", code: "Callback URL: {{endpoint}}?key={{secret}}\nVerify token: {{secret}}" },
       { title: "Subscribe to messages", body: "In Webhook fields, click Subscribe next to “messages”." },
-      { title: "Using a BSP instead (Interakt, AiSensy, Gupshup, WATI…)", body: "In the BSP’s settings, set the incoming-message webhook to this URL. Flat JSON like {\"phone\",\"name\",\"message\"} is understood automatically.", code: "{{endpoint}}?key={{secret}}" },
-      { title: "Test", body: "Send “Hi” from your phone to the business number. A lead appears with the WhatsApp profile name, number and the message as comments." },
+      { title: "Using a BSP instead (Interakt, AiSensy, Gupshup, WATI…)", body: "Set the BSP’s incoming-message webhook to the endpoint and add the header x-api-key. Flat JSON like {\"phone\",\"name\",\"message\"} is understood automatically.", code: "curl -X POST '{{endpoint}}' \\\n  -H 'Content-Type: application/json' \\\n  -H 'x-api-key: {{secret}}' \\\n  -d '{\"phone\":\"9876543210\",\"name\":\"Riya Sen\",\"message\":\"Hi, I need a home test\",\"message_id\":\"wamid.123\"}'" },
+      { title: "Or sign the body", body: "Instead of the key you can send x-signature: sha256=<HMAC-SHA256 of the raw body using the key>." },
+      { title: "Test", body: "Send “Hi” from your phone to the business number. A lead appears with the WhatsApp profile name, number and the message as comments. Calls without the key are refused (401)." },
     ],
     links: [{ label: "WhatsApp Cloud API webhooks", url: "https://developers.facebook.com/docs/whatsapp/cloud-api/guides/set-up-webhooks" }],
+  },
+  facebook_leads: {
+    summary: "Sign in with Facebook and pick your Pages. Every Facebook Lead Ad submission becomes a lead in seconds — no App ID, token or webhook to set up.",
+    steps: [
+      { title: "Click “Connect with Facebook”", body: "Read the consent notice and click “I agree to all & connect” (or tick each purpose and Continue)." },
+      { title: "Sign in on facebook.com", body: "A secure window opens on Facebook. Sign in with your own ID and password — we never see them." },
+      { title: "Keep every box ticked", body: "On Facebook’s screen, choose the Pages (and Business) whose lead forms you use, and leave every permission ticked. Without them leads can’t be read." },
+      { title: "Pick your Pages here", body: "Back in the Connect window, tick the Pages that should send leads → Connect. Recent leads (last 3 days) are fetched at once." },
+      { title: "Test", body: "Open developers.facebook.com/tools/lead-ads-testing → pick the Page and form → Create lead. It appears in Leads within seconds." },
+      { title: "Allow CRM access if Facebook asks", body: "If leads don’t arrive: Meta Business Suite → Settings → Integrations → Leads access → allow CredoOne for the Page." },
+    ],
+    links: [{ label: "Lead Ads Testing Tool", url: "https://developers.facebook.com/tools/lead-ads-testing" }],
+    note: "You need the Advertise or Manage task on the Page. Disconnect at any time — the stored login is deleted immediately.",
+  },
+  instagram_leads: {
+    summary: "Sign in with Facebook and pick your Instagram professional accounts. Lead forms on Instagram ads become leads in seconds.",
+    steps: [
+      { title: "Link Instagram to a Facebook Page", body: "Your Instagram account must be Professional (Business or Creator) and linked to a Facebook Page (Instagram → Settings → Account type and tools; Page → Settings → Linked accounts)." },
+      { title: "Click “Connect with Facebook”", body: "Instagram lead ads are delivered through Facebook, so you sign in with Facebook. Read the consent notice and agree." },
+      { title: "Keep every box ticked", body: "Select the Page and Instagram account on Facebook’s screen and leave every permission ticked." },
+      { title: "Pick your Instagram accounts", body: "Tick the accounts that should send leads → Connect. Leads are tagged source “instagram”." },
+    ],
+    note: "If you also connect Facebook Lead Ads for the same Page, Facebook-placement leads go there and Instagram-placement leads come here.",
+  },
+  linkedin_leads: {
+    summary: "Sign in with LinkedIn and pick your ad accounts or LinkedIn Pages. Lead Gen Form responses become leads automatically.",
+    steps: [
+      { title: "Check your LinkedIn role", body: "You need Account Manager, Campaign Manager or Leads Manager on the ad account (or admin on the LinkedIn Page for Page lead forms)." },
+      { title: "Click “Connect with LinkedIn”", body: "Read the consent notice and agree. Sign in on linkedin.com with your own login and click Allow." },
+      { title: "Pick ad accounts / Pages", body: "Tick the ones that run lead gen forms → Connect. Responses from the last 7 days are fetched at once." },
+      { title: "Done", body: "New responses arrive within minutes (instant where LinkedIn notifications are on, otherwise every 15 minutes). LinkedIn logins last about 60 days — you’ll see “Reconnect” when it’s time." },
+    ],
+  },
+  google_sheets: {
+    summary: "Sign in with Google and pick a sheet — e.g. your Google Form’s response sheet. New rows become leads every 15 minutes.",
+    steps: [
+      { title: "Have a sheet with headings", body: "Row 1 must be headings like Name, Phone, Email, City, Message. Google Forms: Responses → Link to Sheets." },
+      { title: "Click “Connect with Google”", body: "Agree to the consent notice and sign in on accounts.google.com. Read-only access to sheets is requested." },
+      { title: "Paste the sheet link", body: "Paste the docs.google.com/spreadsheets/… link → Check → pick the tab. Choose whether to import rows already there." },
+      { title: "Done", body: "New rows are read every 15 minutes (or click Fetch now). Each row is read once." },
+    ],
+    note: "If Google says “Google hasn’t verified this app”, click Advanced → Go to CredoOne. The platform administrator can remove this by verifying the app with Google.",
   },
   rest_api: {
     summary: "A JSON endpoint for any system — your app, CRM, Zapier/Make, a call-centre tool. Create one connector per sending system so attribution stays clean.",
@@ -52,13 +96,14 @@ export const GUIDES: Record<string, Guide> = {
     mcp: MCP_ALT,
   },
   website_form: {
-    summary: "Point any website or landing-page form at the endpoint — plain HTML, WordPress, Elementor, Webflow, Wix or your own code.",
+    summary: "REST API / webhook: your website, landing page or form plugin POSTs each submission as JSON (or form fields) with your API key.",
     steps: [
-      { title: "Create this connector", body: "Copy the endpoint URL. Browser forms don’t need the key (a hidden honeypot field stops bots)." },
-      { title: "Plain HTML", body: "Use this as your form (keep the hidden _hp field).", code: "<form action=\"{{endpoint}}\" method=\"POST\">\n  <input name=\"name\" required>\n  <input name=\"phone\" required>\n  <input name=\"email\" type=\"email\">\n  <textarea name=\"message\"></textarea>\n  <label><input name=\"consent\" type=\"checkbox\" value=\"yes\"> I agree to be contacted on WhatsApp</label>\n  <input name=\"_hp\" style=\"display:none\" tabindex=\"-1\" autocomplete=\"off\">\n  <button>Submit</button>\n</form>" },
-      { title: "JavaScript (no page reload)", body: "Submit with fetch and show your own thank-you message.", code: "await fetch('{{endpoint}}', {\n  method: 'POST',\n  headers: { 'Content-Type': 'application/json' },\n  body: JSON.stringify({ name, phone, email, message, utm_source, utm_campaign })\n});" },
-      { title: "WordPress / Elementor", body: "Elementor Pro: Form → Actions After Submit → add “Webhook” → paste the endpoint. Contact Form 7: install “CF7 to Webhook” and paste the endpoint." },
-      { title: "UTM tracking", body: "Pass utm_source, utm_medium, utm_campaign (and gclid/fbclid) as hidden fields — they are saved on the lead for attribution." },
+      { title: "Create this connector", body: "Copy the endpoint URL and the API key (the key is shown once)." },
+      { title: "Send a submission (recommended: from your server or form plugin)", body: "POST JSON with the x-api-key header. name, phone, email, message, city and utm_* are mapped automatically.", code: "curl -X POST '{{endpoint}}' \\\n  -H 'Content-Type: application/json' \\\n  -H 'x-api-key: {{secret}}' \\\n  -H 'Idempotency-Key: form-1042' \\\n  -d '{\"name\":\"Riya Sen\",\"phone\":\"9876543210\",\"email\":\"riya@example.com\",\"message\":\"Full body checkup\",\"consent\":\"yes\",\"utm_campaign\":\"puja-camp\"}'" },
+      { title: "WordPress / Elementor / Webflow / Wix", body: "Elementor Pro: Form → Actions After Submit → Webhook. Contact Form 7: “CF7 to Webhook”. Webflow / Wix: Logic or Automations → Send HTTP request. Use the endpoint and add the x-api-key header — or, where headers can’t be set, put the key in the URL.", code: "{{endpoint}}?key={{secret}}" },
+      { title: "From the browser (no page reload)", body: "Works too, but the key is visible in your page source — rotate it if it is misused. Keep the hidden _hp field: filled-in submissions are treated as bots.", code: "await fetch('{{endpoint}}', {\n  method: 'POST',\n  headers: { 'Content-Type': 'application/json', 'x-api-key': '{{secret}}' },\n  body: JSON.stringify({ name, phone, email, message, consent, utm_source, utm_campaign, _hp })\n});" },
+      { title: "Plain HTML form", body: "Put the key in the action URL; after submit, people see your hosted thank-you page.", code: "<form action=\"{{endpoint}}?key={{secret}}\" method=\"POST\">\n  <input name=\"name\" required>\n  <input name=\"phone\" required>\n  <input name=\"email\" type=\"email\">\n  <textarea name=\"message\"></textarea>\n  <label><input name=\"consent\" type=\"checkbox\" value=\"yes\"> I agree to be contacted on WhatsApp</label>\n  <input name=\"_hp\" style=\"display:none\" tabindex=\"-1\" autocomplete=\"off\">\n  <button>Submit</button>\n</form>" },
+      { title: "Read the response", body: "200 = created/merged (with leadId) · 202 = accepted, will retry automatically · 401 = missing or wrong key · 429 = slow down. Send the same Idempotency-Key when you retry." },
     ],
   },
   google_ads: {

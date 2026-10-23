@@ -7,7 +7,7 @@ import { z } from "zod";
 import mongoose, { Types } from "mongoose";
 import * as XLSX from "xlsx";
 import { Lead, Connector, IntakeEvent, Job, Company, User, Webhook, Otp, AiAgent, AiAllocation, CompanyAgent, Role, Plan, AiProvider, AiUsage, Subscription, SubscriptionCycle, SubscriptionPlan, ConnectorKey, AiEndpoint, EndpointKey } from "../../models";
-import { can, requireScope, tenant, invalidateAuth } from "../../middleware/auth";
+import { can, requireScope, tenant, invalidateAuth, permOf } from "../../middleware/auth";
 import { h, parse, notFound, badRequest, forbidden, paging, dateRange, escapeRegex, HttpError } from "../../lib/http";
 import { upsertLead, mapFields, runEvent } from "../../lib/intake";
 import { dispatch, fireEvent } from "../../lib/whatsapp";
@@ -25,6 +25,9 @@ import { mcpSession } from "../../lib/mcp";
 import { runPull, PULL_TYPES, wooBase } from "../../lib/pull";
 import { suppress, fromProspecting } from "../../lib/suppress";
 import { testProspect, runProspectNow, BLOCKED_SITES } from "../../lib/prospect";
+import ssoRoutes from "./sso";
+import { disconnect as ssoDisconnect } from "../../lib/oauth";
+import { isSsoType } from "../../../shared/sso";
 import clientRoutes, { businessBody, applyBusiness, safeLead, assertServices, applyServiceLines, syncPlanLicenses, serviceLinesBody } from "./clients";
 import { linesOf } from "../../../shared/clients";
 import { promoteClients } from "../../lib/clients";
@@ -45,6 +48,7 @@ r.use("/integrations", (req, res, next) => {
 });
 // Vercel caps request bodies at ~4.5 MB; keep uploads under that.
 r.use(clientRoutes); // Client module + service master
+r.use(ssoRoutes); // sign-in connectors (Facebook, Instagram, LinkedIn, Google Sheets)
 
 const upload = ctxUpload(multer({ storage: multer.memoryStorage(), limits: { fileSize: 4 * 1024 * 1024, files: 10 } }));
 const oid = (s: string) => new mongoose.Types.ObjectId(s);
@@ -161,14 +165,14 @@ r.get("/leads", can("leads", "read"), h(async (req, res) => {
   res.json({ items, total, page, limit, counts: Object.fromEntries(counts.map((c: any) => [c._id, c.n])) });
 }));
 
-r.get("/leads/template.:fmt", can("leads", "create"), (req, res) => {
+r.get("/leads/template.:fmt", can("leads:import", "create"), (req, res) => {
   const fmt = req.params.fmt === "csv" ? "csv" : "xlsx";
   res.setHeader("Content-Disposition", `attachment; filename="lead-import-template.${fmt}"`);
   res.setHeader("Content-Type", fmt === "csv" ? "text/csv" : "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
   res.send(leadTemplateBuffer(fmt));
 });
 
-r.get("/leads/export.csv", can("leads", "read"), h(async (req, res) => {
+r.get("/leads/export.csv", can("leads:export", "read"), h(async (req, res) => {
   const rows = await Lead.find(leadQuery(req)).sort({ createdAt: -1 }).limit(5_000).lean(); // larger exports: POST /leads/export (background job)
   const data = rows.map(exportRow);
   res.locals.logRead = true;
@@ -237,7 +241,7 @@ r.put("/leads/:id", can("leads", "update"), h(async (req, res) => {
   res.json({ ...safeLead(lead), ...(moved[0] ? { isClient: true, clientCode: moved[0].clientCode, movedToClients: true } : {}) });
 }));
 
-r.post("/leads/bulk-status", can("leads", "update"), h(async (req, res) => {
+r.post("/leads/bulk-status", can("leads:bulk", "update"), h(async (req, res) => {
   const b = parse(z.object({ ids: z.array(z.string()).min(1).max(500), status: z.enum(LEAD_STATUSES), lostReason: z.enum(LOST_REASONS).optional(), lostReasonOther: z.string().optional() }), req.body);
   if (b.status === LOST_STATUS && !b.lostReason) throw badRequest("Select a lost reason");
   const r2 = await Lead.updateMany(
@@ -314,7 +318,7 @@ r.post("/leads/:id/delete-confirm", can("leads", "delete"), h(async (req, res) =
  * processed in time-boxed slices with a resumable cursor, and the screen polls the progress. Small files usually finish
  * inside the upload request itself (one slice runs straight away).
  */
-r.post("/leads/import", can("leads", "create"), upload.single("file"), h(async (req, res) => {
+r.post("/leads/import", can("leads:import", "create"), upload.single("file"), h(async (req, res) => {
   if (!req.file) throw badRequest("Attach a .xlsx or .csv file");
   if (!/\.(xlsx|csv)$/i.test(req.file.originalname)) throw badRequest("Only .xlsx or .csv (save .xls files as .xlsx)");
   const rows = await parseSheet(req.file.buffer, req.file.originalname).catch((e) => {
@@ -376,7 +380,7 @@ defineJob("leads.import", async (p, st, ctx) => {
 }, { maxAttempts: 5 });
 
 /** Large exports also run as a job: the CSV is written to the company's own database and downloaded from there. */
-r.post("/leads/export", can("leads", "read"), h(async (req, res) => {
+r.post("/leads/export", can("leads:export", "read"), h(async (req, res) => {
   const q = { ...req.query };
   const job: any = await enqueue("leads.export", { query: q, by: req.auth!.email }, { companyId: req.auth!.companyId, createdBy: req.auth!.email });
   await pump({ budgetMs: 8_000, jobId: job._id, sliceMs: 7_500 });
@@ -450,6 +454,9 @@ const serializeConnector = (c: any, req: any) => ({
   endpoint: `${baseUrl(req)}/api/intake/${c.key}`,
   formUrl: c.type === "qr_campaign" ? `${baseUrl(req)}/f/${c.key}` : undefined,
   configSecretEnc: undefined,
+  // sign-in connectors: tokens never leave the server
+  oauth: c.oauth ? { provider: c.oauth.provider, account: c.oauth.account, status: c.oauth.status, error: c.oauth.error, expiresAt: c.oauth.expiresAt, connectedAt: c.oauth.connectedAt, connectedBy: c.oauth.connectedBy, scopes: c.oauth.scopes } : undefined,
+  sso: c.sso ? { ...c.sso, pages: (c.sso.pages || []).map((p: any) => ({ id: p.id, name: p.name, ig: p.ig, subscribed: p.subscribed, error: p.error })) } : undefined,
   platformKeyMasked: c.configSecretEnc ? maskSecret(decrypt(c.configSecretEnc)) : undefined,
   // push platforms (IndiaMART, JustDial, Sulekha) get one self-authenticating URL: …/intake/<key>/<token>
   pushUrlMasked: TOKEN_URL_TYPES.includes(c.type) ? `${baseUrl(req)}/api/intake/${c.key}/${maskSecret(decrypt(c.secretEnc))}` : undefined,
@@ -472,6 +479,7 @@ const connectorBody = z.object({
   secret: z.string().max(500).optional(), // our API key / push token, or Meta page token / Google key / MCP token; generated if blank
   platformKey: z.string().trim().max(500).optional(), // IndiaMART Pull API key / TradeIndia key (encrypted)
   active: z.boolean().optional(),
+  authMode: z.literal("key").optional(), // older website-form / WhatsApp connectors: switch to API-key-only
   config: z.record(z.any()).optional(), // validated per type below
 });
 
@@ -546,14 +554,18 @@ async function connectorConfig(type: string, cfg: any) {
   return undefined;
 }
 const PULL: string[] = [...PULL_TYPES];
+/** REST API / webhook connectors: every delivery carries the API key or an HMAC signature. */
+const REST_TYPES = ["rest_api", "website_form", "whatsapp"];
 
 r.post("/integrations", can("integrations", "create"), h(async (req, res) => {
   const b = parse(connectorBody, req.body);
+  if (isSsoType(b.type)) throw badRequest("Use Connect — this channel is connected by signing in on the platform");
+  if (CONNECTOR_TYPES.find((t) => t.type === b.type)?.hidden) throw badRequest("This setup is retired — use the Facebook or Instagram sign-in connector instead");
   if (b.type === "tradeindia" && !b.platformKey) throw badRequest("Enter your TradeIndia Key (My Inquiry API)");
   const config = await connectorConfig(b.type, b.config);
   if (b.type === "web_prospect") await assertModelAllocated(req, b.config?.aiAgentId);
   const secret = b.secret || (["mcp", "web_prospect"].includes(b.type) ? "" : randomKey(24));
-  const doc = await Connector.create({ ...b, config, secret: undefined, platformKey: undefined, configSecretEnc: b.platformKey ? encrypt(b.platformKey) : undefined, ...tenant(req), key: `${b.type.slice(0, 3)}_${randomKey(10)}`, secretEnc: secret ? encrypt(secret) : undefined, verifyToken: b.type === "meta_leads" ? randomKey(12) : undefined });
+  const doc = await Connector.create({ ...b, config, secret: undefined, platformKey: undefined, configSecretEnc: b.platformKey ? encrypt(b.platformKey) : undefined, ...tenant(req), key: `${b.type.slice(0, 3)}_${randomKey(10)}`, secretEnc: secret ? encrypt(secret) : undefined, verifyToken: b.type === "meta_leads" ? randomKey(12) : undefined, authMode: REST_TYPES.includes(b.type) ? "key" : undefined });
   await ConnectorKey.create({ key: doc.key, companyId: doc.companyId, db: currentDb(), type: doc.type, active: doc.active !== false });
   res.locals.item = doc.name;
   // the full secret is shown once, on creation
@@ -592,6 +604,8 @@ r.post("/integrations/:id/rotate", can("integrations", "update"), h(async (req, 
 }));
 
 r.delete("/integrations/:id", can("integrations", "delete"), h(async (req, res) => {
+  const cur = await Connector.findOne({ _id: req.params.id, ...tenant(req) }).lean<any>();
+  if (cur && isSsoType(cur.type) && cur.oauth?.status !== "revoked") await ssoDisconnect(cur, req.auth!.email); // withdraw consent first: unsubscribe Pages, delete tokens
   const d = await Connector.findOneAndDelete({ _id: req.params.id, ...tenant(req) });
   if (!d) throw notFound();
   await ConnectorKey.deleteOne({ key: d.key });
@@ -626,6 +640,13 @@ r.post("/integrations/:id/run", can("integrations", "update"), h(async (req, res
     res.locals.action = "Run now";
     res.locals.item = c.name;
     return res.json(await runProspectNow(c));
+  }
+  if (isSsoType(c.type)) {
+    if (!(await rateLimit(`pull:${c._id}`, 1, 60))) throw new HttpError(429, "Please wait a minute before fetching again");
+    if (c.oauth?.status === "revoked") throw badRequest("Disconnected — connect again to receive leads");
+    res.locals.action = "Fetch now";
+    res.locals.item = c.name;
+    return res.json(await runPull(c));
   }
   if (!PULL.includes(c.type)) throw badRequest("This connector receives leads by push — nothing to run");
   // IndiaMART allows one Pull call per 5 minutes per key
@@ -667,10 +688,10 @@ r.post("/integrations/events/:eventId/retry", can("integrations", "update"), h(a
 }));
 
 /* ───────────── Users (assigned roles) ───────────── */
-r.get("/users", can("roles", "read"), h(async (req, res) => {
+r.get("/users", can("roles:users", "read"), h(async (req, res) => {
   res.json(await User.find({ companyId: req.auth!.companyId }).select("name email phone roleId isOwner active lastLoginAt").sort({ isOwner: -1, name: 1 }).lean());
 }));
-r.post("/users", can("roles", "create"), h(async (req, res) => {
+r.post("/users", can("roles:users", "create"), h(async (req, res) => {
   const b = parse(z.object({ name: z.string().min(2), email: z.string().email(), phone: z.string().regex(/^\d{10}$/).optional().or(z.literal("")), password: z.string().min(8), roleId: z.string() }), req.body);
   const plan = await Plan.findOne({ name: req.auth!.plan }).lean<any>();
   if (plan?.userLimit && (await User.countDocuments({ companyId: req.auth!.companyId })) >= plan.userLimit) throw new HttpError(402, `Your plan allows ${plan.userLimit} users`);
@@ -686,7 +707,7 @@ r.post("/users", can("roles", "create"), h(async (req, res) => {
   res.locals.item = u.email;
   res.status(201).json({ _id: u._id, name: u.name, email: u.email });
 }));
-r.put("/users/:id", can("roles", "update"), h(async (req, res) => {
+r.put("/users/:id", can("roles:users", "update"), h(async (req, res) => {
   const b = parse(z.object({ name: z.string().optional(), phone: z.string().optional(), roleId: z.string().optional(), active: z.boolean().optional(), password: z.string().min(8).optional() }), req.body);
   const u = await User.findOne({ _id: req.params.id, companyId: req.auth!.companyId });
   if (!u) throw notFound();
@@ -705,7 +726,7 @@ r.put("/users/:id", can("roles", "update"), h(async (req, res) => {
 }));
 
 /* ───────────── WhatsApp → Post (broadcast) ───────────── */
-r.post("/wa-post", can("wa_webhooks", "update"), upload.single("file"), h(async (req, res) => {
+r.post("/wa-post", can("wa_webhooks:post", "create"), upload.single("file"), h(async (req, res) => {
   const body = typeof req.body.data === "string" ? JSON.parse(req.body.data) : req.body;
   const b = parse(z.object({ webhookId: z.string(), message: z.string().min(1).max(4000), leadIds: z.array(z.string()).max(1000).optional(), saveAsLeads: z.boolean().optional() }), body);
   const hook = await Webhook.findOne({ _id: b.webhookId, companyId: req.auth!.companyId, active: true }).lean<any>();
@@ -757,14 +778,15 @@ r.post("/wa-post", can("wa_webhooks", "update"), upload.single("file"), h(async 
 
 /* ───────────── AI Agents (company) ───────────── */
 /** Where this company's files live in S3 (shown on the AI Agent screen). */
-r.get("/storage", can("ai_agents", "read"), h(async (req, res) => {
-  const company = await Company.findById(req.auth!.companyId).select("name s3Folder").lean<any>();
-  const folder = company?.s3Folder || companyFolder(company?.name || "company");
+r.get("/storage", can("ai_agents:models", "read"), h(async (req, res) => {
+  const company = await Company.findById(req.auth!.companyId).select("name code s3Folder s3Enabled").lean<any>();
+  if (company?.s3Enabled === false) return res.json({ enabled: false });
+  const folder = companyFolder(company?.code || "company");
   res.json({ folder, logo: `${folder}/logo`, banner: `${folder}/banner`, brain: `${folder}/brain` });
 }));
 
 /** Models Super Admin allocated to this company (AI Agents › Allocation), with charges, credits and renewal date. */
-r.get("/ai-agents/models", can("ai_agents", "read"), h(async (req, res) => {
+r.get("/ai-agents/models", can("ai_agents:models", "read"), h(async (req, res) => {
   const cid = new Types.ObjectId(req.auth!.companyId!);
   await renewAllocations(new Date(), { companyId: cid }); // apply any renewal that is due before showing credits
   const allocs = await AiAllocation.find({ companyId: cid, allocated: { $ne: false } }).lean<any[]>();
@@ -802,7 +824,7 @@ r.get("/ai-agents/models", can("ai_agents", "read"), h(async (req, res) => {
  * Data tables an AI agent of THIS company can be given (Edit AI agent › Data access), with live record counts.
  * Only the signed-in company's own tables — counted in its own database, filtered by its companyId — never another company's.
  */
-r.get("/ai-agents/data-tables", can("ai_agents", "read"), h(async (req, res) => {
+r.get("/ai-agents/data-tables", can("ai_agents:models", "read"), h(async (req, res) => {
   const cid = req.auth!.companyId!;
   const tables = companyTables(req.auth!);
   const counts = await Promise.all(tables.map((t) => countTable(cid, t.key).catch(() => null)));
@@ -817,7 +839,9 @@ function checkDataAccess(req: any, keys?: string[]) {
   return [...new Set(keys)];
 }
 
+// Endpoint › create picks an agent, so Endpoint access may list agents too.
 r.get("/ai-agents", can("ai_agents", "read"), h(async (req, res) => {
+  if (!permOf(req.auth?.perms, "ai_agents:models")?.read && !permOf(req.auth?.perms, "ai_agents:endpoint")?.read) throw forbidden("No read access to ai_agents › models");
   res.json(await CompanyAgent.find(tenant(req)).populate("agentId", "name llmVersion provider").sort({ createdAt: -1 }).lean());
 }));
 
@@ -854,7 +878,7 @@ async function ingest(companyId: string, files: Express.Multer.File[]) {
   return out;
 }
 
-r.post("/ai-agents", can("ai_agents", "create"), upload.array("files", 10), h(async (req, res) => {
+r.post("/ai-agents", can("ai_agents:models", "create"), upload.array("files", 10), h(async (req, res) => {
   const b = parse(caBody, typeof req.body.data === "string" ? JSON.parse(req.body.data) : req.body);
   if (b.agentId && !(await AiAllocation.exists({ ...tenant(req), agentId: b.agentId, allocated: { $ne: false } }))) throw badRequest("This AI model is not allocated to your company");
   const dataAccess = checkDataAccess(req, b.dataAccess);
@@ -865,7 +889,7 @@ r.post("/ai-agents", can("ai_agents", "create"), upload.array("files", 10), h(as
   res.status(201).json(doc);
 }));
 
-r.put("/ai-agents/:id", can("ai_agents", "update"), upload.array("files", 10), h(async (req, res) => {
+r.put("/ai-agents/:id", can("ai_agents:models", "update"), upload.array("files", 10), h(async (req, res) => {
   const data = typeof req.body.data === "string" ? JSON.parse(req.body.data) : req.body;
   const b = parse(caBody.partial().extend({ removeKeys: z.array(z.string()).optional() }), data);
   const doc = await CompanyAgent.findOne({ _id: req.params.id, ...tenant(req) });
@@ -889,7 +913,7 @@ r.put("/ai-agents/:id", can("ai_agents", "update"), upload.array("files", 10), h
 }));
 
 /** Usage history of one company agent: totals, daily trend, by purpose, and the latest calls (paged). */
-r.get("/ai-agents/:id/usage", can("ai_agents", "read"), h(async (req, res) => {
+r.get("/ai-agents/:id/usage", can("ai_agents:models", "read"), h(async (req, res) => {
   const cid = new Types.ObjectId(req.auth!.companyId!);
   const ca = await CompanyAgent.findOne({ _id: req.params.id, companyId: cid }).populate("agentId", "name llmVersion provider companyRate tokenWeights credits active").lean<any>();
   if (!ca) throw notFound();
@@ -927,7 +951,7 @@ r.get("/ai-agents/:id/usage", can("ai_agents", "read"), h(async (req, res) => {
   });
 }));
 
-r.delete("/ai-agents/:id", can("ai_agents", "delete"), h(async (req, res) => {
+r.delete("/ai-agents/:id", can("ai_agents:models", "delete"), h(async (req, res) => {
   const d = await CompanyAgent.findOneAndDelete({ _id: req.params.id, ...tenant(req) });
   if (!d) throw notFound();
   for (const k of d.knowledge) {
@@ -938,7 +962,7 @@ r.delete("/ai-agents/:id", can("ai_agents", "delete"), h(async (req, res) => {
   res.json({ ok: true });
 }));
 
-r.post("/ai-agents/:id/chat", can("ai_agents", "read"), h(async (req, res) => {
+r.post("/ai-agents/:id/chat", can("ai_agents:models", "read"), h(async (req, res) => {
   const b = parse(z.object({ messages: z.array(z.object({ role: z.enum(["user", "assistant"]), content: z.string().max(8000) })).min(1).max(30) }), req.body);
   const ca = await CompanyAgent.findOne({ _id: req.params.id, ...tenant(req) }).lean<any>();
   if (!ca) throw notFound();
@@ -973,7 +997,7 @@ async function checkEndpointTarget(req: any, b: any) {
 }
 const newEpKey = () => `ep_live_${randomKey(32)}`;
 
-r.get("/ai-endpoints", can("ai_agents", "read"), h(async (req, res) => {
+r.get("/ai-endpoints", can("ai_agents:endpoint", "read"), h(async (req, res) => {
   const list = await AiEndpoint.find(tenant(req)).sort({ createdAt: -1 }).lean<any[]>();
   const [agents, models] = await Promise.all([
     CompanyAgent.find(tenant(req)).select("name agentId").lean<any[]>(),
@@ -982,7 +1006,7 @@ r.get("/ai-endpoints", can("ai_agents", "read"), h(async (req, res) => {
   res.json({ db: currentDb(), items: list.map((e) => ({ ...epOut(e, req), agentName: agents.find((a) => String(a._id) === String(e.companyAgentId))?.name, modelName: models.find((m) => String(m._id) === String(e.agentId))?.name })) });
 }));
 
-r.post("/ai-endpoints", can("ai_agents", "create"), h(async (req, res) => {
+r.post("/ai-endpoints", can("ai_agents:endpoint", "create"), h(async (req, res) => {
   const b = parse(epBody, req.body);
   await checkEndpointTarget(req, b);
   const key = newEpKey();
@@ -992,7 +1016,7 @@ r.post("/ai-endpoints", can("ai_agents", "create"), h(async (req, res) => {
   res.status(201).json({ ...epOut(doc.toObject(), req), key }); // the key is shown once
 }));
 
-r.put("/ai-endpoints/:id", can("ai_agents", "update"), h(async (req, res) => {
+r.put("/ai-endpoints/:id", can("ai_agents:endpoint", "update"), h(async (req, res) => {
   const b = parse(epBody.partial(), req.body);
   const cur = await AiEndpoint.findOne({ _id: req.params.id, ...tenant(req) }).lean<any>();
   if (!cur) throw notFound();
@@ -1003,7 +1027,7 @@ r.put("/ai-endpoints/:id", can("ai_agents", "update"), h(async (req, res) => {
   res.json(epOut(doc, req));
 }));
 
-r.post("/ai-endpoints/:id/rotate", can("ai_agents", "update"), h(async (req, res) => {
+r.post("/ai-endpoints/:id/rotate", can("ai_agents:endpoint", "update"), h(async (req, res) => {
   const ep = await AiEndpoint.findOne({ _id: req.params.id, ...tenant(req) }).lean<any>();
   if (!ep) throw notFound();
   const key = newEpKey();
@@ -1016,7 +1040,7 @@ r.post("/ai-endpoints/:id/rotate", can("ai_agents", "update"), h(async (req, res
   res.json({ key });
 }));
 
-r.delete("/ai-endpoints/:id", can("ai_agents", "delete"), h(async (req, res) => {
+r.delete("/ai-endpoints/:id", can("ai_agents:endpoint", "delete"), h(async (req, res) => {
   const ep = await AiEndpoint.findOneAndDelete({ _id: req.params.id, ...tenant(req) });
   if (!ep) throw notFound();
   await EndpointKey.deleteMany({ endpointId: ep._id });
@@ -1026,7 +1050,7 @@ r.delete("/ai-endpoints/:id", can("ai_agents", "delete"), h(async (req, res) => 
 }));
 
 /** Console test: same engine as the public endpoint, without needing the key. */
-r.post("/ai-endpoints/:id/test", can("ai_agents", "read"), h(async (req, res) => {
+r.post("/ai-endpoints/:id/test", can("ai_agents:endpoint", "read"), h(async (req, res) => {
   const b = parse(z.object({ question: z.string().trim().min(1).max(4000), history: z.array(z.object({ role: z.enum(["user", "assistant"]), content: z.string().max(4000) })).max(20).optional() }), req.body);
   const ep = await AiEndpoint.findOne({ _id: req.params.id, ...tenant(req) }).lean<any>();
   if (!ep) throw notFound();

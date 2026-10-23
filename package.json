@@ -10,9 +10,10 @@
     "typecheck": "tsc --noEmit",
     "lint": "next lint",
     "check:effects": "node scripts/check-effects.mjs",
-    "prebuild": "node scripts/check-events.mjs && node scripts/check-effects.mjs",
+    "prebuild": "node scripts/check-events.mjs && node scripts/check-effects.mjs && node scripts/build-kb.mjs",
     "check:events": "node scripts/check-events.mjs",
-    "perf:check": "node scripts/perf-check.mjs"
+    "perf:check": "node scripts/perf-check.mjs",
+    "kb": "node scripts/build-kb.mjs"
   },
   "engines": {
     "node": ">=20"
@@ -56,6 +57,7 @@
     "@types/three": "^0.169.0",
     "autoprefixer": "^10.4.20",
     "eslint-config-next": "15.5.28",
+    "marked": "^14.1.4",
     "postcss": "8.5.31",
     "tailwindcss": "^3.4.13",
     "typescript": "^5.6.2"

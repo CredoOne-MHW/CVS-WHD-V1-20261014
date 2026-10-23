@@ -1,7 +1,7 @@
 import type { Request, Response, NextFunction } from "express";
 import jwt from "jsonwebtoken";
 import { User, Company, Plan, Role } from "../models";
-import { COMPANY_MODULES, SA_MODULES, fullPerm, noPerm, type Action, type PermMap } from "../../shared/constants";
+import { COMPANY_MODULES, SA_MODULES, fullPerm, noPerm, withSubPerms, companyBase, type Action, type PermMap, type ModuleAccess } from "../../shared/constants";
 import { HttpError, forbidden } from "../lib/http";
 import { setTenantDb } from "../lib/context";
 import { dbOf, migrateCompany } from "../lib/tenantdb";
@@ -23,6 +23,8 @@ export interface AuthCtx {
   companyName?: string;
   plan?: string;
   perms: PermMap;
+  /** Company: modules / sub-modules the Super Admin has paused for this company (shown as “Paused”). */
+  paused?: string[];
   /** AI agents only: the data tables this agent was granted (undefined = every table the user can read). */
   allowedDatasets?: string[];
 }
@@ -73,16 +75,25 @@ function andPerms(a: PermMap, b: PermMap): PermMap {
   return out;
 }
 
-/** Effective company permissions = Plan grid ∧ (Role grid, when the user has a role). */
-export async function companyPerms(planName: string, roleId?: any): Promise<PermMap> {
+/**
+ * What a company may use at most: Plan grid, overridden per module / sub-module by the Super Admin
+ * (Company › Modules: custom CRUD or Paused). Includes sub-module keys. Roles are capped by this.
+ */
+export async function companyCaps(planName: string, access?: ModuleAccess | null) {
   const plan = await cached(`auth:plan:${planName}`, 120, () => Plan.findOne({ name: planName }).lean<any>());
-  const base: PermMap = {};
-  for (const m of COMPANY_MODULES) base[m.key] = plan?.permissions?.[m.key] ?? noPerm();
-  // Billing is read-only for companies and always visible, whatever the plan grid says (roles can still hide it).
-  base.subscription = { create: false, read: true, update: false, delete: false };
-  if (!roleId) return base;
+  const { base, limits, paused } = companyBase(COMPANY_MODULES, plan?.permissions, access);
+  // Billing is read-only for companies and always visible, whatever the plan grid says (roles can still hide it) — unless paused / overridden.
+  if (!access?.subscription) base.subscription = { create: false, read: true, update: false, delete: false };
+  return { base, limits, paused, caps: withSubPerms(COMPANY_MODULES, base, null, limits) };
+}
+
+/** Effective company permissions = company caps (plan + Super Admin overrides) ∧ (Role grid, when the user has a role). */
+export async function companyPerms(planName: string, roleId?: any, access?: ModuleAccess | null): Promise<PermMap> {
+  const { base, limits } = await companyCaps(planName, access);
+  if (!roleId) return withSubPerms(COMPANY_MODULES, base, null, limits);
   const role = await cached(`auth:role:${roleId}`, 120, () => Role.findById(roleId).lean<any>());
-  return role ? andPerms(base, role.permissions || {}) : base;
+  // sub-modules ("clients:invoice"…) inherit the module unless the role sets them
+  return role ? withSubPerms(COMPANY_MODULES, andPerms(base, role.permissions || {}), role.permissions || {}, limits) : withSubPerms(COMPANY_MODULES, base, null, limits);
 }
 
 async function superPerms(roleId?: any): Promise<PermMap> {
@@ -100,7 +111,7 @@ export async function buildContext(p: TokenPayload): Promise<AuthCtx> {
   if (user.scope === "super") {
     return { userId: String(user._id), scope: "super", name: user.name, email: user.email, isOwner: user.isOwner, perms: await superPerms(user.roleId) };
   }
-  const company = await cached(`auth:company:${user.companyId}`, 30, () => Company.findById(user.companyId).select("name plan status deletedAt").lean<any>());
+  const company = await cached(`auth:company:${user.companyId}`, 30, () => Company.findById(user.companyId).select("name plan status deletedAt moduleAccess").lean<any>());
   if (!company || company.deletedAt) throw new HttpError(401, "Company not found");
   if (company.status !== "active" && !p.imp) throw new HttpError(403, "Company account is deactivated. Contact support.");
   // Bind this request to the company's own database (its data is moved there on first use if it predates per-company databases)
@@ -120,7 +131,8 @@ export async function buildContext(p: TokenPayload): Promise<AuthCtx> {
     email: user.email,
     isOwner: user.isOwner,
     impersonatedBy: p.imp,
-    perms: await companyPerms(company.plan, user.isOwner ? undefined : user.roleId),
+    perms: await companyPerms(company.plan, user.isOwner ? undefined : user.roleId, company.moduleAccess),
+    paused: Object.entries(company.moduleAccess || {}).filter(([, v]: any) => v?.mode === "paused").map(([k]) => k),
   };
 }
 
@@ -146,9 +158,11 @@ export const requireScope = (scope: "super" | "company") => (req: Request, _res:
   req.auth?.scope === scope ? next() : next(forbidden());
 
 /** Tags the request with its module (for activity logs) and enforces the CRUD scope. */
+/** Permission of a module or sub-module ("clients:invoice"); a sub-module nobody defined falls back to its module. */
+export const permOf = (perms: PermMap | undefined, key: string) => perms?.[key] ?? (key.includes(":") ? perms?.[key.split(":")[0]] : undefined);
 export const can = (module: string, action: Action) => (req: Request, res: Response, next: NextFunction) => {
-  res.locals.module = module;
-  if (!req.auth?.perms?.[module]?.[action]) return next(forbidden(`No ${action} access to ${module}`));
+  res.locals.module = module.split(":")[0];
+  if (!permOf(req.auth?.perms, module)?.[action]) return next(forbidden(`No ${action} access to ${module.replace(":", " › ")}`));
   next();
 };
 

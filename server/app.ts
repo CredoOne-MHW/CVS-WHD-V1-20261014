@@ -11,6 +11,7 @@ import authRoutes from "./routes/auth";
 import saRoutes from "./routes/sa";
 import coRoutes from "./routes/co";
 import publicRoutes from "./routes/public";
+import oauthRoutes from "./routes/oauth";
 
 /** Strip Mongo operators ($gt, $where…) and prototype keys from untrusted input (NoSQL-injection guard). */
 function sanitize(v: any, depth = 0): any {
@@ -162,6 +163,7 @@ export function createApp() {
   };
   app.use(["/api/intake", "/api/public", "/api/ai/v1"], limit((req) => `ip:${ipOf(req)}`, 300));
 
+  app.use("/api/oauth", limit((req) => `ip:${ipOf(req)}`, 300), oauthRoutes); // platform sign-in + platform webhooks
   app.use("/api", publicRoutes); // intake, hosted forms, cron, branding
   app.use("/api/auth", sameOrigin, authRoutes);
   const perUser = limit((req) => `user:${req.auth!.userId}`, 600);

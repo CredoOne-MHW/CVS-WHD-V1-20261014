@@ -580,3 +580,125 @@ reads p95 5–95 ms, writes p95 34–43 ms. Run the same command against product
 - **Licences stay in sync**: changing No of Licenses on the Lead / Client updates that service's payment details
   (licences and amount) and its **upcoming unpaid dues**; paid and over due dues are never rewritten.
 - Payment Details list shows Licenses and Rate; editing keeps licences read-only (they come from the client).
+
+## 16. Role sub-modules, Sales Order / Invoice / Pay-In, attachments & S3 switch (Oct 2026)
+
+### 16.1 Sub-modules in Role Management
+Every company module can declare `subs` in `shared/constants.ts` (`COMPANY_MODULES`). Role Management lists them **automatically** as indented rows under their module — add a sub-module there and it appears in the grid, the API checks and `/auth/me` on the next deploy.
+
+| Module | Sub-modules (applicable actions) |
+|---|---|
+| Leads | Import (C), Export (R), Bulk status update (U) |
+| Client | Clients (R U), Service Board (R U), Support Tickets (CRUD), Sales Order (CRUD), Invoice (CRUD), Pay-In (R U D) |
+| Report | Report builder (R), AI reports (R), Download Excel/CSV (R) |
+| Role Management | Roles (CRUD), Users (CRUD) |
+| WhatsApp Webhook | Webhooks (CRUD), Post (C) |
+| AI Agent | Models (CRUD), Endpoint (CRUD) |
+
+Rules:
+- Permission keys are `"<module>:<sub>"`, e.g. `clients:invoice`. A colon is used because MongoDB keys can't contain dots.
+- Actions that don't apply to a sub-module show "—" and are always stored as false.
+- A sub-module **follows its module** until a role sets it (the grid shows "follows module" / "reset"). It can never exceed the module or the plan.
+- On the server, `can("clients:invoice", "update")` falls back to `clients` where no sub-key exists (e.g. on Super Admin).
+- Invoice vs Pay-In is checked **per row**: a paid record is Pay-In, anything else is Invoice. Marking an invoice paid needs Invoice › Update.
+- The UI hides tabs and buttons a role can't use: Client tabs, Sales Order/Invoice/Pay-In, Models/Endpoint, Webhooks/Post, DIY/Agentic report, Import/Export and Excel/CSV.
+
+### 16.2 Client billing renamed
+"Payment Details" is now **Sales Order**, "Payment" is now **Invoice** and "Transaction History" is now **Pay-In**. API paths are unchanged (`/clients-plans`, `/clients-payments`).
+
+### 16.3 Invoice → Paid pop-up with attachments
+Choosing **Paid** in an invoice's status dropdown opens a pop-up with these fields:
+- Paid on
+- Payment mode
+- Transaction ID
+- Remarks
+- Attachments: up to 10 files, 8 MB each (PDF, images, Word, Excel)
+
+The pop-up posts to `POST /api/co/clients-payments/:id/pay` as multipart, with a `data` JSON field and `files`.
+
+Files go to `<S3_BASE_PATH>/<Company Code>/<Client Code>/<Attachment Type>/`. The type is set by where the file comes from: `Payment`, `Profile Photo`, `Support Ticket` or `Document` (`ATTACHMENT_TYPES`).
+
+Managing attachments afterwards:
+- The 📎 button opens the list: view, download, and remove or add files (needs update access).
+- Deleting an invoice deletes its files too.
+
+### 16.4 S3 per company (Super Admin)
+**Company › Branding & domain › File storage (S3) › "S3 storage required"** is on by default.
+- **On:** saving creates `<S3_BASE_PATH>/<Company Code>/` with `logo/`, `banner/` and `brain/`.
+- **Off:** nothing is created in S3, and uploads (logo, banner, AI knowledge, attachments) answer *409 — S3 storage is turned off for this company*.
+- **Turning it on later:** saving creates the folder then.
+
+Every company's files live in one folder named by its code. On first start the `s3_layout_v3` migration moves older files there. If S3 is set on, the folder was never created, or the company code changes, a save re-checks and re-lays the folder.
+
+Env: `S3_BUCKET`, `S3_REGION`, `S3_BASE_PATH` (optional prefix), plus AWS credentials.
+
+## 17. Sign-in connectors, Platform Apps, REST webhooks, company Modules, Knowledge Base (Oct 2026)
+
+### 17.1 Platform Apps (Super Admin › Settings › Platform Apps)
+Credovation's **Meta**, **LinkedIn** and **Google** apps are entered once. Companies never see App IDs or secrets.
+- Values are stored in `PlatformSetting` (`app:meta`, `app:linkedin`, `app:google`); secrets are encrypted and never returned.
+- Each card shows the callback URL (`<platform>/api/oauth/<provider>/callback`) and, for Meta and LinkedIn, the webhook URL (`/api/oauth/<provider>/webhook`).
+- **Test** checks the keys with the platform. For Meta it also checks App Domains and subscribes the app's Page `leadgen` webhook automatically.
+- **Privacy contact** (`PlatformSetting compliance`): email, grievance officer, legal name and address.
+  - Default email is `support@credovation.tech`.
+  - Shown on every consent notice and on the public `/privacy`, `/terms` and `/data-deletion` pages (use these URLs in the Meta, Google and LinkedIn app settings).
+- `PLATFORM_URL` (optional) fixes the address used in callbacks. Otherwise it is `https://<base domain>`.
+
+### 17.2 Sign-in (SSO) connectors
+New Integration cards, each a separate connector:
+- **Facebook Lead Ads** and **Instagram Lead Ads** (Meta app)
+- **LinkedIn Lead Gen Forms** (LinkedIn app, Lead Sync API)
+- **Google Sheets / Forms** (Google app, `spreadsheets.readonly`)
+
+Flow (`server/lib/oauth.ts`, `server/routes/oauth.ts`, `server/routes/co/sso.ts`, `src/components/SsoConnect.tsx`):
+1. Consent notice (DPDP Act). Nothing is pre-ticked: **I agree to all & connect**, or tick each purpose and Continue.
+2. Recorded per connector: who, when, IP, user agent, notice version `CONSENT_VERSION` and purposes.
+3. A popup opens on the platform's own login page.
+4. The callback stores the token encrypted in a one-hour `OAuthState`.
+5. The company picks Pages, accounts or a sheet → `POST /api/co/sso/state/:id/finish`.
+
+How leads arrive:
+- **Meta:** Pages are subscribed (`/{page}/subscribed_apps`, leadgen), and Page tokens are stored encrypted per Page. Signed webhooks arrive at `/api/oauth/meta/webhook` and are routed by Page (`SsoRoute`).
+  - When both Facebook and Instagram are connected for a Page, Instagram-placement leads go to the Instagram connector and the rest to Facebook.
+  - When only one is connected, it takes both placements.
+- **LinkedIn:** owner-level `leadNotifications` (best effort), plus a signed webhook at `/api/oauth/linkedin/webhook` (challengeCode validation and X-LI-Signature).
+- **Safety net:** a pull every 15 minutes (the `pull-frequent` cron) for all four types. Google Sheets is pull-only and reads each row once.
+
+Login state:
+- Expired logins mark the connector **Reconnect**.
+- **Disconnect** withdraws consent: tokens are deleted, Pages unsubscribed (unless the other Meta connector still uses them), routes removed, and the withdrawal recorded.
+
+The old App-ID / page-token `meta_leads` type is hidden and can't be created; existing ones keep working.
+
+Test hook: `OAUTH_MOCK_BASE` points every platform call at a stand-in server.
+
+### 17.3 Website / Landing Page Form and WhatsApp = REST API / webhook
+New connectors get `authMode: "key"`. Every call must carry:
+- `x-api-key`, or
+- `?key=` (Meta Cloud API Callback URL, plain HTML forms), or
+- an `x-signature` HMAC.
+
+Otherwise the call gets 401.
+- Website forms keep the `_hp` honeypot and the thank-you redirect.
+- Older connectors keep their previous checks until **Require API key** is clicked on their Setup tab.
+
+### 17.4 Company › Modules (Super Admin)
+A new tab on create/edit company. Each module and sub-module can be:
+- **Plan default** (or **Follows module** for sub-modules)
+- **Custom** — CRUD set explicitly; can restrict or extend the plan
+- **Paused**
+
+How it is applied:
+- Stored in `Company.moduleAccess` and applied in `companyCaps()`/`companyPerms()` in `server/middleware/auth.ts`, for the owner too.
+- Role grids and role saves are capped by it.
+- Paused modules stay in the menu marked **Paused** and show a notice. Their data is kept.
+
+### 17.5 Knowledge Base tabs per deploy
+- Articles live in `content/kb/*.md` (front matter: title, slug, order, summary).
+- `scripts/build-kb.mjs` (run in `prebuild`) compiles them into `shared/kb.generated.json`.
+- Super Admin › Knowledge Base shows one tab per file next to White Label and Company domains, filled with this deployment's URLs (`{{metaCallback}}`, `{{privacyUrl}}` …).
+- To add a tab, add a file. Deep link: `/sa/knowledgebase?tab=<slug>`.
+- The Markdown is kept too (`md` in the generated JSON):
+  - `GET /api/sa/knowledgebase/markdown?tab=<slug>|all[&download=1]` returns it with the live addresses filled in.
+  - The page offers **Download .md**, **Copy Markdown** and **Full guide (.md)**.
+  - It is rebuilt on every deploy, like the tabs.

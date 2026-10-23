@@ -173,7 +173,7 @@ export default function CompanyDashboard() {
   const [busy, setBusy] = useState(false);
   const [sharing, setSharing] = useState(false);
   const toast = useToast();
-  const perm = usePerm("wa_webhooks");
+  const perm = usePerm("wa_webhooks:webhooks");
   const req = useRef(0);
 
   const load = useCallback(

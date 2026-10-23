@@ -41,6 +41,7 @@ function LeadsInner() {
   const [imp, setImp] = useState(false);
   const [busy, setBusy] = useState(false);
   const perm = usePerm("leads");
+  const importPerm = usePerm("leads:import"), exportPerm = usePerm("leads:export");
   const toast = useToast();
   /** "Converted / Service Initiated" moves a lead to the Client module — say so, with a shortcut. */
   const movedToast = (code?: string) => code && toast("ok", `Moved to Clients · Client ID ${code}`);
@@ -87,8 +88,8 @@ function LeadsInner() {
         subtitle="Every enquiry from every channel, de-duplicated by phone and email"
         actions={
           <>
-            <ExportButton query={{ ...f, page: undefined }} />
-            {perm.create && (
+            {exportPerm.read && <ExportButton query={{ ...f, page: undefined }} />}
+            {importPerm.create && (
               <Btn variant="secondary" onClick={() => setImp(true)}>
                 <Upload className="h-4 w-4" /> Import
               </Btn>

@@ -23,8 +23,13 @@ export function RoleManager({ base }: { base: "/sa" | "/co" }) {
   const [tab, setTab] = useState<"roles" | "users">("roles");
   const [del, setDel] = useState(false);
   const [busy, setBusy] = useState(false);
-  const perm = usePerm("roles");
+  const perm = usePerm("roles:roles");
+  const usersPerm = usePerm("roles:users");
   const toast = useToast();
+  const tabs = [perm.read && { key: "roles" as const, label: "Roles" }, usersPerm.read && { key: "users" as const, label: "Users" }].filter(Boolean) as { key: "roles" | "users"; label: string }[];
+  useEffect(() => {
+    if (!isSA && tabs.length && !tabs.some((t) => t.key === tab)) setTab(tabs[0].key);
+  }, [tabs.length, tab, isSA]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     if (isSA)
@@ -72,7 +77,7 @@ export function RoleManager({ base }: { base: "/sa" | "/co" }) {
 
   return (
     <div>
-      {!isSA && <Tabs value={tab} onChange={setTab} tabs={[{ key: "roles", label: "Roles" }, { key: "users", label: "Users" }]} />}
+      {!isSA && tabs.length > 1 && <Tabs value={tab} onChange={setTab} tabs={tabs} />}
       {tab === "users" && !isSA ? (
         <Users roles={data?.roles || []} />
       ) : (
@@ -122,7 +127,7 @@ export function RoleManager({ base }: { base: "/sa" | "/co" }) {
             </div>
           ) : draft ? (
             <>
-              <PermGrid modules={data.modules} caps={data.planCaps} value={draft.permissions || {}} onChange={(p: PermMap) => setDraft({ ...draft, permissions: p })} disabled={!perm.update} />
+              <PermGrid withSubs modules={data.modules} caps={data.planCaps} value={draft.permissions || {}} onChange={(p: PermMap) => setDraft({ ...draft, permissions: p })} disabled={!perm.update} />
               <div className="mt-5 flex flex-wrap items-center justify-between gap-3">
                 <p className="text-sm text-ink-500">
                   {isSA ? "Role templates are offered to every company on this plan." : "Company owners always have full plan access."} Greyed boxes aren’t included in the plan.
@@ -165,7 +170,7 @@ export function RoleManager({ base }: { base: "/sa" | "/co" }) {
 function Users({ roles }: { roles: any[] }) {
   const [list, setList] = useState<any[] | null>(null);
   const [form, setForm] = useState<any>(null);
-  const perm = usePerm("roles");
+  const perm = usePerm("roles:users");
   const toast = useToast();
   const load = () => api("/co/users").then(setList);
   useEffect(() => {

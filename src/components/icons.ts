@@ -38,6 +38,11 @@ import {
   Palette,
   Activity,
   Briefcase,
+  Facebook,
+  Instagram,
+  Linkedin,
+  Sheet,
+  KeyRound,
   type LucideIcon,
 } from "lucide-react";
 
@@ -59,7 +64,12 @@ export const ICONS: Record<string, LucideIcon> = {
   FileSpreadsheet,
   Braces,
   MessageCircle,
-  Facebook: Megaphone, // generic glyph for Meta lead ads
+  Facebook,
+  Instagram,
+  Linkedin,
+  Sheet,
+  KeyRound,
+  Megaphone,
   Search,
   Mail,
   PhoneCall,

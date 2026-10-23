@@ -5,17 +5,20 @@
  * All data lives in the company's own database; every query is tenant-scoped and indexed.
  */
 import { Router, type Request, type Response, type NextFunction } from "express";
+import multer from "multer";
+import { ctxUpload } from "../../lib/context";
+import { putObject, getObject, deleteObject, attachmentFolder } from "../../lib/s3";
 import { z } from "zod";
 import mongoose from "mongoose";
 import { Lead, Company, ServiceType, ClientBoard, SupportTicket, ClientPlan, ClientPayment } from "../../models";
-import { can, tenant } from "../../middleware/auth";
+import { can, tenant, permOf } from "../../middleware/auth";
 import { h, parse, notFound, badRequest, forbidden, paging, escapeRegex, HttpError } from "../../lib/http";
 import { encrypt } from "../../lib/crypto";
 import { fireEvent } from "../../lib/whatsapp";
 import { cached, invalidate } from "../../lib/cache";
 import { getBoard, newColumnId, promoteClients, throttled, notifyClient, refreshBilling, ensureRecurringDues, refreshOverdue, nextSeq, clientPhone } from "../../lib/clients";
 import { normalizePhone } from "../../../shared/constants";
-import { CLIENT_FREQ_KEYS, PAYMENT_MODES, SUPPORT_CATEGORIES, TICKET_STATUS_LIST, GST_RE, PAN_RE, aadhaarValid, maskAadhaar, applyDiscount, clientFreqLabel, round2, linesOf } from "../../../shared/clients";
+import { CLIENT_FREQ_KEYS, PAYMENT_MODES, SUPPORT_CATEGORIES, TICKET_STATUS_LIST, GST_RE, PAN_RE, aadhaarValid, maskAadhaar, applyDiscount, clientFreqLabel, round2, linesOf, ATTACHMENT_MAX_MB, type AttachmentType } from "../../../shared/clients";
 
 const r = Router();
 const oid = (s: any) => new mongoose.Types.ObjectId(String(s));
@@ -169,7 +172,7 @@ r.delete("/service-types/:id", canAny([["leads", "update"], ["clients", "update"
 /* ───────────── Clients: list, picker, profile + journey, edit ───────────── */
 const CLIENT_LIST_FIELDS = "name phone whatsapp email clientCode clientSince serviceStage stageAt services serviceLines source campaign business.gst business.ownerPhone";
 
-r.get("/clients", can("clients", "read"), h(async (req, res) => {
+r.get("/clients", can("clients:clients", "read"), h(async (req, res) => {
   const cid = tenant(req).companyId;
   // catch conversions made by integrations / imports / bulk updates (status changes in the app promote immediately)
   if (throttled(`promote:${cid}`, 30_000)) await promoteClients(cid);
@@ -202,7 +205,7 @@ r.get("/clients/options", canAny([["clients", "read"]]), h(async (req, res) => {
 }));
 
 /** Price for the chosen services from the client's Payment Details (on-demand mapping first, else any). */
-r.get("/clients/price", can("clients", "read"), h(async (req, res) => {
+r.get("/clients/price", can("clients:invoice", "read"), h(async (req, res) => {
   if (!isId(req.query.clientId)) throw badRequest("Pick a client");
   const services = String(req.query.services || "").split(",").map((s) => s.trim()).filter(Boolean);
   const plans = await ClientPlan.find({ ...tenant(req), clientId: req.query.clientId, serviceType: { $in: services }, active: true }).sort({ type: 1, updatedAt: -1 }).lean<any[]>();
@@ -221,7 +224,7 @@ async function loadClient(req: Request) {
 }
 
 /** Profile + full journey: lead history, service-stage moves, payments and support tickets in one timeline. */
-r.get("/clients/:id", can("clients", "read"), h(async (req, res) => {
+r.get("/clients/:id", can("clients:clients", "read"), h(async (req, res) => {
   const c = await loadClient(req);
   const [tickets, payments, plans, board] = await Promise.all([
     SupportTicket.find({ companyId: c.companyId, clientId: c._id }).sort({ createdAt: -1 }).limit(100).lean<any[]>(),
@@ -258,7 +261,7 @@ const clientEdit = z.object({
   business: businessBody.optional(),
   remark: z.string().max(2000).optional(),
 });
-r.put("/clients/:id", can("clients", "update"), h(async (req, res) => {
+r.put("/clients/:id", can("clients:clients", "update"), h(async (req, res) => {
   const b = parse(clientEdit, req.body);
   const c = await loadClient(req);
   const { business, services, serviceLines, remark, ...f } = b;
@@ -276,7 +279,7 @@ r.put("/clients/:id", can("clients", "update"), h(async (req, res) => {
 }));
 
 /* ───────────── Kanban board ───────────── */
-r.get("/clients-board", can("clients", "read"), h(async (req, res) => {
+r.get("/clients-board", can("clients:board", "read"), h(async (req, res) => {
   const cid = tenant(req).companyId;
   if (throttled(`promote:${cid}`, 30_000)) await promoteClients(cid);
   const board = await getBoard(cid);
@@ -307,7 +310,7 @@ const columnsBody = z.object({
     .max(20),
 });
 /** Add / rename / delete / reorder columns. Cards in a deleted column move to the first column. */
-r.put("/clients-board/columns", can("clients", "update"), h(async (req, res) => {
+r.put("/clients-board/columns", can("clients:board", "update"), h(async (req, res) => {
   const { columns } = parse(columnsBody, req.body);
   const cid = tenant(req).companyId;
   const board = await getBoard(cid);
@@ -322,7 +325,7 @@ r.put("/clients-board/columns", can("clients", "update"), h(async (req, res) => 
 }));
 
 /** Drag-drop: move a client to another column. */
-r.patch("/clients/:id/stage", can("clients", "update"), h(async (req, res) => {
+r.patch("/clients/:id/stage", can("clients:board", "update"), h(async (req, res) => {
   const { stage } = parse(z.object({ stage: z.string().max(40) }), req.body);
   const c = await loadClient(req);
   const board = await getBoard(c.companyId);
@@ -351,7 +354,7 @@ export async function notifyTicket(t: any, client: any, event: "support_ticket_c
   return fireEvent("company", String(t.companyId), event, { phone, name: client.name, company: company?.name, message: message.trim(), params: { ticket_no: t.ticketNo, status: t.status, category: t.category, client_id: client.clientCode, note: note || "" } }, by ? "manual" : "auto", by);
 }
 
-r.get("/clients-tickets", can("clients", "read"), h(async (req, res) => {
+r.get("/clients-tickets", can("clients:tickets", "read"), h(async (req, res) => {
   const { page, limit, skip } = paging(req.query);
   const q: any = { ...tenant(req) };
   if (req.query.status) q.status = { $in: String(req.query.status).split(",") };
@@ -377,7 +380,7 @@ export async function createTicket(client: any, category: string, description: s
   return t;
 }
 
-r.post("/clients-tickets", can("clients", "create"), h(async (req, res) => {
+r.post("/clients-tickets", can("clients:tickets", "create"), h(async (req, res) => {
   const b = parse(z.object({ clientId: z.string(), category: z.enum(SUPPORT_CATEGORIES), description: z.string().trim().min(5, "Describe the issue").max(4000) }), req.body);
   if (!isId(b.clientId)) throw badRequest("Pick a client");
   const client = await Lead.findOne({ _id: b.clientId, ...tenant(req), deletedAt: null, isClient: true }).lean<any>();
@@ -388,7 +391,7 @@ r.post("/clients-tickets", can("clients", "create"), h(async (req, res) => {
 }));
 
 /** Status update (with an optional note for the client) → automatic WhatsApp to the client. */
-r.patch("/clients-tickets/:id", can("clients", "update"), h(async (req, res) => {
+r.patch("/clients-tickets/:id", can("clients:tickets", "update"), h(async (req, res) => {
   const b = parse(z.object({ status: z.enum(TICKET_STATUS_LIST), note: z.string().trim().max(500).optional() }), req.body);
   if (!isId(req.params.id)) throw notFound();
   const t = await SupportTicket.findOne({ _id: req.params.id, ...tenant(req) });
@@ -405,7 +408,7 @@ r.patch("/clients-tickets/:id", can("clients", "update"), h(async (req, res) => 
   res.json({ ticket: t, notified: !!n?.sent, reason: n?.sent ? undefined : n?.reason });
 }));
 
-r.delete("/clients-tickets/:id", can("clients", "delete"), h(async (req, res) => {
+r.delete("/clients-tickets/:id", can("clients:tickets", "delete"), h(async (req, res) => {
   if (!isId(req.params.id)) throw notFound();
   const d = await SupportTicket.findOneAndDelete({ _id: req.params.id, ...tenant(req) }).lean<any>();
   if (!d) throw notFound();
@@ -438,7 +441,7 @@ async function clientFor(req: Request, id: string) {
   return c;
 }
 
-r.get("/clients-plans", can("clients", "read"), h(async (req, res) => {
+r.get("/clients-plans", can("clients:sales_order", "read"), h(async (req, res) => {
   const { page, limit, skip } = paging(req.query);
   const q: any = { ...tenant(req) };
   if (req.query.type) q.type = req.query.type;
@@ -460,14 +463,14 @@ function priced(c: any, svc: string, b: { rate?: number; amount?: number }) {
 
 async function createPlan(c: any, b: z.infer<typeof planBody>) {
   const [svc] = await assertServices(c.companyId, [b.serviceType]);
-  if (await ClientPlan.exists({ companyId: c.companyId, clientId: c._id, serviceType: svc, type: b.type, active: { $ne: false } })) throw badRequest(`${c.clientCode} already has ${b.type === "recurring" ? "recurring" : "on-demand"} payment details for “${svc}” — edit those instead`);
+  if (await ClientPlan.exists({ companyId: c.companyId, clientId: c._id, serviceType: svc, type: b.type, active: { $ne: false } })) throw badRequest(`${c.clientCode} already has a ${b.type === "recurring" ? "recurring" : "on-demand"} sales order line for “${svc}” — edit it instead`);
   const startDate = b.type === "recurring" ? b.startDate || new Date() : undefined;
   const plan = await ClientPlan.create({ ...b, ...priced(c, svc, b), serviceType: svc, startDate, companyId: c.companyId, clientId: c._id, clientCode: c.clientCode, clientName: c.name });
   if (plan.type === "recurring") await ensureRecurringDues(c.companyId, [plan._id]);
   return plan;
 }
 
-r.post("/clients-plans", can("clients", "create"), h(async (req, res) => {
+r.post("/clients-plans", can("clients:sales_order", "create"), h(async (req, res) => {
   const b = parse(planBody, req.body);
   const c = await clientFor(req, b.clientId);
   const plan = await createPlan(c, b);
@@ -476,7 +479,7 @@ r.post("/clients-plans", can("clients", "create"), h(async (req, res) => {
 }));
 
 /** Payment details for several of a client's services at once (one row per service / product). */
-r.post("/clients-plans/batch", can("clients", "create"), h(async (req, res) => {
+r.post("/clients-plans/batch", can("clients:sales_order", "create"), h(async (req, res) => {
   const b = parse(z.object({ clientId: z.string(), lines: z.array(z.any()).min(1, "Add at least one service").max(30) }), req.body);
   const c = await clientFor(req, b.clientId);
   const lines = b.lines.map((l, i) => {
@@ -492,7 +495,7 @@ r.post("/clients-plans/batch", can("clients", "create"), h(async (req, res) => {
   res.status(201).json({ created: created.length, items: created });
 }));
 
-r.put("/clients-plans/:id", can("clients", "update"), h(async (req, res) => {
+r.put("/clients-plans/:id", can("clients:sales_order", "update"), h(async (req, res) => {
   if (!isId(req.params.id)) throw notFound();
   const b = parse(planBody, req.body);
   const plan = await ClientPlan.findOne({ _id: req.params.id, ...tenant(req) });
@@ -509,7 +512,7 @@ r.put("/clients-plans/:id", can("clients", "update"), h(async (req, res) => {
   res.json(plan);
 }));
 
-r.delete("/clients-plans/:id", can("clients", "delete"), h(async (req, res) => {
+r.delete("/clients-plans/:id", can("clients:sales_order", "delete"), h(async (req, res) => {
   if (!isId(req.params.id)) throw notFound();
   const d = await ClientPlan.findOneAndDelete({ _id: req.params.id, ...tenant(req) }).lean<any>();
   if (!d) throw notFound();
@@ -522,11 +525,18 @@ r.delete("/clients-plans/:id", can("clients", "delete"), h(async (req, res) => {
 const inr = (n: number) => `₹${(n || 0).toLocaleString("en-IN", { maximumFractionDigits: 2 })}`;
 const fmtD = (d: any) => new Date(d).toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric", timeZone: "Asia/Kolkata" });
 
+/** Invoice (unpaid / over due) and Pay-In (paid) are separate sub-modules in Role Management. */
+function needPay(req: Request, paid: boolean, action: "create" | "read" | "update" | "delete") {
+  const key = paid ? "clients:payin" : "clients:invoice";
+  if (!permOf(req.auth?.perms, key)?.[action]) throw forbidden(`No ${action} access to Client › ${paid ? "Pay-In" : "Invoice"}`);
+}
+
 r.get("/clients-payments", can("clients", "read"), h(async (req, res) => {
   const cid = tenant(req).companyId;
+  const view = String(req.query.view || "recurring");
+  needPay(req, view === "history", "read");
   await refreshBilling(cid);
   const { page, limit, skip } = paging(req.query);
-  const view = String(req.query.view || "recurring");
   const q: any = { companyId: cid };
   if (view === "history") q.status = "paid";
   else {
@@ -560,8 +570,9 @@ const paymentBody = z.object({
   dueDate: z.coerce.date().optional(),
 });
 
-r.post("/clients-payments", can("clients", "create"), h(async (req, res) => {
+r.post("/clients-payments", can("clients", "read"), h(async (req, res) => {
   const b = parse(paymentBody, req.body);
+  needPay(req, b.status === "paid", "create");
   const c = await clientFor(req, b.clientId);
   const services = await assertServices(c.companyId, b.services);
   const dType = b.discountType || "fixed";
@@ -595,10 +606,11 @@ r.post("/clients-payments", can("clients", "create"), h(async (req, res) => {
  * Edit. History (paid) rows: only the status can change (moving it back to Unpaid / Over-Due returns it to the list).
  * Recurring rows: amount/discount/status/mode/txn/remarks — client and service come from Payment Details.
  */
-r.put("/clients-payments/:id", can("clients", "update"), h(async (req, res) => {
+r.put("/clients-payments/:id", can("clients", "read"), h(async (req, res) => {
   if (!isId(req.params.id)) throw notFound();
   const p = await ClientPayment.findOne({ _id: req.params.id, ...tenant(req) });
   if (!p) throw notFound();
+  needPay(req, p.status === "paid", "update");
   if (p.status === "paid") {
     const { status } = parse(z.object({ status: z.enum(["unpaid", "overdue", "paid"]) }), req.body);
     if (status !== "paid") {
@@ -645,10 +657,94 @@ r.put("/clients-payments/:id", can("clients", "update"), h(async (req, res) => {
   res.json(p);
 }));
 
-r.delete("/clients-payments/:id", can("clients", "delete"), h(async (req, res) => {
+/* ───────────── Attachments (S3: <base>/<Company Code>/<Client Code>/<Attachment Type>/) ───────────── */
+const attachUpload = ctxUpload(multer({ storage: multer.memoryStorage(), limits: { fileSize: ATTACHMENT_MAX_MB * 1024 * 1024, files: 10 } }));
+const ATTACH_OK = /\.(pdf|png|jpe?g|webp|heic|docx?|xlsx?|csv|txt)$/i;
+
+/** Uploads files for a client into its folder for the given type (the type comes from where the file is added). */
+async function storeAttachments(companyId: any, clientCode: string, type: AttachmentType, files: Express.Multer.File[], by: string) {
+  if (!files.length) return [];
+  for (const f of files) if (!ATTACH_OK.test(f.originalname)) throw badRequest(`“${f.originalname}”: only PDF, images, Word, Excel, CSV or text files`);
+  const company = await Company.findById(companyId).select("name code s3Folder s3Enabled").lean<any>();
+  if (!process.env.S3_BUCKET) throw new HttpError(503, "File storage isn't configured on this server (S3_BUCKET).");
+  const folder = await attachmentFolder(company, clientCode, type); // refuses when S3 is switched off for the company
+  const out = [];
+  for (const f of files) {
+    const o = await putObject(folder, f.originalname, f.buffer, f.mimetype || "application/octet-stream");
+    out.push({ type, key: o.key, fileName: f.originalname, size: f.size, mime: f.mimetype, at: new Date(), by });
+  }
+  return out;
+}
+
+/**
+ * Invoice › status → Paid: the pop-up sends paid date, mode, transaction ID, remarks and any proof (stored under
+ * …/<Client Code>/Payment/). Also used to add more attachments to an invoice that's already paid.
+ */
+r.post("/clients-payments/:id/pay", can("clients", "read"), attachUpload.array("files", 10), h(async (req, res) => {
   if (!isId(req.params.id)) throw notFound();
+  const data = typeof req.body.data === "string" ? JSON.parse(req.body.data) : req.body;
+  const b = parse(z.object({ paidAt: z.coerce.date().optional(), mode: z.enum(PAYMENT_MODES).optional().or(z.literal("")), txnId: z.string().max(80).optional(), remarks: z.string().max(1000).optional() }), data);
+  const p = await ClientPayment.findOne({ _id: req.params.id, ...tenant(req) });
+  if (!p) throw notFound();
+  needPay(req, p.status === "paid", "update");
+  // files first: if storage refuses, nothing is changed
+  const files = await storeAttachments(p.companyId, p.clientCode, "Payment", (req.files as Express.Multer.File[]) || [], req.auth!.name);
+  const becamePaid = p.status !== "paid";
+  p.status = "paid";
+  if (becamePaid || b.paidAt) p.paidAt = b.paidAt && b.paidAt <= new Date() ? b.paidAt : p.paidAt || new Date();
+  if (b.mode !== undefined) p.mode = b.mode || undefined;
+  if (b.txnId !== undefined) p.txnId = b.txnId || undefined;
+  if (b.remarks !== undefined) p.remarks = b.remarks || undefined;
+  if (files.length) p.attachments = [...(p.attachments || []), ...files];
+  await p.save();
+  if (becamePaid) {
+    if (p.kind === "recurring" && p.planId) await ensureRecurringDues(p.companyId, [p.planId]); // next period appears
+    const cl = await Lead.findOne({ _id: p.clientId, companyId: p.companyId }).select("name whatsapp phone business.ownerPhone clientCode").lean<any>();
+    const on = p.paidAt!.toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric", timeZone: "Asia/Kolkata" });
+    if (cl) notifyClient(p.companyId, "client_payment_received", cl, (co) => `Hi ${cl.name || ""}, we have received your payment of ${inr(p.gross)} to ${co} on ${on}${p.mode ? ` via ${p.mode}` : ""}${p.txnId ? ` (Txn ${p.txnId})` : ""}. Thank you!`, { amount: p.gross, mode: p.mode || "", txn_id: p.txnId || "", paid_on: on });
+  }
+  res.locals.action = becamePaid ? "Mark paid" : "Add attachment";
+  res.locals.item = `${p.clientCode} · ${inr(p.gross)}${files.length ? ` · ${files.length} file(s)` : ""}`;
+  res.json(p);
+}));
+
+/** Download an attachment (bucket stays private — streamed through the API, company-scoped). */
+r.get("/clients-payments/:id/attachments/:aid", can("clients", "read"), h(async (req, res) => {
+  if (!isId(req.params.id)) throw notFound();
+  const p = await ClientPayment.findOne({ _id: req.params.id, ...tenant(req) }).select("attachments status").lean<any>();
+  const a = p?.attachments?.find((x: any) => String(x._id) === req.params.aid);
+  if (!a) throw notFound();
+  needPay(req, p.status === "paid", "read");
+  const o = await getObject(a.key);
+  res.setHeader("Content-Type", a.mime || o.contentType);
+  res.setHeader("Content-Disposition", `${req.query.inline ? "inline" : "attachment"}; filename="${encodeURIComponent(a.fileName)}"`);
+  res.setHeader("Cache-Control", "private, no-store");
+  res.locals.logRead = true;
+  res.locals.action = "Download attachment";
+  res.send(o.body);
+}));
+
+r.delete("/clients-payments/:id/attachments/:aid", can("clients", "read"), h(async (req, res) => {
+  if (!isId(req.params.id)) throw notFound();
+  const p = await ClientPayment.findOne({ _id: req.params.id, ...tenant(req) });
+  const a = p?.attachments?.find((x: any) => String(x._id) === req.params.aid);
+  if (!p || !a) throw notFound();
+  needPay(req, p.status === "paid", "update");
+  await deleteObject(a.key);
+  p.attachments = p.attachments.filter((x: any) => String(x._id) !== req.params.aid);
+  await p.save();
+  res.locals.item = `${p.clientCode} · ${a.fileName}`;
+  res.json({ ok: true });
+}));
+
+r.delete("/clients-payments/:id", can("clients", "read"), h(async (req, res) => {
+  if (!isId(req.params.id)) throw notFound();
+  const cur = await ClientPayment.findOne({ _id: req.params.id, ...tenant(req) }).select("status").lean<any>();
+  if (!cur) throw notFound();
+  needPay(req, cur.status === "paid", "delete");
   const d = await ClientPayment.findOneAndDelete({ _id: req.params.id, ...tenant(req) }).lean<any>();
   if (!d) throw notFound();
+  for (const a of d.attachments || []) await deleteObject(a.key).catch(() => {}); // files go with the invoice
   res.locals.item = `${d.clientCode} · ${inr(d.gross)}`;
   res.json({ ok: true });
 }));
@@ -663,10 +759,11 @@ async function sendPaymentReminder(req: Request, client: any, message: string, p
   return r2;
 }
 
-r.post("/clients-payments/:id/reminder", can("clients", "update"), h(async (req, res) => {
+r.post("/clients-payments/:id/reminder", can("clients", "read"), h(async (req, res) => {
   if (!isId(req.params.id)) throw notFound();
   const p = await ClientPayment.findOne({ _id: req.params.id, ...tenant(req) });
   if (!p) throw notFound();
+  needPay(req, p.status === "paid", "update");
   const client = await Lead.findById(p.clientId).select("name phone whatsapp business.ownerPhone clientCode companyId").lean<any>();
   if (!client) throw notFound("Client not found");
   const message =
@@ -681,7 +778,7 @@ r.post("/clients-payments/:id/reminder", can("clients", "update"), h(async (req,
   res.json({ ok: true, sent: r2.sent });
 }));
 
-r.post("/clients-plans/:id/reminder", can("clients", "update"), h(async (req, res) => {
+r.post("/clients-plans/:id/reminder", can("clients:sales_order", "update"), h(async (req, res) => {
   if (!isId(req.params.id)) throw notFound();
   const plan = await ClientPlan.findOne({ _id: req.params.id, ...tenant(req) });
   if (!plan) throw notFound();

@@ -89,7 +89,12 @@ const CompanySchema = new Schema(
     slug: { type: String, lowercase: true, trim: true, unique: true, sparse: true }, // "short name" — from the company name
     slugAliases: { type: [String], default: undefined, index: true }, // earlier short names: old <slug>.<base> links keep working
     customDomain: { type: String, lowercase: true, trim: true, unique: true, sparse: true },
-    s3Folder: String, // "<Company-Name>" — fixed at creation; logo/, banner/, brain/ live under it
+    s3Folder: String, // "<base>/<Company Code>" — logo/, banner/, brain/, <Client Code>/<Attachment Type>/ live under it
+    s3Enabled: { type: Boolean, default: true }, // Super Admin › "S3 storage required"; off = no S3 folder, uploads refused
+    // Super Admin › Company › Modules: per-company override of the plan, per module or sub-module ("clients:invoice").
+    // { [key]: { mode: "custom", perm: {create,read,update,delete} } | { mode: "paused" } } — absent = follow the plan
+    moduleAccess: { type: Mixed, default: {} },
+    s3CreatedAt: Date, // when the S3 folder tree was created
     dbName: String, // the company's own MongoDB database (= company code at creation; never changes)
     dbReadyAt: Date, // set once the database exists and the company's data lives there
     branding: {
@@ -252,12 +257,21 @@ const ConnectorSchema = new Schema(
     key: { type: String, required: true, unique: true }, // public id used in the intake URL
     secretEnc: String, // HMAC / API key (encrypted)
     verifyToken: String, // Meta verify token
+    // "key": REST API / webhook — every call must carry the API key (x-api-key, ?key=) or an HMAC signature.
+    // Website-form and WhatsApp connectors created before this existed have no value and keep their older checks.
+    authMode: String,
     defaultSource: String,
     defaultCampaign: String,
     defaultMedium: String,
     fieldMap: { type: Mixed, default: {} }, // { name: "full_name", phone: "data.mobile" }
     config: { type: Mixed, default: {} }, // non-secret settings (Google Search keywords, MCP server URL / tool …)
     configSecretEnc: String, // encrypted JSON of secrets (search API key, MCP bearer token …)
+    // Sign-in (SSO) connectors — Facebook, Instagram, LinkedIn, Google Sheets. Tokens are encrypted; never returned to the browser.
+    // { provider, account: {id,name}, tokenEnc, refreshEnc, expiresAt, scopes, status, error, connectedAt, connectedBy }
+    oauth: Mixed,
+    // What the company picked after signing in: { pages:[{id,name,tokenEnc,ig?}], adAccounts:[{id,name}], organizations:[{id,name}], sheet:{id,title,tab,row} }
+    sso: Mixed,
+    consent: Mixed, // DPDP Act consent: { version, purposes, all, by, at, ip, withdrawnAt }
     lastRunAt: Date, // pull connectors (Google Search, MCP): last scheduled / manual run
     lastRun: Mixed, // { ok, found, created, duplicates, error }
     pullCursor: Date, // IndiaMART / TradeIndia: end of the last successfully pulled window
@@ -381,6 +395,8 @@ const ClientPaymentSchema = new Schema(
     txnId: String,
     remarks: String,
     lastReminderAt: Date,
+    // proof of payment etc. — S3: <base>/<Company Code>/<Client Code>/Payment/<file>
+    attachments: { type: [{ type: { type: String }, key: String, fileName: String, size: Number, mime: String, at: { type: Date, default: Date.now }, by: String }], default: undefined },
   },
   ts
 );
@@ -708,6 +724,48 @@ export const AiEndpoint = tm<any>("AiEndpoint", AiEndpointSchema);
 /** Small key → value documents, e.g. "platform_branding" (Super Admin › Settings › Platform branding). */
 const PlatformSettingSchema = new Schema({ _id: String, value: { type: Mixed, default: {} } }, { timestamps: true });
 export const PlatformSetting = m<any>("PlatformSetting", PlatformSettingSchema);
+
+/** One sign-in attempt (Connect → platform login → callback). Short-lived; the token waits here until the company picks pages/accounts. */
+const OAuthStateSchema = new Schema(
+  {
+    _id: String, // random state value sent to the platform
+    provider: { type: String, required: true },
+    type: { type: String, required: true }, // connector type
+    companyId: ObjectId,
+    db: String, // company database
+    userId: ObjectId,
+    userName: String,
+    connectorId: ObjectId, // reconnecting an existing connector
+    consent: Mixed,
+    returnOrigin: String,
+    status: { type: String, enum: ["pending", "authorized", "failed", "used"], default: "pending" },
+    error: String,
+    tokenEnc: String,
+    refreshEnc: String,
+    expiresAt: Date,
+    scopes: [String],
+    account: Mixed, // { id, name }
+    createdAt: { type: Date, default: Date.now, expires: 3600 }, // removed after an hour
+  },
+  { versionKey: false }
+);
+export const OAuthState = m<any>("OAuthState", OAuthStateSchema);
+
+/** Platform webhook routing: a Facebook Page / LinkedIn ad account → the company connector that receives its leads. */
+const SsoRouteSchema = new Schema(
+  {
+    provider: { type: String, required: true }, // meta | linkedin
+    externalId: { type: String, required: true }, // Page id · urn:li:sponsoredAccount:… · urn:li:organization:…
+    companyId: ObjectId,
+    db: String,
+    connectorKey: String,
+    type: String, // connector type (facebook_leads / instagram_leads / linkedin_leads)
+  },
+  ts
+);
+SsoRouteSchema.index({ provider: 1, externalId: 1 });
+SsoRouteSchema.index({ connectorKey: 1 });
+export const SsoRoute = m<any>("SsoRoute", SsoRouteSchema);
 
 /* ───────────── Reliability & performance (main database) ───────────── */
 

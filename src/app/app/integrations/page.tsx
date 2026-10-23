@@ -9,6 +9,8 @@ import { api, fmtDate } from "@/lib/api";
 import { PageHeader, Btn, Modal, Field, Badge, Spinner, Confirm, JsonView, useToast } from "@/components/ui";
 import { usePerm } from "@/components/Shell";
 import { Tabs } from "@/components/Logs";
+import { SsoConnect } from "@/components/SsoConnect";
+import { isSsoType, SSO_INFO, type SsoType } from "@shared/sso";
 
 function Copy({ text }: { text: string }) {
   const [ok, setOk] = useState(false);
@@ -56,9 +58,9 @@ function CopyRow({ label, value }: { label: string; value?: string }) {
 }
 
 const HELP: Record<string, string> = {
-  website_form: "Point your form's action (or fetch POST) at the endpoint. Fields like name, phone, email, message and utm_* are mapped automatically. Add a hidden empty input named _hp as a bot trap.",
+  website_form: "REST API / webhook: POST each submission (JSON or form fields) to the endpoint with the x-api-key header or ?key=. name, phone, email, message and utm_* map automatically; keep the hidden _hp field as a bot trap.",
   rest_api: "POST JSON with header x-api-key. Send an Idempotency-Key header to make retries safe. Create one connector per system so attribution stays clean.",
-  whatsapp: "Set the endpoint as the Callback URL in Meta → WhatsApp → Configuration and use the secret as Verify token. Every inbound chat becomes (or updates) a lead.",
+  whatsapp: "REST API / webhook: Meta Cloud API → Callback URL = endpoint?key=<API key>, Verify token = the API key. BSPs send the x-api-key header. Every inbound chat becomes (or updates) a lead.",
   meta_leads: "Meta App → Webhooks → Page → leadgen. Callback = endpoint, Verify token = the token below. Paste a Page access token as the secret so lead details can be fetched.",
   google_ads: "Google Ads → Lead form asset → Webhook integration. Webhook URL = endpoint, Key = the secret.",
   email: "In SendGrid Inbound Parse / Mailgun Routes / Postmark inbound, forward to the endpoint with ?key=<secret>. Sender, subject and body become the lead.",
@@ -82,11 +84,14 @@ export default function Integrations() {
   const [guide, setGuide] = useState<{ type: string; label: string; c?: any } | null>(null);
   const [open, setOpen] = useState<any>(null);
   const [busy, setBusy] = useState(false);
+  const [providers, setProviders] = useState<any>(null);
+  const [sso, setSso] = useState<{ type: SsoType; label: string; connectorId?: string } | null>(null);
   const perm = usePerm("integrations");
   const toast = useToast();
   const load = () => api("/co/integrations").then(setData);
   useEffect(() => {
     load();
+    api("/co/sso/providers").then(setProviders).catch(() => setProviders({ enabled: {} }));
   }, []);
 
   if (!data)
@@ -103,7 +108,10 @@ export default function Integrations() {
         {data.types.map((t: any) => {
           const Icon = icon(t.icon);
           const mine = data.connectors.filter((c: any) => c.type === t.type);
+          if (t.hidden && !mine.length) return null; // retired setups show only while old connectors exist
           const local = t.inbound === "manual" || t.inbound === "upload";
+          const isSso = t.inbound === "sso";
+          const enabled = !isSso || !!providers?.enabled?.[t.provider];
           return (
             <div key={t.type} className="card flex flex-col p-5">
               <div className="flex items-start gap-3">
@@ -114,7 +122,19 @@ export default function Integrations() {
                   <h3 className="font-bold">{t.label}</h3>
                   <p className="mt-0.5 text-sm text-ink-500">{t.description}</p>
                 </div>
-                {local ? <Badge color="green">Built-in</Badge> : mine.length ? <Badge color="green">{mine.length} connected</Badge> : <Badge>Not connected</Badge>}
+                {local ? (
+                  <Badge color="green">Built-in</Badge>
+                ) : mine.length ? (
+                  (() => {
+                    const live = mine.filter((c: any) => !c.oauth || c.oauth.status === "connected").length;
+                    const expired = mine.some((c: any) => c.oauth?.status === "expired");
+                    return <Badge color={expired ? "red" : live ? "green" : "gray"}>{expired ? "Reconnect needed" : live ? `${live} connected` : "Disconnected"}</Badge>;
+                  })()
+                ) : isSso && providers && !enabled ? (
+                  <Badge color="honey">Not enabled yet</Badge>
+                ) : (
+                  <Badge>Not connected</Badge>
+                )}
               </div>
               {mine.length > 0 && (
                 <ul className="mt-4 space-y-2">
@@ -124,6 +144,7 @@ export default function Integrations() {
                         <span className="min-w-0">
                           <span className="block truncate text-sm font-semibold">{c.name}</span>
                           <span className="text-xs text-ink-500">
+                            {c.oauth?.status === "revoked" ? "Disconnected · " : c.oauth?.status === "expired" ? "Login expired · " : ""}
                             {c.stats?.created || 0} new · {c.stats?.duplicates || 0} merged · {c.stats?.lastAt ? fmtDate(c.stats.lastAt) : "no data yet"}
                           </span>
                         </span>
@@ -142,11 +163,19 @@ export default function Integrations() {
                     <BookOpen className="h-4 w-4" /> Step-by-step setup guide
                   </button>
                 )}
+                {isSso && providers && !enabled && <p className="text-center text-xs text-ink-500">Your platform administrator switches this on in Super Admin › Platform Apps.</p>}
                 {local ? (
                   <Link href="/app/leads" className="btn-secondary w-full">
                     {t.inbound === "upload" ? "Import from Leads" : "Add from Leads"}
                   </Link>
-                ) : (
+                ) : isSso ? (
+                  perm.create &&
+                  enabled && (
+                    <Btn variant={mine.length ? "secondary" : "primary"} className="w-full" onClick={() => setSso({ type: t.type, label: t.label })}>
+                      <Icon className="h-4 w-4" /> {mine.length ? "Connect another" : `Connect with ${SSO_INFO[t.type as SsoType].provider === "google" ? "Google" : SSO_INFO[t.type as SsoType].provider === "linkedin" ? "LinkedIn" : "Facebook"}`}
+                    </Btn>
+                  )
+                ) : t.hidden ? null : (
                   perm.create && (
                     <Btn variant="secondary" className="w-full" onClick={() => setCreate({ type: t.type, name: mine.length ? `${t.label} ${mine.length + 1}` : t.label, defaultCampaign: "", defaultMedium: "", defaultSource: "", secret: "", platformKey: "", config: blankCfg(t.type) })}>
                       <Plus className="h-4 w-4" /> {mine.length ? "Add another" : "Connect"}
@@ -262,7 +291,11 @@ export default function Integrations() {
         )}
       </Modal>
 
-      <ConnectorDrawer c={open} onClose={() => setOpen(null)} onChanged={load} />
+      <ConnectorDrawer c={open} onClose={() => setOpen(null)} onChanged={load} onReconnect={(c: any) => {
+        setOpen(null);
+        setSso({ type: c.type, label: data.types.find((t: any) => t.type === c.type)?.label || c.name, connectorId: c._id });
+      }} />
+      <SsoConnect type={sso?.type || null} label={sso?.label || ""} connectorId={sso?.connectorId} providers={providers} onClose={() => setSso(null)} onDone={load} />
 
       <Modal open={!!guide} onClose={() => setGuide(null)} title={`Setup guide · ${guide?.label || ""}`} size="lg">
         {guide && (
@@ -278,7 +311,7 @@ export default function Integrations() {
   );
 }
 
-function ConnectorDrawer({ c, onClose, onChanged }: { c: any; onClose: () => void; onChanged: () => void }) {
+function ConnectorDrawer({ c, onClose, onChanged, onReconnect }: { c: any; onClose: () => void; onChanged: () => void; onReconnect: (c: any) => void }) {
   const [tab, setTab] = useState<"setup" | "settings" | "mapping" | "deliveries">("setup");
   const [pushUrl, setPushUrl] = useState<string | undefined>();
   const [platformKey, setPlatformKey] = useState("");
@@ -328,6 +361,7 @@ function ConnectorDrawer({ c, onClose, onChanged }: { c: any; onClose: () => voi
         ]}
       />
       {tab === "setup" && c.type === "web_prospect" && <ProspectPanel c={c} onChanged={onChanged} />}
+      {tab === "setup" && isSsoType(c.type) && <SsoPanel c={c} onChanged={onChanged} onClose={onClose} onReconnect={() => onReconnect(c)} onDelete={() => setDel(true)} />}
       {tab === "setup" && HAS_PULL.includes(c.type) && c.type !== "web_prospect" && (
         <div className="mb-4 space-y-4">
           <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-ink-400/15 p-4">
@@ -400,7 +434,7 @@ function ConnectorDrawer({ c, onClose, onChanged }: { c: any; onClose: () => voi
           )}
         </div>
       )}
-      {tab === "setup" && !PULL_ONLY.includes(c.type) && (
+      {tab === "setup" && !PULL_ONLY.includes(c.type) && !isSsoType(c.type) && (
         <div className="space-y-4">
           {PUSH_PLATFORMS.includes(c.type) ? (
             pushUrl ? (
@@ -422,6 +456,24 @@ function ConnectorDrawer({ c, onClose, onChanged }: { c: any; onClose: () => voi
             <CopyRow label="Secret / API key" value={c.secretMasked} />
           )}
           <CopyRow label="Meta verify token" value={c.verifyToken} />
+          {["website_form", "whatsapp"].includes(c.type) && c.authMode !== "key" && (
+            <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">
+              <p className="min-w-0 flex-1">Older setup: this connector still accepts {c.type === "whatsapp" ? "Meta deliveries" : "browser posts"} without the API key. Update your {c.type === "whatsapp" ? "Callback URL" : "form"} as in the steps below, then require the key.</p>
+              {perm.update && (
+                <Btn
+                  variant="secondary"
+                  onClick={async () => {
+                    await api(`/co/integrations/${c._id}`, { method: "PUT", body: { authMode: "key" } });
+                    toast("ok", "API key now required on every call");
+                    onChanged();
+                    onClose();
+                  }}
+                >
+                  Require API key
+                </Btn>
+              )}
+            </div>
+          )}
           {c.formUrl && (
             <div className="flex flex-wrap items-center gap-4 rounded-2xl border border-ink-400/15 p-4">
               <Qr text={c.formUrl} />
@@ -561,7 +613,7 @@ function ConnectorDrawer({ c, onClose, onChanged }: { c: any; onClose: () => voi
         open={del}
         danger
         title="Delete connector?"
-        body="The endpoint stops accepting leads immediately. Existing leads keep their attribution."
+        body={isSsoType(c.type) ? "Consent is withdrawn and the login deleted, then the connector is removed. Existing leads keep their attribution." : "The endpoint stops accepting leads immediately. Existing leads keep their attribution."}
         confirmLabel="Delete"
         onClose={() => setDel(false)}
         onConfirm={async () => {
@@ -726,6 +778,160 @@ function ProspectPanel({ c, onChanged }: { c: any; onChanged: () => void }) {
           </div>
         )}
       </Modal>
+    </div>
+  );
+}
+
+/* ───────────── Sign-in connectors (Facebook, Instagram, LinkedIn, Google Sheets) ───────────── */
+function SsoPanel({ c, onChanged, onClose, onReconnect, onDelete }: { c: any; onChanged: () => void; onClose: () => void; onReconnect: () => void; onDelete: () => void }) {
+  const perm = usePerm("integrations");
+  const toast = useToast();
+  const [running, setRunning] = useState(false);
+  const [lastRun, setLastRun] = useState<any>(c.lastRun ? { ...c.lastRun, at: c.lastRunAt } : null);
+  const [disc, setDisc] = useState(false);
+  const status = c.oauth?.status || "connected";
+  const o = c.sso || {};
+  const info = SSO_INFO[c.type as SsoType];
+  const rows: { name: string; detail: string; ok: boolean }[] =
+    c.type === "google_sheets"
+      ? o.sheet
+        ? [{ name: o.sheet.title, detail: `Tab “${o.sheet.tab}” · next row read: ${o.sheet.row + 1}`, ok: true }]
+        : []
+      : c.type === "linkedin_leads"
+        ? [...(o.adAccounts || []).map((a: any) => ({ name: a.name, detail: `Ad account · ${o.notifications?.[a.id] === "subscribed" ? "instant notifications on" : "fetched every 15 minutes"}`, ok: true })), ...(o.organizations || []).map((a: any) => ({ name: a.name, detail: "LinkedIn Page", ok: true }))]
+        : (o.pages || []).map((p: any) => ({ name: c.type === "instagram_leads" && p.ig ? `@${p.ig.username} (${p.name})` : p.name, detail: p.subscribed ? "Real-time lead webhook on" : `Real-time off${p.error ? ` (${p.error})` : ""} — fetched every 15 minutes`, ok: !!p.subscribed }));
+
+  return (
+    <div className="space-y-4">
+      <div className={`flex flex-wrap items-start justify-between gap-3 rounded-2xl border p-4 ${status === "connected" ? "border-hive-200 bg-hive-50/50" : status === "expired" ? "border-red-200 bg-red-50" : "border-ink-400/20 bg-[#f7f8f6]"}`}>
+        <div className="min-w-0">
+          <p className="text-sm font-bold">
+            {status === "connected" ? `Connected to ${info.platform}` : status === "expired" ? "Login expired — reconnect to keep receiving leads" : "Disconnected — consent withdrawn"}
+          </p>
+          <p className="text-xs text-ink-500">
+            {c.oauth?.account?.name ? `Signed in as ${c.oauth.account.name}` : ""}
+            {c.oauth?.connectedAt ? ` · ${fmtDate(c.oauth.connectedAt)}` : ""}
+            {c.oauth?.connectedBy ? ` by ${c.oauth.connectedBy}` : ""}
+          </p>
+          {c.oauth?.error && <p className="mt-1 text-xs text-red-700">{c.oauth.error}</p>}
+        </div>
+        {perm.update && status !== "connected" && (
+          <Btn onClick={onReconnect}>
+            <KeyRound className="h-4 w-4" /> Reconnect
+          </Btn>
+        )}
+      </div>
+
+      {rows.length > 0 && (
+        <div className="rounded-2xl border border-ink-400/15 p-4">
+          <p className="mb-2 text-sm font-bold">Connected {info.pick}</p>
+          <ul className="space-y-1.5">
+            {rows.map((r, i) => (
+              <li key={i} className="flex items-start gap-2 text-sm">
+                <span className={`mt-1.5 h-2 w-2 shrink-0 rounded-full ${r.ok ? "bg-hive-500" : "bg-amber-500"}`} />
+                <span>
+                  <b>{r.name}</b> <span className="text-ink-500">· {r.detail}</span>
+                </span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      {status !== "revoked" && (
+        <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-ink-400/15 p-4">
+          <div>
+            <p className="text-sm font-semibold">{c.type === "google_sheets" ? "New rows are read every 15 minutes" : "Leads arrive instantly; a check every 15 minutes catches anything missed"}</p>
+            <p className="text-xs text-ink-500">
+              {lastRun?.at ? `Last fetch ${fmtDate(lastRun.at)}` : "Not fetched yet"}
+              {lastRun && (lastRun.ok === false ? ` · failed: ${lastRun.error}` : ` · ${lastRun.found ?? 0} found · ${lastRun.created ?? 0} new lead(s) · ${lastRun.duplicates ?? 0} already in Leads`)}
+            </p>
+            {lastRun?.note && <p className="mt-1 text-xs text-amber-800">{lastRun.note}</p>}
+          </div>
+          {perm.update && (
+            <Btn
+              loading={running}
+              onClick={async () => {
+                setRunning(true);
+                try {
+                  const r = await api(`/co/integrations/${c._id}/run`, { method: "POST" });
+                  setLastRun({ ...r, at: new Date().toISOString() });
+                  toast(r.ok === false ? "err" : "ok", r.ok === false ? r.error || "Fetch failed" : `${r.found ?? 0} found · ${r.created ?? 0} new lead(s)`);
+                  onChanged();
+                } catch (e: any) {
+                  toast("err", e.message);
+                } finally {
+                  setRunning(false);
+                }
+              }}
+            >
+              <Play className="h-4 w-4" /> Fetch now
+            </Btn>
+          )}
+        </div>
+      )}
+
+      {c.consent && (
+        <div className="rounded-2xl border border-ink-400/15 p-4 text-[13px] text-ink-700">
+          <p className="mb-1 font-bold text-ink-900">✓ Consent recorded (DPDP Act)</p>
+          <p>
+            {c.consent.by} · {fmtDate(c.consent.at)} · notice {c.consent.version} · IP {c.consent.ip || "—"}
+            {c.consent.all ? " · “I agree to all”" : ""}
+          </p>
+          <p className="text-ink-500">Purposes: {info.purposes.filter((p) => (c.consent.purposes || []).includes(p.key)).map((p) => p.label).join(" · ")}</p>
+          {c.consent.withdrawnAt && (
+            <p className="mt-1 font-semibold text-red-700">
+              Withdrawn {fmtDate(c.consent.withdrawnAt)}
+              {c.consent.withdrawnBy ? ` by ${c.consent.withdrawnBy}` : ""} — login deleted
+            </p>
+          )}
+        </div>
+      )}
+
+      <div className="flex flex-wrap gap-2 border-t border-ink-400/10 pt-4">
+        {perm.update && status === "connected" && (
+          <Btn variant="secondary" onClick={onReconnect}>
+            <KeyRound className="h-4 w-4" /> Reconnect / change {c.type === "google_sheets" ? "sheet" : "selection"}
+          </Btn>
+        )}
+        {perm.update && status !== "revoked" && (
+          <Btn
+            variant="secondary"
+            onClick={async () => {
+              await api(`/co/integrations/${c._id}`, { method: "PUT", body: { active: !c.active } });
+              onChanged();
+              onClose();
+            }}
+          >
+            <Power className="h-4 w-4" /> {c.active ? "Pause" : "Resume"}
+          </Btn>
+        )}
+        {perm.update && status !== "revoked" && (
+          <Btn variant="secondary" className="text-red-600" onClick={() => setDisc(true)}>
+            <EyeOff className="h-4 w-4" /> Disconnect
+          </Btn>
+        )}
+        {perm.delete && (
+          <Btn variant="secondary" className="ml-auto text-red-600" onClick={onDelete}>
+            <Trash2 className="h-4 w-4" /> Delete
+          </Btn>
+        )}
+      </div>
+      <Confirm
+        open={disc}
+        danger
+        title={`Disconnect ${info.platform}?`}
+        body="This withdraws consent: the stored login is deleted at once and no more leads are received. Leads already received stay. You can connect again any time."
+        confirmLabel="Disconnect"
+        onClose={() => setDisc(false)}
+        onConfirm={async () => {
+          await api(`/co/integrations/${c._id}/disconnect`, { method: "POST" });
+          toast("ok", "Disconnected — login deleted");
+          setDisc(false);
+          onChanged();
+          onClose();
+        }}
+      />
     </div>
   );
 }

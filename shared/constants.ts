@@ -12,25 +12,81 @@ export type Action = (typeof ACTIONS)[number];
 export type Perm = Record<Action, boolean>;
 export type PermMap = Record<string, Perm>;
 
+/**
+ * A part of a module (a tab or a distinct action) that roles can allow separately. Its permission key is
+ * "<module>:<sub>" (a colon: MongoDB keys can’t hold dots) (e.g. "clients:invoice"). Only the listed actions apply; a role that doesn't set a sub-module
+ * inherits the module's own permission — so adding a sub-module here never takes access away from existing roles.
+ */
+export interface SubModuleDef {
+  key: string;
+  label: string;
+  actions: Action[];
+}
 export interface ModuleDef {
   key: string;
   label: string;
   group: "Main" | "Settings";
   path: string; // UI route under /app
   icon: string; // lucide icon name
+  subs?: SubModuleDef[]; // listed automatically in Role Management
 }
+
+
+const CRUD: Action[] = ["create", "read", "update", "delete"];
 
 export const COMPANY_MODULES: ModuleDef[] = [
   { key: "dashboard", label: "Dashboard", group: "Main", path: "/app", icon: "LayoutDashboard" },
-  { key: "leads", label: "Leads", group: "Main", path: "/app/leads", icon: "Users" },
-  { key: "clients", label: "Client", group: "Main", path: "/app/clients", icon: "Briefcase" },
+  {
+    key: "leads", label: "Leads", group: "Main", path: "/app/leads", icon: "Users",
+    subs: [
+      { key: "import", label: "Import (Excel / CSV)", actions: ["create"] },
+      { key: "export", label: "Export", actions: ["read"] },
+      { key: "bulk", label: "Bulk status update", actions: ["update"] },
+    ],
+  },
+  {
+    key: "clients", label: "Client", group: "Main", path: "/app/clients", icon: "Briefcase",
+    subs: [
+      { key: "clients", label: "Clients", actions: ["read", "update"] },
+      { key: "board", label: "Service Board", actions: ["read", "update"] },
+      { key: "tickets", label: "Support Tickets", actions: CRUD },
+      { key: "sales_order", label: "Sales Order", actions: CRUD },
+      { key: "invoice", label: "Invoice", actions: CRUD },
+      { key: "payin", label: "Pay-In", actions: ["read", "update", "delete"] },
+    ],
+  },
   { key: "integrations", label: "Integration", group: "Main", path: "/app/integrations", icon: "PlugZap" },
-  { key: "reports", label: "Report", group: "Main", path: "/app/reports", icon: "BarChart3" },
-  { key: "roles", label: "Role Management", group: "Settings", path: "/app/settings/roles", icon: "ShieldCheck" },
+  {
+    key: "reports", label: "Report", group: "Main", path: "/app/reports", icon: "BarChart3",
+    subs: [
+      { key: "builder", label: "Report builder", actions: ["read"] },
+      { key: "ai", label: "AI reports", actions: ["read"] },
+      { key: "export", label: "Download (Excel / CSV)", actions: ["read"] },
+    ],
+  },
+  {
+    key: "roles", label: "Role Management", group: "Settings", path: "/app/settings/roles", icon: "ShieldCheck",
+    subs: [
+      { key: "roles", label: "Roles", actions: CRUD },
+      { key: "users", label: "Users", actions: CRUD },
+    ],
+  },
   { key: "activity_logs", label: "Activity Logs", group: "Settings", path: "/app/settings/activity-logs", icon: "ScrollText" },
-  { key: "wa_webhooks", label: "WhatsApp Webhook", group: "Settings", path: "/app/settings/whatsapp", icon: "Webhook" },
+  {
+    key: "wa_webhooks", label: "WhatsApp Webhook", group: "Settings", path: "/app/settings/whatsapp", icon: "Webhook",
+    subs: [
+      { key: "webhooks", label: "Webhooks", actions: CRUD },
+      { key: "post", label: "Post / broadcast", actions: ["create"] },
+    ],
+  },
   { key: "wa_logs", label: "WhatsApp Logs", group: "Settings", path: "/app/settings/whatsapp-logs", icon: "MessagesSquare" },
-  { key: "ai_agents", label: "AI Agent", group: "Settings", path: "/app/settings/ai-agents", icon: "Bot" },
+  {
+    key: "ai_agents", label: "AI Agent", group: "Settings", path: "/app/settings/ai-agents", icon: "Bot",
+    subs: [
+      { key: "models", label: "Models", actions: CRUD },
+      { key: "endpoint", label: "Endpoint", actions: CRUD },
+    ],
+  },
   { key: "subscription", label: "Subscription", group: "Settings", path: "/app/settings/subscription", icon: "CreditCard" },
 ];
 
@@ -40,12 +96,13 @@ export const SA_MODULES: ModuleDef[] = [
   { key: "ai_agents", label: "AI Agents", group: "Main", path: "/sa/ai-agents", icon: "Bot" },
   { key: "plans", label: "Plan", group: "Main", path: "/sa/plans", icon: "Layers" },
   { key: "reports", label: "Report", group: "Main", path: "/sa/reports", icon: "BarChart3" },
-  { key: "knowledgebase", label: "Knowledgebase", group: "Main", path: "/sa/knowledgebase", icon: "BookOpenText" },
+  { key: "knowledgebase", label: "Knowledge Base", group: "Main", path: "/sa/knowledgebase", icon: "BookOpenText" },
   { key: "roles", label: "Role Management", group: "Settings", path: "/sa/settings/roles", icon: "ShieldCheck" },
   { key: "activity_logs", label: "Activity Logs", group: "Settings", path: "/sa/settings/activity-logs", icon: "ScrollText" },
   { key: "wa_webhooks", label: "WhatsApp Webhook", group: "Settings", path: "/sa/settings/whatsapp", icon: "Webhook" },
   { key: "wa_logs", label: "WhatsApp Logs", group: "Settings", path: "/sa/settings/whatsapp-logs", icon: "MessagesSquare" },
   { key: "subscriptions", label: "Subscription Management", group: "Settings", path: "/sa/settings/subscriptions", icon: "CreditCard" },
+  { key: "platform_apps", label: "Platform Apps", group: "Settings", path: "/sa/settings/platform-apps", icon: "KeyRound" },
   { key: "branding", label: "Platform Branding", group: "Settings", path: "/sa/settings/branding", icon: "Palette" },
   { key: "system", label: "System Health", group: "Settings", path: "/sa/settings/system", icon: "Activity" },
 ];
@@ -89,16 +146,22 @@ export interface ConnectorDef {
   label: string;
   description: string;
   icon: string;
-  inbound: "webhook" | "upload" | "manual" | "meta" | "google" | "pull" | "push" | "push_pull";
+  inbound: "webhook" | "upload" | "manual" | "meta" | "google" | "pull" | "push" | "push_pull" | "sso";
+  provider?: "meta" | "linkedin" | "google"; // sign-in (SSO) connectors: the Platform App they sign in through
+  hidden?: boolean; // kept only so existing connectors keep working; can't be created any more
 }
 
 export const CONNECTOR_TYPES: ConnectorDef[] = [
-  { type: "website_form", label: "Website / Landing Page Form", description: "POST form submissions from any site or landing page.", icon: "Globe", inbound: "webhook" },
+  { type: "facebook_leads", label: "Facebook Lead Ads", description: "Sign in with Facebook, pick your Pages — every Lead Ad form submission arrives in seconds.", icon: "Facebook", inbound: "sso", provider: "meta" },
+  { type: "instagram_leads", label: "Instagram Lead Ads", description: "Sign in with Facebook, pick the Instagram accounts — Instagram lead forms arrive in seconds.", icon: "Instagram", inbound: "sso", provider: "meta" },
+  { type: "linkedin_leads", label: "LinkedIn Lead Gen Forms", description: "Sign in with LinkedIn, pick your ad accounts or Pages — Lead Gen Form responses sync automatically.", icon: "Linkedin", inbound: "sso", provider: "linkedin" },
+  { type: "google_sheets", label: "Google Sheets / Forms", description: "Sign in with Google, pick a sheet (e.g. your Google Form responses) — new rows become leads every 15 minutes.", icon: "Sheet", inbound: "sso", provider: "google" },
+  { type: "website_form", label: "Website / Landing Page Form", description: "REST API / webhook: POST each form submission as JSON with your API key.", icon: "Globe", inbound: "webhook" },
   { type: "manual", label: "Manual Entry", description: "Add leads by hand from the Leads screen.", icon: "PencilLine", inbound: "manual" },
   { type: "bulk_import", label: "Excel / CSV Import", description: "Upload .xlsx or .csv using the sample template.", icon: "FileSpreadsheet", inbound: "upload" },
   { type: "rest_api", label: "REST API / Webhook", description: "Generic JSON endpoint. Create as many as you need.", icon: "Braces", inbound: "webhook" },
-  { type: "whatsapp", label: "WhatsApp Business Platform", description: "Inbound messages from your WhatsApp Cloud API / BSP.", icon: "MessageCircle", inbound: "webhook" },
-  { type: "meta_leads", label: "Facebook & Instagram Lead Forms", description: "Meta Lead Ads webhook (leadgen) with verify token.", icon: "Facebook", inbound: "meta" },
+  { type: "whatsapp", label: "WhatsApp Business Platform", description: "REST API / webhook: your WhatsApp Cloud API or BSP posts inbound messages with your API key.", icon: "MessageCircle", inbound: "webhook" },
+  { type: "meta_leads", label: "Facebook & Instagram Lead Forms (App ID — retired)", description: "Older App ID / token setup. Replaced by the Facebook and Instagram sign-in connectors.", icon: "Facebook", inbound: "meta", hidden: true },
   { type: "google_ads", label: "Google Ads Lead Forms", description: "People who searched your keywords on Google and filled your lead form — delivered instantly.", icon: "Search", inbound: "google" },
   { type: "email", label: "Email Inquiries", description: "Inbound-parse webhook (SendGrid, Mailgun, Postmark).", icon: "Mail", inbound: "webhook" },
   { type: "telephony", label: "Telephone / Call Center", description: "Missed-call & IVR webhooks (Exotel, Knowlarity, Ozonetel…).", icon: "PhoneCall", inbound: "webhook" },
@@ -143,3 +206,60 @@ export function normalizePhone(v: unknown): string {
   if (d.length === 11 && d.startsWith("0")) return d.slice(1);
   return d.slice(-10);
 }
+
+/** Module + sub-module rows for permission grids ("clients", "clients:invoice", …), in display order. */
+export function permRows(modules: ModuleDef[]) {
+  const out: { key: string; label: string; group?: string; parent?: string; actions?: Action[] }[] = [];
+  for (const m of modules) {
+    out.push({ key: m.key, label: m.label, group: m.group });
+    for (const s of m.subs || []) out.push({ key: `${m.key}:${s.key}`, label: s.label, parent: m.key, actions: s.actions });
+  }
+  return out;
+}
+
+/**
+ * Effective sub-module permissions: the module's permission ∧ the sub-module's applicable actions
+ * ∧ the company's sub-module limit (Super Admin › Company › Modules, if set) ∧ the role's choice (if any).
+ */
+export function withSubPerms(modules: ModuleDef[], perms: PermMap, rolePerms?: PermMap | null, limits?: PermMap | null): PermMap {
+  const out: PermMap = { ...perms };
+  for (const m of modules)
+    for (const s of m.subs || []) {
+      const k = `${m.key}:${s.key}`;
+      const own = rolePerms?.[k];
+      const lim = limits?.[k];
+      out[k] = Object.fromEntries(ACTIONS.map((a) => [a, s.actions.includes(a) && !!perms[m.key]?.[a] && (lim ? !!lim[a] : true) && (own ? !!own[a] : true)])) as Perm;
+    }
+  return out;
+}
+
+/**
+ * Super Admin › Company › Modules: per-company override of the plan, by module or sub-module key.
+ *  - absent        → follow the plan (sub-modules follow their module)
+ *  - "custom"      → these CRUD actions instead of the plan's (can restrict or extend)
+ *  - "paused"      → no access at all; the module shows as “Paused” to the company, data is kept
+ */
+export type ModuleOverride = { mode: "custom"; perm: Perm } | { mode: "paused" };
+export type ModuleAccess = Record<string, ModuleOverride>;
+
+/** Plan grid + company overrides → module permissions, sub-module limits and the paused keys. */
+export function companyBase(modules: ModuleDef[], plan: PermMap | undefined | null, access?: ModuleAccess | null) {
+  const base: PermMap = {};
+  const limits: PermMap = {};
+  const paused: string[] = [];
+  for (const m of modules) {
+    const o = access?.[m.key];
+    base[m.key] = o?.mode === "paused" ? noPerm() : o?.mode === "custom" ? pick(o.perm) : pick(plan?.[m.key]);
+    if (o?.mode === "paused") paused.push(m.key);
+    for (const s of m.subs || []) {
+      const k = `${m.key}:${s.key}`;
+      const so = access?.[k];
+      if (so?.mode === "paused") {
+        limits[k] = noPerm();
+        paused.push(k);
+      } else if (so?.mode === "custom") limits[k] = pick(so.perm);
+    }
+  }
+  return { base, limits, paused };
+}
+const pick = (p?: Partial<Perm> | null): Perm => ({ create: !!p?.create, read: !!p?.read, update: !!p?.update, delete: !!p?.delete });
