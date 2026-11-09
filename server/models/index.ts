@@ -411,6 +411,28 @@ ClientPaymentSchema.index({ companyId: 1, status: 1, dueDate: 1 }); // Outstandi
 ClientPaymentSchema.index({ planId: 1, dueDate: 1 }, { unique: true, partialFilterExpression: { planId: { $type: "objectId" } } });
 export const ClientPayment = tm<any>("ClientPayment", ClientPaymentSchema);
 
+/**
+ * A deleted client, kept whole. Deleting a client (Client › Clients › Delete, WhatsApp-OTP verified) takes a full
+ * snapshot — profile, sales orders, invoices, pay-ins and tickets — before the live rows are removed, so the books
+ * can always be reconstructed and nothing is silently lost. S3 attachments are left untouched.
+ */
+const ClientArchiveSchema = new Schema(
+  {
+    companyId: { type: ObjectId, required: true },
+    clientId: { type: ObjectId, required: true },
+    clientCode: String,
+    clientName: String,
+    deletedBy: String,
+    reason: String,
+    counts: { plans: Number, invoices: Number, payins: Number, tickets: Number, invoiceAmount: Number, payinAmount: Number },
+    snapshot: Schema.Types.Mixed, // { client, plans, payments, tickets }
+  },
+  ts
+);
+ClientArchiveSchema.index({ companyId: 1, createdAt: -1 });
+ClientArchiveSchema.index({ companyId: 1, clientId: 1 });
+export const ClientArchive = tm<any>("ClientArchive", ClientArchiveSchema);
+
 /* ───────────────────────── WhatsApp ───────────────────────── */
 
 const WebhookSchema = new Schema(

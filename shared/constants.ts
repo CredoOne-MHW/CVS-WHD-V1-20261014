@@ -21,6 +21,11 @@ export interface SubModuleDef {
   key: string;
   label: string;
   actions: Action[];
+  /**
+   * Actions that do NOT follow the module: they stay off until the role ticks them here.
+   * Used for destructive actions added after a release, so no existing role gains them silently.
+   */
+  strict?: Action[];
 }
 export interface ModuleDef {
   key: string;
@@ -47,7 +52,7 @@ export const COMPANY_MODULES: ModuleDef[] = [
   {
     key: "clients", label: "Client", group: "Main", path: "/app/clients", icon: "Briefcase",
     subs: [
-      { key: "clients", label: "Clients", actions: ["read", "update"] },
+      { key: "clients", label: "Clients", actions: ["read", "update", "delete"], strict: ["delete"] }, // deleting a client is always an explicit tick
       { key: "board", label: "Service Board", actions: ["read", "update"] },
       { key: "tickets", label: "Support Tickets", actions: CRUD },
       { key: "sales_order", label: "Sales Order", actions: CRUD },
@@ -209,10 +214,10 @@ export function normalizePhone(v: unknown): string {
 
 /** Module + sub-module rows for permission grids ("clients", "clients:invoice", …), in display order. */
 export function permRows(modules: ModuleDef[]) {
-  const out: { key: string; label: string; group?: string; parent?: string; actions?: Action[] }[] = [];
+  const out: { key: string; label: string; group?: string; parent?: string; actions?: Action[]; strict?: Action[] }[] = [];
   for (const m of modules) {
     out.push({ key: m.key, label: m.label, group: m.group });
-    for (const s of m.subs || []) out.push({ key: `${m.key}:${s.key}`, label: s.label, parent: m.key, actions: s.actions });
+    for (const s of m.subs || []) out.push({ key: `${m.key}:${s.key}`, label: s.label, parent: m.key, actions: s.actions, strict: s.strict });
   }
   return out;
 }
@@ -228,7 +233,10 @@ export function withSubPerms(modules: ModuleDef[], perms: PermMap, rolePerms?: P
       const k = `${m.key}:${s.key}`;
       const own = rolePerms?.[k];
       const lim = limits?.[k];
-      out[k] = Object.fromEntries(ACTIONS.map((a) => [a, s.actions.includes(a) && !!perms[m.key]?.[a] && (lim ? !!lim[a] : true) && (own ? !!own[a] : true)])) as Perm;
+      // A sub-module follows its module unless the role set it. `strict` actions don't follow: a role must tick them
+      // here. Company-level caps (no role grid in play) keep following, so the owner and the plan are unaffected.
+      const follows = (a: Action) => (rolePerms ? !s.strict?.includes(a) : true);
+      out[k] = Object.fromEntries(ACTIONS.map((a) => [a, s.actions.includes(a) && !!perms[m.key]?.[a] && (lim ? !!lim[a] : true) && (own ? !!own[a] : follows(a))])) as Perm;
     }
   return out;
 }
