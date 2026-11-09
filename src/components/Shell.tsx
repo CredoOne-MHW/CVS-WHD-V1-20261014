@@ -2,13 +2,16 @@
 import { createContext, useContext, useEffect, useRef, useState, type ReactNode } from "react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
-import { PauseCircle, Menu, LogOut, ChevronRight, ChevronDown, ShieldAlert, Globe, X } from "lucide-react";
+import { Rocket, PauseCircle, Menu, LogOut, ChevronRight, ChevronDown, ShieldAlert, Globe, X } from "lucide-react";
 import { icon } from "./icons";
 import { Assistant } from "./Assistant";
 import { BillingAlert } from "./BillingAlert";
 import { ErrorBoundary, InlineError as InlineErrorCard } from "./ErrorBoundary";
 import { installGlobalErrorHandlers } from "@/lib/clientErrors";
-import { api } from "@/lib/api";
+import { api, clearApiCache } from "@/lib/api";
+import RELEASES from "@shared/releases.generated.json";
+
+const VERSION = (RELEASES as { current: string }).current;
 import { Spinner } from "./ui";
 import type { PermMap } from "@shared/constants";
 import { applyTheme, setFavicon } from "@shared/theme";
@@ -128,6 +131,7 @@ export default function Shell({ scope, children }: { scope: "super" | "company";
   };
   const signOut = async () => {
     await api("/auth/logout", { method: "POST" });
+    clearApiCache(); // nothing of this account stays in the tab
     window.location.href = "/login";
   };
 
@@ -252,6 +256,12 @@ export default function Shell({ scope, children }: { scope: "super" | "company";
                   <p className="truncate text-sm font-semibold">{me.name}</p>
                   <p className="truncate text-xs text-ink-500">{me.email}</p>
                 </div>
+                <a role="menuitem" href="/release" target="_blank" rel="noreferrer" className="flex w-full items-center justify-between gap-2 px-4 py-2 text-left text-sm text-ink-700 hover:bg-hive-50">
+                  <span className="flex items-center gap-2">
+                    <Rocket className="h-4 w-4 text-ink-400" /> Release notes
+                  </span>
+                  <span className="mono text-xs text-ink-500">v{VERSION}</span>
+                </a>
                 <button role="menuitem" onClick={signOut} className="flex w-full items-center gap-2 px-4 py-2.5 text-left text-sm font-medium text-red-600 hover:bg-red-50">
                   <LogOut className="h-4 w-4" /> Sign out
                 </button>

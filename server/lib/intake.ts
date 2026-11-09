@@ -5,6 +5,7 @@ import { fireEvent } from "./whatsapp";
 import { shopifyLead, wooLead } from "./shop";
 
 export interface LeadInput {
+  companyName?: string;
   name?: string;
   whatsapp?: string;
   phone?: string;
@@ -27,6 +28,7 @@ const ALIASES: Record<keyof LeadInput | string, string[]> = {
   whatsapp: ["whatsapp", "whatsapp_no", "whatsapp_number", "wa", "wa_number", "wa_id"],
   phone: ["phone", "phone_no", "phone_number", "mobile_number", "contact_no", "mobile", "mobile_no", "contact", "contact_number", "caller", "from", "callfrom", "call_from", "caller_id", "msisdn"],
   email: ["email", "e_mail", "email_id", "emailid", "e_mail_id", "email_address", "mail"],
+  companyName: ["company_name", "company", "business_name", "organisation", "organization", "org_name", "firm", "firm_name", "shop_name", "brand", "employer"],
   address: ["address", "city", "location", "area", "pincode"],
   comments: ["comments", "comment", "message", "requirement", "query", "notes", "remarks", "subject", "test_name", "service"],
   source: ["source", "lead_source", "utm_source"],
@@ -357,7 +359,7 @@ export async function upsertLead(companyId: string, input: LeadInput, ctx: { con
   const existing = await Lead.findOne({ companyId, deletedAt: null, $or: or });
   if (existing) {
     existing.attribution.push(touch);
-    for (const f of ["name", "email", "address", "whatsapp", "phone", "profileUrl"] as const) {
+    for (const f of ["name", "companyName", "email", "address", "whatsapp", "phone", "profileUrl"] as const) {
       const val = f === "phone" ? phone : f === "whatsapp" ? whatsapp : f === "email" ? email : (input as any)[f];
       if ((!existing[f] || existing[f] === "NA") && val && val !== "NA") existing[f] = val; // "NA" = not known yet
     }
@@ -374,6 +376,7 @@ export async function upsertLead(companyId: string, input: LeadInput, ctx: { con
   const doc: any = {
     companyId,
     name: input.name || "",
+    companyName: input.companyName || "",
     phone,
     whatsapp,
     email,
@@ -436,6 +439,9 @@ export async function processIntake(connector: any, payload: any, explicitKey?: 
   return runEvent(connector, ev._id, payload, leads);
 }
 
+/** Automatic retries before a delivery is dead-lettered and shown under Integration › Needs attention. */
+export const INTAKE_MAX_ATTEMPTS = 8;
+
 export async function runEvent(connector: any, eventId: any, payload: any, pre?: LeadInput[]) {
   const ev = await IntakeEvent.findById(eventId);
   try {
@@ -453,8 +459,10 @@ export async function runEvent(connector: any, eventId: any, payload: any, pre?:
     await Connector.updateOne({ _id: connector._id }, { $inc: { "stats.received": 1, [`stats.${created ? "created" : "duplicates"}`]: 1 }, $set: { "stats.lastAt": new Date() } });
     return { ok: true, created, leadId };
   } catch (e: any) {
+    // same policy as WhatsApp redelivery: 8 tries with capped backoff (~15 h) before a delivery needs a human
     const attempts = ev.attempts + 1;
-    ev.set({ status: attempts >= 5 ? "dead" : "failed", attempts, error: e?.message, nextAttemptAt: new Date(Date.now() + 60_000 * 2 ** attempts) });
+    const wait = Math.min(6 * 60 * 60_000, 60_000 * 2 ** attempts);
+    ev.set({ status: attempts >= INTAKE_MAX_ATTEMPTS ? "dead" : "failed", attempts, error: e?.message, nextAttemptAt: new Date(Date.now() + wait) });
     await ev.save();
     await Connector.updateOne({ _id: connector._id }, { $inc: { "stats.received": 1, "stats.failed": 1 }, $set: { "stats.lastAt": new Date() } });
     return { ok: false, error: e?.message, willRetry: attempts < 5 };

@@ -702,3 +702,39 @@ How it is applied:
   - `GET /api/sa/knowledgebase/markdown?tab=<slug>|all[&download=1]` returns it with the live addresses filled in.
   - The page offers **Download .md**, **Copy Markdown** and **Full guide (.md)**.
   - It is rebuilt on every deploy, like the tabs.
+
+## 18. v1.1.0 — versioning, sales order grouping, company name, compact UI (Nov 2026)
+
+### 18.1 Versioning and release notes
+- `package.json` carries the running version. **vX.Y.Z** — Z bug fix, Y minor change, X major change.
+- One Markdown file per version in `content/releases/*.md` (front matter: version, date, title, kind), with the sections **AS-IS**, **New Features**, **Updates / Modifications** and **Fixes**.
+- `scripts/build-releases.mjs` runs in `prebuild` and compiles them into `shared/releases.generated.json`. The build fails if the newest note and `package.json` disagree, so a deploy can't ship an unlabelled version.
+- Public **`/release`** page per company (white-labelled) lists every version, newest first, with the live one marked. The version also shows in the user menu, linking to it.
+
+### 18.2 Company Name on a lead
+`Lead.companyName`, carried through the Add / Edit lead form, the Leads list and search, the Client drawer, import, export and the channel field mapping (`company`, `company_name`, `business_name`, `organisation`, `firm`, `shop_name`, `brand`, `employer`).
+
+### 18.3 Import template
+`LEAD_TEMPLATE_HEADERS` now matches the Add-lead form field for field, including Company Name, Service / product and No of Licenses, with two example rows, frozen headings and a **How to fill** sheet in the .xlsx. The importer reads the service columns (`"A, B"` with `"2, 1"`, or one number for all) and applies them as service lines; an unknown service name is reported per row and the lead is still saved. Files from the older template keep importing.
+
+### 18.4 Outstanding vs Upcoming
+`endOfToday()` (IST) splits a client's open dues: **Outstanding** is what is due on or before today, **Upcoming** is later months. Applied in the client drawer totals and the Clients list (`outstanding.amount` / `outstanding.upcoming`). Totals are reduced in JS from one indexed read, so they do not depend on aggregation-pipeline support.
+
+### 18.5 Sales Order grouped by client + Convert to Invoice
+- `GET /api/co/clients-plans?group=client` returns one row per client with its `lines[]`, services, licences and total. Without the parameter the flat list is unchanged, so anything built on the old shape keeps working.
+- The table shows one row per client, expanding to its services; Edit, Delete and Reminder stay on each service.
+- **Convert to Invoice** (row or service) opens the invoice form pre-filled with client, services and amount, with the client locked. Discount can be a fixed amount or a percentage — each calculates the other — and Gross = amount − discount.
+
+### 18.6 WhatsApp Logs
+Refresh button, the payload opening inline under its row, `OK 200` result badges and the provider's own reply in Detail (`responseText`, truncated to 200 characters; full bodies still come from `GET /wa-logs/:id`). Filters, Resend, retry status and pagination unchanged.
+
+### 18.7 Channel reliability
+- Failed deliveries now retry **8** times with backoff capped at 6 h (~15 h) instead of 5.
+- `GET /api/co/integrations/failures` and `POST /api/co/integrations/failures/retry-all` back a **Needs attention** panel on the Integration page: every delivery not yet saved as a lead, with its reason and a Retry.
+- New indexes: `IntakeEvent {companyId,status,createdAt}`, `{status,nextAttemptAt}`, `ClientPayment {companyId,status,dueDate}`, `ClientPlan {companyId,clientId,createdAt}`.
+
+### 18.8 Speed and density
+- `src/lib/api.ts`: besides the 10 s micro-cache, slow-changing reads (`/auth/me`, services, lead meta, event registries, pickers, branding) are answered from cache at once and refreshed in the background, and survive a reload via `sessionStorage`. Any write clears the cache; sign-out wipes it.
+- Compact density applied to the shared primitives (`.input`, `.btn`, `.th`, `.td`, `.label`, PageHeader, Modal, Stat), so every screen tightened without any section or field being removed.
+- Client drawer: summary and Journey are a sticky column; Journey has its own scroll area and a count.
+- Local latency check (20 runs each): reads p95 4–73 ms, writes p95 21–26 ms, against budgets of 300 / 500 ms.
