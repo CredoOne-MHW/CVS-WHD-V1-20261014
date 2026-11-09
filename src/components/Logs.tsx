@@ -1,5 +1,5 @@
 "use client";
-import { useCallback, useEffect, useState } from "react";
+import { Fragment, useCallback, useEffect, useState } from "react";
 import { RotateCw, FileJson, Search } from "lucide-react";
 import { api, qs, fmtDate } from "@/lib/api";
 import { Badge, Btn, Empty, JsonView, Modal, Pager, Spinner, useToast } from "./ui";
@@ -60,91 +60,131 @@ export function WaLogs({ base }: { base: "/sa" | "/co" }) {
     }
   }
 
+  const payload = async (l: any) => {
+    if (view?._id === l._id) return setView(null); // same row again closes it
+    setView({ _id: l._id, loading: true });
+    try {
+      setView(await api(`${base}/wa-logs/${l._id}${l.companyId ? `?companyId=${l.companyId}` : ""}`));
+    } catch (e: any) {
+      toast("err", e.message);
+      setView(null);
+    }
+  };
+
   return (
-    <div className="card overflow-hidden">
-      <div className="flex flex-wrap items-center gap-3 border-b border-ink-400/15 p-4">
-        <DateRange from={f.from} to={f.to} onChange={(from, to) => setF({ ...f, from, to, page: 1 })} />
-        <select className="input w-auto min-w-[200px]" value={f.event} onChange={(e) => setF({ ...f, event: e.target.value, page: 1 })} aria-label="Event">
-          <option value="">All events</option>
-          {events.map((e) => (
-            <option key={e.key} value={e.key}>
-              {e.label}
-            </option>
-          ))}
-        </select>
-        <div className="relative">
-          <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-ink-400" />
-          <input className="input w-48 pl-9" placeholder="To (phone)" inputMode="numeric" value={f.to_} onChange={(e) => setF({ ...f, to_: e.target.value.replace(/\D/g, ""), page: 1 })} />
-        </div>
+    <div className="space-y-3">
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
+        <Btn variant="secondary" onClick={fetchPage}>
+          <RotateCw className="h-4 w-4" /> Refresh
+        </Btn>
+        <p className="text-[13px] text-ink-500">
+          Every WhatsApp attempt with the webhook&rsquo;s response. <b className="text-ink-900">Resend</b> posts the stored payload again to that event&rsquo;s current webhook URL.
+        </p>
       </div>
-      <div className="overflow-x-auto">
-        <table className="w-full min-w-[900px]">
-          <thead>
-            <tr>
-              {["Time Stamp", "Event", "Trigger", "To", "Name", "Result", "Detail", "Actions"].map((h) => (
-                <th key={h} className="th">
-                  {h}
-                </th>
-              ))}
-            </tr>
-          </thead>
-          <tbody>
-            {data?.items.map((l) => (
-              <tr key={l._id} className="hover:bg-hive-50/40">
-                <td className="td whitespace-nowrap text-ink-500">{fmtDate(l.createdAt)}</td>
-                <td className="td mono">{l.event}</td>
-                <td className="td">
-                  <Badge color={l.trigger === "test" ? "violet" : l.trigger === "auto" || l.trigger === "cron" ? "blue" : "gray"}>{l.trigger}</Badge>
-                </td>
-                <td className="td mono">{l.to}</td>
-                <td className="td">{l.name || "—"}</td>
-                <td className="td">
-                  <Badge color={l.result === "success" ? "green" : l.retry?.status === "scheduled" ? "honey" : "red"}>{l.result === "success" ? (l.retry?.status === "delivered" ? "delivered on retry" : "success") : l.retry?.status === "scheduled" ? "retrying" : l.retry?.status === "dead" ? "dead-lettered" : l.result}</Badge>
-                  {l.retry?.status === "scheduled" && l.retry?.nextAt && <span className="mt-0.5 block text-[11px] text-ink-400">next try {new Date(l.retry.nextAt).toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit" })}</span>}
-                  {l.part && <span className="ml-1 text-xs text-ink-400">{l.part}</span>}
-                </td>
-                <td className="td max-w-[280px] truncate text-ink-500" title={l.detail}>
-                  {l.detail}
-                </td>
-                <td className="td whitespace-nowrap">
-                  <button className="btn-ghost" onClick={async () => setView(await api(`${base}/wa-logs/${l._id}${l.companyId ? `?companyId=${l.companyId}` : ""}`))}>
-                    <FileJson className="h-4 w-4" /> Payload
-                  </button>
-                  {perm.update && (
-                    <button className="btn-ghost" onClick={() => resend(l._id)} disabled={busy === l._id}>
-                      {busy === l._id ? <Spinner /> : <RotateCw className="h-4 w-4" />} Resend
-                    </button>
-                  )}
-                </td>
-              </tr>
+      <div className="card overflow-hidden">
+        <div className="flex flex-wrap items-center gap-2 border-b border-ink-400/15 px-3 py-2.5">
+          <DateRange from={f.from} to={f.to} onChange={(from, to) => setF({ ...f, from, to, page: 1 })} />
+          <select className="input h-9 w-auto min-w-[170px] py-1.5 text-sm" value={f.event} onChange={(e) => setF({ ...f, event: e.target.value, page: 1 })} aria-label="Event">
+            <option value="">All events</option>
+            {events.map((e) => (
+              <option key={e.key} value={e.key}>
+                {e.label}
+              </option>
             ))}
-          </tbody>
-        </table>
-        {!data && (
-          <div className="flex justify-center py-16 text-hive-700">
-            <Spinner className="h-6 w-6" />
+          </select>
+          <div className="relative">
+            <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-ink-400" />
+            <input className="input h-9 w-40 py-1.5 pl-9 text-sm" placeholder="To (phone)" inputMode="numeric" value={f.to_} onChange={(e) => setF({ ...f, to_: e.target.value.replace(/\D/g, ""), page: 1 })} />
           </div>
-        )}
-        {data && !data.items.length && <Empty title="No WhatsApp messages" hint="Messages sent through webhooks appear here." />}
+        </div>
+        <div className="overflow-x-auto">
+          <table className="w-full min-w-[980px] text-sm">
+            <thead>
+              <tr>
+                {["Time", "Event", "Trigger", "To", "Name", "Result", "Detail", "Actions"].map((h) => (
+                  <th key={h} className={`th py-2.5 ${h === "Actions" ? "text-right" : ""}`}>
+                    {h}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {data?.items.map((l) => {
+                const open = view?._id === l._id;
+                const retry = l.retry?.status;
+                return (
+                  <Fragment key={l._id}>
+                    <tr className={open ? "bg-hive-50/60" : "hover:bg-hive-50/40"}>
+                      <td className="td py-2.5 whitespace-nowrap text-ink-500">{fmtDate(l.createdAt)}</td>
+                      <td className="td py-2.5 mono">{l.event}</td>
+                      <td className="td py-2.5">{l.trigger}</td>
+                      <td className="td py-2.5 mono">{l.to}</td>
+                      <td className="td py-2.5">{l.name || "—"}</td>
+                      <td className="td py-2.5 whitespace-nowrap">
+                        <Badge color={l.result === "success" ? "green" : retry === "scheduled" ? "honey" : "red"}>
+                          {l.result === "success" ? `OK ${l.httpStatus || 200}` : retry === "scheduled" ? "Retrying" : retry === "dead" ? "Dead-lettered" : l.httpStatus ? `Failed ${l.httpStatus}` : "Failed"}
+                        </Badge>
+                        {retry === "delivered" && <span className="ml-1 text-[11px] text-ink-400">on retry</span>}
+                        {retry === "scheduled" && l.retry?.nextAt && <span className="mt-0.5 block text-[11px] text-ink-400">next try {new Date(l.retry.nextAt).toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit" })}</span>}
+                        {l.part && <span className="ml-1 text-xs text-ink-400">{l.part}</span>}
+                      </td>
+                      <td className="td py-2.5 max-w-[320px]">
+                        <span className="mono block truncate text-[12.5px] text-ink-500" title={l.responseText || l.detail}>
+                          {l.responseText || l.detail || "—"}
+                        </span>
+                      </td>
+                      <td className="td py-2.5 whitespace-nowrap text-right">
+                        <button className="btn-ghost" onClick={() => payload(l)} aria-expanded={open}>
+                          <FileJson className="h-4 w-4" /> Payload
+                        </button>
+                        {perm.update && (
+                          <button className="btn-ghost" onClick={() => resend(l._id)} disabled={busy === l._id}>
+                            {busy === l._id ? <Spinner /> : <RotateCw className="h-4 w-4" />} Resend
+                          </button>
+                        )}
+                      </td>
+                    </tr>
+                    {open && (
+                      <tr>
+                        <td colSpan={8} className="border-b border-ink-400/10 bg-[#f7f8f6] px-3 pb-3 pt-0">
+                          {view.loading ? (
+                            <div className="flex justify-center py-6 text-hive-700">
+                              <Spinner className="h-5 w-5" />
+                            </div>
+                          ) : (
+                            <div className="space-y-2">
+                              <p className="text-xs text-ink-500">
+                                {view.request?.method} <span className="mono break-all">{view.request?.url}</span> · HTTP {view.httpStatus} · {view.attempts} attempt(s)
+                              </p>
+                              <div className="grid gap-3 lg:grid-cols-2">
+                                <div>
+                                  <p className="label">Request body</p>
+                                  <JsonView value={view.request?.body} />
+                                </div>
+                                <div>
+                                  <p className="label">Response</p>
+                                  <JsonView value={view.response} />
+                                </div>
+                              </div>
+                            </div>
+                          )}
+                        </td>
+                      </tr>
+                    )}
+                  </Fragment>
+                );
+              })}
+            </tbody>
+          </table>
+          {!data && (
+            <div className="flex justify-center py-16 text-hive-700">
+              <Spinner className="h-6 w-6" />
+            </div>
+          )}
+          {data && !data.items.length && <Empty title="No WhatsApp messages" hint="Messages sent through webhooks appear here." />}
+        </div>
+        {data && data.total > 0 && <Pager page={data.page} limit={data.limit} total={data.total} onPage={(page) => setF({ ...f, page })} />}
       </div>
-      {data && data.total > 0 && <Pager page={data.page} limit={data.limit} total={data.total} onPage={(page) => setF({ ...f, page })} />}
-      <Modal open={!!view} onClose={() => setView(null)} title="Payload" size="lg">
-        {view && (
-          <div className="space-y-4">
-            <p className="text-sm text-ink-500">
-              {view.request?.method} <span className="mono break-all">{view.request?.url}</span> · HTTP {view.httpStatus} · {view.attempts} attempt(s)
-            </p>
-            <div>
-              <p className="label">Request body</p>
-              <JsonView value={view.request?.body} />
-            </div>
-            <div>
-              <p className="label">Response</p>
-              <JsonView value={view.response} />
-            </div>
-          </div>
-        )}
-      </Modal>
     </div>
   );
 }

@@ -54,16 +54,63 @@ function cellText(v: any): string {
   return String(v);
 }
 
-export const LEAD_TEMPLATE_HEADERS = ["Name", "WhatsApp No", "Phone No", "Email", "Address", "Comments", "Source", "Campaign", "Medium", "Referral", "Status", "Consent WhatsApp (Y/N)"];
+/**
+ * Import template — the same fields, in the same order, as the Add lead form, so a filled sheet maps one to one.
+ * Extra columns in a user's own file are still accepted (import matches by column name and common aliases),
+ * and files made from the older template keep working.
+ */
+export const LEAD_TEMPLATE_HEADERS = [
+  "Name",
+  "Company Name",
+  "Status",
+  "WhatsApp No",
+  "Phone No",
+  "Email ID",
+  "Source",
+  "Campaign",
+  "Address",
+  "Comments",
+  "Service / product",
+  "No of Licenses",
+  "Medium",
+  "Referral",
+  "Consent WhatsApp (Y/N)",
+];
+
+/** One row per column: what it is, whether it is needed, an example — written to a second sheet of the .xlsx. */
+const TEMPLATE_GUIDE: [string, string, string, string][] = [
+  ["Name", "Recommended", "Riya Sen", "Person's name. Leave blank if you only have a number."],
+  ["Company Name", "Optional", "Sunrise Diagnostics Pvt Ltd", "The business the lead represents."],
+  ["Status", "Optional", "New", "One of the Lead statuses; blank becomes New."],
+  ["WhatsApp No", "One of the three", "9876543210", "10 digits, no +91. Used to de-duplicate."],
+  ["Phone No", "One of the three", "9876543210", "10 digits. Copied to WhatsApp No when that is blank."],
+  ["Email ID", "One of the three", "riya@example.com", "Also used to de-duplicate."],
+  ["Source", "Optional", "website_form", "Blank becomes the source chosen on the Import screen."],
+  ["Campaign", "Optional", "Puja Health Camp", "Blank uses the Campaign typed on the Import screen."],
+  ["Address", "Optional", "Salt Lake, Kolkata", ""],
+  ["Comments", "Optional", "Full body checkup for parents", "Kept as the lead's comments."],
+  ["Service / product", "Optional", "Full Body Checkup, Home Collection", "Must already exist in Service master. Separate several with a comma."],
+  ["No of Licenses", "Optional", "1", "A single number for every service, or one per service: 2, 1"],
+  ["Medium", "Optional", "cpc", ""],
+  ["Referral", "Optional", "Dr. Bose", ""],
+  ["Consent WhatsApp (Y/N)", "Optional", "Y", "Y records that the lead agreed to be contacted on WhatsApp."],
+];
 
 export function leadTemplateBuffer(format: "xlsx" | "csv") {
-  const ws = XLSX.utils.aoa_to_sheet([
-    LEAD_TEMPLATE_HEADERS,
-    ["Riya Sen", "9876543210", "9876543210", "riya@example.com", "Salt Lake, Kolkata", "Full body checkup for parents", "website_form", "Puja Health Camp", "cpc", "", "New", "Y"],
-  ]);
-  ws["!cols"] = LEAD_TEMPLATE_HEADERS.map(() => ({ wch: 20 }));
+  const sample = [
+    ["Riya Sen", "Sunrise Diagnostics Pvt Ltd", "New", "9876543210", "9876543210", "riya@example.com", "website_form", "Puja Health Camp", "Salt Lake, Kolkata", "Full body checkup for parents", "", "1", "cpc", "", "Y"],
+    ["Arjun Pal", "", "Contact Attempted", "9876500002", "", "arjun@example.com", "referral", "", "Howrah", "Asked for a call back after 6 pm", "", "", "", "Dr. Bose", "N"],
+  ];
+  const ws = XLSX.utils.aoa_to_sheet([LEAD_TEMPLATE_HEADERS, ...sample]);
+  ws["!cols"] = LEAD_TEMPLATE_HEADERS.map((h) => ({ wch: Math.max(14, Math.min(32, h.length + 6)) }));
+  ws["!freeze"] = { xSplit: 0, ySplit: 1 };
   const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, ws, "Leads");
+  if (format === "xlsx") {
+    const guide = XLSX.utils.aoa_to_sheet([["Column", "Needed", "Example", "Notes"], ...TEMPLATE_GUIDE.map((r) => [...r])]);
+    guide["!cols"] = [{ wch: 24 }, { wch: 18 }, { wch: 34 }, { wch: 60 }];
+    XLSX.utils.book_append_sheet(wb, guide, "How to fill");
+  }
   return XLSX.write(wb, { type: "buffer", bookType: format }) as Buffer;
 }
 

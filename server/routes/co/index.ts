@@ -9,7 +9,7 @@ import * as XLSX from "xlsx";
 import { Lead, Connector, IntakeEvent, Job, Company, User, Webhook, Otp, AiAgent, AiAllocation, CompanyAgent, Role, Plan, AiProvider, AiUsage, Subscription, SubscriptionCycle, SubscriptionPlan, ConnectorKey, AiEndpoint, EndpointKey } from "../../models";
 import { can, requireScope, tenant, invalidateAuth, permOf } from "../../middleware/auth";
 import { h, parse, notFound, badRequest, forbidden, paging, dateRange, escapeRegex, HttpError } from "../../lib/http";
-import { upsertLead, mapFields, runEvent } from "../../lib/intake";
+import { upsertLead, mapFields, runEvent, INTAKE_MAX_ATTEMPTS } from "../../lib/intake";
 import { dispatch, fireEvent } from "../../lib/whatsapp";
 import { parseSheet, leadTemplateBuffer, extractText, KB_EXTENSIONS } from "../../lib/files";
 import { putObject, deleteObject, folderFor, companyFolder, relayoutCompany } from "../../lib/s3";
@@ -113,6 +113,7 @@ r.post("/dashboard/share", can("dashboard", "read"), h(async (req, res) => {
 /* ───────────── Leads ───────────── */
 const leadBody = z.object({
   name: z.string().max(150).optional().default(""),
+  companyName: z.string().max(200).optional(),
   whatsapp: z.string().optional().or(z.literal("")),
   phone: z.string().optional().or(z.literal("")),
   email: z.string().email().optional().or(z.literal("")),
@@ -131,7 +132,7 @@ const leadBody = z.object({
 });
 
 const exportRow = (l: any) => ({
-    Name: l.name || "NA", "WhatsApp No": l.whatsapp || "NA", "Phone No": l.phone || "NA", Email: l.email || "NA", Address: l.address || "NA", Comments: l.comments || "NA", Source: l.source, Campaign: l.campaign || "NA", Medium: l.medium || "NA", Referral: l.referral || "NA", "Profile / post": l.profileUrl || "NA", Status: l.status, "Lost reason": l.lostReasonOther || l.lostReason, Score: l.score, Service: linesOf(l).map((x) => `${x.service} × ${x.licenses}`).join(", ") || "NA", "Company GST": l.business?.gst || "NA", "Trade licence": l.business?.tradeLicence || "NA", "Company PAN": l.business?.pan || "NA", "Registered address": l.business?.registeredAddress || "NA", "Communication address": l.business?.communicationAddress || "NA", "Owner email": l.business?.ownerEmail || "NA", "Owner number": l.business?.ownerPhone || "NA", "Owner PAN": l.business?.ownerPan || "NA", "Owner Aadhaar": l.business?.ownerAadhaarLast4 ? `XXXX XXXX ${l.business.ownerAadhaarLast4}` : "NA", "Created (IST)": new Date(l.createdAt).toLocaleString("en-IN", { timeZone: "Asia/Kolkata" }),
+    Name: l.name || "NA", "Company Name": l.companyName || "NA", "WhatsApp No": l.whatsapp || "NA", "Phone No": l.phone || "NA", Email: l.email || "NA", Address: l.address || "NA", Comments: l.comments || "NA", Source: l.source, Campaign: l.campaign || "NA", Medium: l.medium || "NA", Referral: l.referral || "NA", "Profile / post": l.profileUrl || "NA", Status: l.status, "Lost reason": l.lostReasonOther || l.lostReason, Score: l.score, Service: linesOf(l).map((x) => `${x.service} × ${x.licenses}`).join(", ") || "NA", "Company GST": l.business?.gst || "NA", "Trade licence": l.business?.tradeLicence || "NA", "Company PAN": l.business?.pan || "NA", "Registered address": l.business?.registeredAddress || "NA", "Communication address": l.business?.communicationAddress || "NA", "Owner email": l.business?.ownerEmail || "NA", "Owner number": l.business?.ownerPhone || "NA", "Owner PAN": l.business?.ownerPan || "NA", "Owner Aadhaar": l.business?.ownerAadhaarLast4 ? `XXXX XXXX ${l.business.ownerAadhaarLast4}` : "NA", "Created (IST)": new Date(l.createdAt).toLocaleString("en-IN", { timeZone: "Asia/Kolkata" }),
 });
 
 function leadQuery(req: any) {
@@ -142,7 +143,7 @@ function leadQuery(req: any) {
   if (req.query.campaign) q.campaign = req.query.campaign;
   if (req.query.q) {
     const rx = { $regex: escapeRegex(String(req.query.q)), $options: "i" };
-    q.$or = [{ name: rx }, { phone: rx }, { whatsapp: rx }, { email: rx }, { comments: rx }, { address: rx }];
+    q.$or = [{ name: rx }, { companyName: rx }, { phone: rx }, { whatsapp: rx }, { email: rx }, { comments: rx }, { address: rx }];
   }
   return q;
 }
@@ -337,6 +338,23 @@ r.post("/leads/import", can("leads:import", "create"), upload.single("file"), h(
   res.status(202).json(jobView(await Job.findById(job._id).lean()));
 }));
 
+/** Reads the template's "Service / product" and "No of Licenses" columns: "A, B" with "2, 1" (or one number for all). */
+function serviceLinesFromRow(row: any): { service: string; licenses: number }[] {
+  const pick = (names: string[]) => {
+    const key = Object.keys(row || {}).find((k) => names.includes(k.toLowerCase().replace(/[\s\-\/]+/g, "_").replace(/_+/g, "_")));
+    return key ? String(row[key] ?? "").trim() : "";
+  };
+  const svc = pick(["service_product", "service", "services", "product", "service_or_product"]);
+  if (!svc) return [];
+  const lic = pick(["no_of_licenses", "licenses", "licences", "no_of_licences", "qty", "quantity"]);
+  const counts = lic.split(/[,;|]/).map((x) => parseInt(x.trim(), 10));
+  return svc
+    .split(/[,;|]/)
+    .map((x) => x.trim())
+    .filter(Boolean)
+    .map((service, i) => ({ service, licenses: Math.max(1, Number.isFinite(counts[i]) ? counts[i] : Number.isFinite(counts[0]) ? counts[0] : 1) }));
+}
+
 defineJob("leads.import", async (p, st, ctx) => {
   const db = currentDb();
   const chunks: Buffer[] = [];
@@ -350,6 +368,17 @@ defineJob("leads.import", async (p, st, ctx) => {
       // idempotent: upsertLead merges by phone/email, so a slice that is re-run never creates duplicates
       const r2 = await upsertLead(companyId, { ...m, source: m.source || p.source, campaign: m.campaign || p.campaign, customFields: { importBatch: s.batchId } }, { by: p.by, notify: false });
       r2.created ? s.created++ : s.merged++;
+      // "Service / product" + "No of Licenses" columns — the lead is kept even when a service name is unknown
+      const lines = serviceLinesFromRow(rows[i]);
+      if (lines.length) {
+        try {
+          await applyServiceLines(r2.lead, lines);
+          await r2.lead.save();
+          await syncPlanLicenses(r2.lead);
+        } catch (e: any) {
+          if (s.errors.length < 50) s.errors.push({ row: i + 2, error: `Lead saved, services skipped — ${e.message}` });
+        }
+      }
     } catch (e: any) {
       s.failed++;
       if (s.errors.length < 50) s.errors.push({ row: i + 2, error: e.message });
@@ -677,12 +706,48 @@ r.get("/integrations/:id/events", can("integrations", "read"), h(async (req, res
   res.json({ items, total, page, limit });
 }));
 
+/** Deliveries that could not be stored as leads, across every connector — nothing is lost silently. */
+r.get("/integrations/failures", can("integrations", "read"), h(async (req, res) => {
+  const { page, limit, skip } = paging(req.query);
+  const q = { ...tenant(req), status: { $in: ["failed", "dead"] } };
+  const [items, total, retrying, stopped, conns] = await Promise.all([
+    IntakeEvent.find(q).sort({ createdAt: -1, _id: -1 }).skip(skip).limit(limit).lean<any[]>(),
+    IntakeEvent.countDocuments(q),
+    IntakeEvent.countDocuments({ ...tenant(req), status: "failed" }),
+    IntakeEvent.countDocuments({ ...tenant(req), status: "dead" }),
+    Connector.find(tenant(req)).select("name type").lean<any[]>(),
+  ]);
+  const by = new Map(conns.map((c) => [String(c._id), c]));
+  res.json({
+    items: items.map((e) => ({ _id: e._id, status: e.status, attempts: e.attempts, error: e.error, createdAt: e.createdAt, nextAttemptAt: e.nextAttemptAt, connectorId: e.connectorId, connector: by.get(String(e.connectorId))?.name, type: by.get(String(e.connectorId))?.type })),
+    total,
+    page,
+    limit,
+    counts: { failed: retrying, dead: stopped },
+  });
+}));
+
+/** Retry every stuck delivery at once (bounded per call, so the request stays fast). */
+r.post("/integrations/failures/retry-all", can("integrations", "update"), h(async (req, res) => {
+  const evs = await IntakeEvent.find({ ...tenant(req), status: { $in: ["failed", "dead"] } }).sort({ createdAt: 1 }).limit(50).lean<any[]>();
+  let ok = 0;
+  for (const ev of evs) {
+    const c = await Connector.findById(ev.connectorId).lean();
+    if (!c) continue;
+    const r2: any = await runEvent(c, ev._id, ev.payload);
+    if (r2.ok) ok++;
+  }
+  res.locals.action = "Retry stuck deliveries";
+  res.locals.item = `${evs.length} delivery(ies)`;
+  res.json({ tried: evs.length, ok, left: await IntakeEvent.countDocuments({ ...tenant(req), status: { $in: ["failed", "dead"] } }) });
+}));
+
 r.post("/integrations/events/:eventId/retry", can("integrations", "update"), h(async (req, res) => {
   const ev = await IntakeEvent.findOne({ _id: req.params.eventId, ...tenant(req) }).lean<any>();
   if (!ev) throw notFound();
   const connector = await Connector.findById(ev.connectorId).lean();
   if (!connector) throw notFound("Connector deleted");
-  await IntakeEvent.updateOne({ _id: ev._id }, { status: "failed", attempts: Math.min(ev.attempts, 4) });
+  await IntakeEvent.updateOne({ _id: ev._id }, { status: "failed", attempts: Math.min(ev.attempts, INTAKE_MAX_ATTEMPTS - 1) });
   res.locals.action = "Retry intake";
   res.json(await runEvent(connector, ev._id, ev.payload));
 }));

@@ -1,7 +1,7 @@
 "use client";
 import { useEffect, useState } from "react";
 import Link from "next/link";
-import { Check, Copy as CopyIcon, Plus, Power, KeyRound, Trash2, BookOpen, Play, ExternalLink, EyeOff, FlaskConical } from "lucide-react";
+import { Check, Copy as CopyIcon, Plus, Power, KeyRound, Trash2, BookOpen, Play, ExternalLink, EyeOff, FlaskConical, TriangleAlert, RotateCw } from "lucide-react";
 import { GuideSteps, McpForm, blankMcp, IndiaMartForm, TradeIndiaForm, GoogleAdsForm, ShopifyForm, WooForm, ProspectForm, blankTradeIndia, blankGoogleAds, blankShopify, blankWoo, blankProspect } from "@/components/ConnectorGuide";
 import { GUIDES } from "@/lib/guides";
 import { icon } from "@/components/icons";
@@ -104,7 +104,8 @@ export default function Integrations() {
   return (
     <>
       <PageHeader title="Integration" subtitle="Every channel feeds one pipeline. Each delivery is idempotent and failed deliveries retry automatically." />
-      <div className="grid gap-5 sm:grid-cols-2 xl:grid-cols-3">
+      <StuckDeliveries perm={perm} />
+      <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
         {data.types.map((t: any) => {
           const Icon = icon(t.icon);
           const mine = data.connectors.filter((c: any) => c.type === t.type);
@@ -113,7 +114,7 @@ export default function Integrations() {
           const isSso = t.inbound === "sso";
           const enabled = !isSso || !!providers?.enabled?.[t.provider];
           return (
-            <div key={t.type} className="card flex flex-col p-5">
+            <div key={t.type} className="card flex flex-col p-4">
               <div className="flex items-start gap-3">
                 <div className="rounded-xl bg-hive-50 p-2.5 text-hive-700">
                   <Icon className="h-5 w-5" />
@@ -932,6 +933,93 @@ function SsoPanel({ c, onChanged, onClose, onReconnect, onDelete }: { c: any; on
           onClose();
         }}
       />
+    </div>
+  );
+}
+
+
+/**
+ * Needs attention: deliveries from any channel that could not be stored as leads yet. They keep their payload and
+ * retry automatically (8 times); this panel makes anything still stuck visible and retryable.
+ */
+function StuckDeliveries({ perm }: { perm: { update: boolean } }) {
+  const [d, setD] = useState<any>(null);
+  const [busy, setBusy] = useState(false);
+  const [open, setOpen] = useState(false);
+  const toast = useToast();
+  const load = () => api("/co/integrations/failures?limit=20").then(setD).catch(() => setD(null));
+  useEffect(() => {
+    load();
+  }, []);
+  const failed = d?.counts?.failed || 0;
+  const dead = d?.counts?.dead || 0;
+  if (!d || failed + dead === 0) return null;
+  return (
+    <div className="mb-4 rounded-2xl border border-amber-300 bg-amber-50 p-3.5">
+      <div className="flex flex-wrap items-center gap-3">
+        <TriangleAlert className="h-5 w-5 shrink-0 text-amber-700" />
+        <p className="min-w-0 flex-1 text-sm text-amber-900">
+          <b>
+            {failed + dead} {failed + dead > 1 ? "deliveries" : "delivery"} not yet saved as leads
+          </b>
+          {failed > 0 && <span> · {failed} retrying automatically</span>}
+          {dead > 0 && <span> · {dead} need{dead === 1 ? "s" : ""} a retry here</span>}
+          <span className="block text-xs text-amber-800/80">Nothing is lost — each one keeps its original payload.</span>
+        </p>
+        <button className="btn-ghost text-amber-900" onClick={() => setOpen(!open)}>
+          {open ? "Hide" : "Show"}
+        </button>
+        {perm.update && (
+          <Btn
+            variant="secondary"
+            loading={busy}
+            onClick={async () => {
+              setBusy(true);
+              try {
+                const r = await api("/co/integrations/failures/retry-all", { method: "POST" });
+                toast(r.ok ? "ok" : "err", `${r.ok} of ${r.tried} saved${r.left ? ` · ${r.left} still stuck` : ""}`);
+                load();
+              } catch (e: any) {
+                toast("err", e.message);
+              } finally {
+                setBusy(false);
+              }
+            }}
+          >
+            <RotateCw className="h-4 w-4" /> Retry all
+          </Btn>
+        )}
+      </div>
+      {open && (
+        <ul className="mt-3 space-y-1.5 border-t border-amber-300/60 pt-3">
+          {d.items.map((e: any) => (
+            <li key={e._id} className="flex flex-wrap items-center gap-2 text-xs text-amber-900">
+              <span className="font-semibold">{e.connector || e.type || "Connector"}</span>
+              <span className="text-amber-800/70">{fmtDate(e.createdAt)}</span>
+              <span className="rounded-full bg-white/70 px-2 py-0.5 font-semibold">{e.status === "dead" ? `stopped after ${e.attempts} tries` : `retry ${e.attempts}/8`}</span>
+              <span className="min-w-0 flex-1 truncate" title={e.error}>
+                {e.error}
+              </span>
+              {perm.update && (
+                <button
+                  className="btn-ghost text-amber-900"
+                  onClick={async () => {
+                    try {
+                      const r = await api(`/co/integrations/events/${e._id}/retry`, { method: "POST" });
+                      toast(r.ok ? "ok" : "err", r.ok ? "Saved as a lead" : r.error || "Still failing");
+                      load();
+                    } catch (err: any) {
+                      toast("err", err.message);
+                    }
+                  }}
+                >
+                  Retry
+                </button>
+              )}
+            </li>
+          ))}
+        </ul>
+      )}
     </div>
   );
 }

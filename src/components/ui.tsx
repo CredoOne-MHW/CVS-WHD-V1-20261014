@@ -46,14 +46,14 @@ export function Modal({ open, onClose, title, children, footer, size = "lg" }: {
   return (
     <div className="fixed inset-0 z-50 flex items-end justify-center bg-ink-900/45 p-0 backdrop-blur-sm sm:items-center sm:p-6" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
       <div role="dialog" aria-modal className={`flex max-h-[92vh] w-full ${w} flex-col overflow-hidden rounded-t-3xl bg-white shadow-2xl ring-1 ring-black/5 sm:rounded-[28px]`}>
-        <div className="flex items-center justify-between border-b border-ink-400/15 px-6 py-4 sm:px-7 sm:py-5">
-          <h2 className="text-lg font-bold text-ink-900 sm:text-xl">{title}</h2>
+        <div className="flex items-center justify-between border-b border-ink-400/15 px-5 py-3.5 sm:px-6 sm:py-4">
+          <h2 className="text-base font-bold text-ink-900 sm:text-lg">{title}</h2>
           <button onClick={onClose} className="rounded-lg p-1.5 text-ink-400 hover:bg-hive-50 hover:text-ink-900" aria-label="Close">
             <X className="h-5 w-5" />
           </button>
         </div>
-        <div className="flex-1 overflow-y-auto px-6 py-5 sm:px-7">{children}</div>
-        {footer && <div className="flex flex-wrap justify-end gap-3 border-t border-ink-400/15 px-6 py-4 sm:px-7">{footer}</div>}
+        <div className="flex-1 overflow-y-auto px-5 py-4 sm:px-6">{children}</div>
+        {footer && <div className="flex flex-wrap justify-end gap-2 border-t border-ink-400/15 px-5 py-3 sm:px-6">{footer}</div>}
       </div>
     </div>
   );
@@ -100,10 +100,10 @@ export function Badge({ color = "gray", children }: { color?: keyof typeof BADGE
 
 export function PageHeader({ title, subtitle, actions }: { title: string; subtitle?: string; actions?: ReactNode }) {
   return (
-    <div className="mb-7 flex flex-wrap items-end justify-between gap-4">
+    <div className="mb-5 flex flex-wrap items-end justify-between gap-3">
       <div>
-        <h1 className="text-[28px] font-extrabold leading-tight tracking-[-0.02em] text-ink-900">{title}</h1>
-        {subtitle && <p className="mt-1.5 text-[14.5px] text-ink-500">{subtitle}</p>}
+        <h1 className="text-[23px] font-extrabold leading-tight tracking-[-0.02em] text-ink-900 sm:text-[25px]">{title}</h1>
+        {subtitle && <p className="mt-1 text-[13.5px] text-ink-500">{subtitle}</p>}
       </div>
       {actions && <div className="flex flex-wrap items-center gap-2">{actions}</div>}
     </div>
@@ -112,7 +112,7 @@ export function PageHeader({ title, subtitle, actions }: { title: string; subtit
 
 export function Empty({ title, hint, action }: { title: string; hint?: string; action?: ReactNode }) {
   return (
-    <div className="flex flex-col items-center justify-center px-6 py-14 text-center">
+    <div className="flex flex-col items-center justify-center px-6 py-10 text-center">
       <div className="mb-3 rounded-2xl bg-hive-50 p-3 text-hive-600">
         <Inbox className="h-6 w-6" />
       </div>
@@ -189,14 +189,14 @@ export function Stat({ label, value, hint, tone = "green" }: { label: string; va
   const dot = { green: "bg-hive-500", honey: "bg-honey-500", red: "bg-red-500", gray: "bg-ink-400" }[tone];
   const glow = { green: "from-hive-100", honey: "from-honey-100", red: "from-red-50", gray: "from-ink-400/10" }[tone];
   return (
-    <div className="card relative overflow-hidden p-5">
+    <div className="card relative overflow-hidden p-4">
       <span aria-hidden className={`pointer-events-none absolute -right-10 -top-10 h-32 w-32 rounded-full bg-gradient-to-br ${glow} to-transparent`} />
       <p className="relative flex items-center gap-2 text-[13px] font-semibold text-ink-500">
         <span className={`h-2 w-2 rounded-full ${dot}`} />
         {label}
       </p>
-      <p className="relative mt-3 text-[32px] font-extrabold leading-none tracking-[-0.02em] text-ink-900 tabular-nums">{value}</p>
-      {hint && <p className="relative mt-2 text-xs text-ink-500">{hint}</p>}
+      <p className="relative mt-2 text-[26px] font-extrabold leading-none tracking-[-0.02em] text-ink-900 tabular-nums">{value}</p>
+      {hint && <p className="relative mt-1.5 text-xs text-ink-500">{hint}</p>}
     </div>
   );
 }

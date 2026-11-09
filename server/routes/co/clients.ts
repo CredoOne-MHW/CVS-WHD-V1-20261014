@@ -16,7 +16,7 @@ import { h, parse, notFound, badRequest, forbidden, paging, escapeRegex, HttpErr
 import { encrypt } from "../../lib/crypto";
 import { fireEvent } from "../../lib/whatsapp";
 import { cached, invalidate } from "../../lib/cache";
-import { getBoard, newColumnId, promoteClients, throttled, notifyClient, refreshBilling, ensureRecurringDues, refreshOverdue, nextSeq, clientPhone } from "../../lib/clients";
+import { getBoard, newColumnId, promoteClients, throttled, notifyClient, refreshBilling, ensureRecurringDues, refreshOverdue, nextSeq, clientPhone, endOfToday } from "../../lib/clients";
 import { normalizePhone } from "../../../shared/constants";
 import { CLIENT_FREQ_KEYS, PAYMENT_MODES, SUPPORT_CATEGORIES, TICKET_STATUS_LIST, GST_RE, PAN_RE, aadhaarValid, maskAadhaar, applyDiscount, clientFreqLabel, round2, linesOf, ATTACHMENT_MAX_MB, type AttachmentType } from "../../../shared/clients";
 
@@ -170,7 +170,7 @@ r.delete("/service-types/:id", canAny([["leads", "update"], ["clients", "update"
 }));
 
 /* ───────────── Clients: list, picker, profile + journey, edit ───────────── */
-const CLIENT_LIST_FIELDS = "name phone whatsapp email clientCode clientSince serviceStage stageAt services serviceLines source campaign business.gst business.ownerPhone";
+const CLIENT_LIST_FIELDS = "name companyName phone whatsapp email clientCode clientSince serviceStage stageAt services serviceLines source campaign business.gst business.ownerPhone";
 
 r.get("/clients", can("clients:clients", "read"), h(async (req, res) => {
   const cid = tenant(req).companyId;
@@ -186,10 +186,27 @@ r.get("/clients", can("clients:clients", "read"), h(async (req, res) => {
   }
   const [items, total, board] = await Promise.all([Lead.find(q).sort({ clientSince: -1, _id: -1 }).skip(skip).limit(limit).select(CLIENT_LIST_FIELDS).lean<any[]>(), Lead.countDocuments(q), getBoard(cid)]);
   // outstanding dues for the clients on this page (one grouped query)
-  const due = items.length
-    ? await ClientPayment.aggregate([{ $match: { companyId: oid(cid), clientId: { $in: items.map((i) => i._id) }, status: { $in: ["unpaid", "overdue"] } } }, { $group: { _id: "$clientId", n: { $sum: 1 }, amount: { $sum: "$gross" } } }])
+  // split by due date: Outstanding = due on or before today, Upcoming = later months
+  const until = endOfToday();
+  // one indexed read of this page's open dues; totalled here so the split is identical to the client drawer
+  const open = items.length
+    ? await ClientPayment.find({ companyId: oid(cid), clientId: { $in: items.map((i) => i._id) }, status: { $in: ["unpaid", "overdue"] } })
+        .select("clientId gross dueDate")
+        .lean<any[]>()
     : [];
-  const dueBy = new Map(due.map((d: any) => [String(d._id), d]));
+  const dueBy = new Map<string, { n: number; amount: number; upcomingN: number; upcoming: number }>();
+  for (const p of open) {
+    const k = String(p.clientId);
+    const cur = dueBy.get(k) || { n: 0, amount: 0, upcomingN: 0, upcoming: 0 };
+    if (new Date(p.dueDate) <= until) {
+      cur.n++;
+      cur.amount = round2(cur.amount + (p.gross || 0));
+    } else {
+      cur.upcomingN++;
+      cur.upcoming = round2(cur.upcoming + (p.gross || 0));
+    }
+    dueBy.set(k, cur);
+  }
   res.json({ items: items.map((i) => ({ ...i, outstanding: dueBy.get(String(i._id)) || null })), total, page, limit, columns: board.columns });
 }));
 
@@ -245,13 +262,18 @@ r.get("/clients/:id", can("clients:clients", "read"), h(async (req, res) => {
     if (p.paidAt) events.push({ at: p.paidAt, type: "paid", title: "Payment received", detail: `₹${p.gross.toLocaleString("en-IN")}${p.mode ? ` · ${p.mode}` : ""}${p.txnId ? ` · ${p.txnId}` : ""}` });
   }
   events.sort((a, b) => new Date(b.at).getTime() - new Date(a.at).getTime());
-  const outstanding = payments.filter((p) => p.status !== "paid").reduce((a, p) => a + p.gross, 0);
+  // Outstanding = what is actually due by today. Dues dated later are "Upcoming" and are not money owed yet.
+  const until = endOfToday();
+  const unpaid = payments.filter((p) => p.status !== "paid");
+  const outstanding = unpaid.filter((p) => new Date(p.dueDate) <= until).reduce((a, p) => a + p.gross, 0);
+  const upcoming = unpaid.filter((p) => new Date(p.dueDate) > until).reduce((a, p) => a + p.gross, 0);
   const paid = payments.filter((p) => p.status === "paid").reduce((a, p) => a + p.gross, 0);
-  res.json({ client: safeLead(c), columns: board.columns, tickets, plans, payments, events, totals: { outstanding: round2(outstanding), paid: round2(paid) } });
+  res.json({ client: safeLead(c), columns: board.columns, tickets, plans, payments, events, totals: { outstanding: round2(outstanding), upcoming: round2(upcoming), paid: round2(paid) } });
 }));
 
 const clientEdit = z.object({
   name: z.string().trim().max(150).optional(),
+  companyName: z.string().trim().max(200).optional(),
   phone: z.string().optional().or(z.literal("")),
   whatsapp: z.string().optional().or(z.literal("")),
   email: z.string().email().optional().or(z.literal("")),
@@ -449,6 +471,43 @@ r.get("/clients-plans", can("clients:sales_order", "read"), h(async (req, res) =
   if (req.query.q) {
     const rx = { $regex: escapeRegex(String(req.query.q)), $options: "i" };
     q.$or = [{ clientCode: rx }, { clientName: rx }, { serviceType: rx }];
+  }
+  // ?group=client → one row per client holding its service lines (the flat list stays available for the API)
+  if (String(req.query.group || "") === "client") {
+    // newest line first, de-duplicated to clients — a light projection, so it works on every MongoDB-compatible engine
+    const order = await ClientPlan.find(q).sort({ createdAt: -1, _id: -1 }).select("clientId").limit(5000).lean<any[]>();
+    const seenSet = new Set<string>();
+    const seen: string[] = [];
+    for (const o of order) {
+      const k = String(o.clientId);
+      if (!seenSet.has(k)) {
+        seenSet.add(k);
+        seen.push(k);
+      }
+    }
+    const clientIds = seen.slice(skip, skip + limit).map((id) => oid(id));
+    const lines = clientIds.length ? await ClientPlan.find({ ...q, clientId: { $in: clientIds } }).sort({ createdAt: -1, _id: -1 }).lean<any[]>() : [];
+    const byClient = new Map<string, any>();
+    for (const id of clientIds) byClient.set(String(id), { clientId: String(id), lines: [] });
+    for (const l of lines) byClient.get(String(l.clientId))?.lines.push(l);
+    const groups = [...byClient.values()]
+      .filter((g) => g.lines.length)
+      .map((g) => {
+        const first = g.lines[0];
+        return {
+          ...g,
+          clientCode: first.clientCode,
+          clientName: first.clientName,
+          services: g.lines.map((l: any) => l.serviceType),
+          licenses: g.lines.reduce((a: number, l: any) => a + (l.licenses || 1), 0),
+          amount: round2(g.lines.reduce((a: number, l: any) => a + (l.amount || 0), 0)),
+          recurring: g.lines.filter((l: any) => l.type === "recurring").length,
+          onDemand: g.lines.filter((l: any) => l.type !== "recurring").length,
+          nextStart: g.lines.map((l: any) => l.startDate).filter(Boolean).sort()[0],
+        };
+      });
+    const totalClients = seen.length;
+    return res.json({ items: groups, total: totalClients, page, limit, grouped: true });
   }
   const [items, total] = await Promise.all([ClientPlan.find(q).sort({ createdAt: -1, _id: -1 }).skip(skip).limit(limit).lean(), ClientPlan.countDocuments(q)]);
   res.json({ items, total, page, limit });

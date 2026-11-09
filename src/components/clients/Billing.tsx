@@ -1,6 +1,6 @@
 "use client";
-import { useCallback, useEffect, useRef, useState } from "react";
-import { Plus, Pencil, Trash2, BellRing, Search, Repeat, Zap, Paperclip, X, Download } from "lucide-react";
+import { Fragment, useCallback, useEffect, useRef, useState } from "react";
+import { Plus, Pencil, Trash2, BellRing, Search, Repeat, Zap, Paperclip, X, Download, ChevronRight, ReceiptText } from "lucide-react";
 import { api, qs, fmtDate, inr } from "@/lib/api";
 import { Btn, Modal, Field, Empty, Pager, Spinner, Confirm, Stat, useToast } from "../ui";
 import { usePerm, useMe } from "../Shell";
@@ -51,15 +51,37 @@ export function Billing() {
 
 /* ───────────── Sales Order (was Payment Details) ───────────── */
 
+/** Sales order line(s) → the Invoice form, pre-filled (amount = sum of the lines, client locked). */
+const convFrom = (g: any, lines: any[]) => ({
+  clientId: String(g.clientId),
+  clientCode: g.clientCode,
+  clientName: g.clientName,
+  services: lines.map((l) => l.serviceType),
+  amount: String(round2(lines.reduce((a, l) => a + (l.amount || 0), 0))),
+  discountType: "fixed",
+  discountFixed: "",
+  discountPct: "",
+  status: "unpaid",
+  mode: "",
+  txnId: "",
+  remarks: `Converted from Sales Order · ${lines.map((l) => l.serviceType).join(", ")}`,
+  dueDate: today(),
+  kind: "on_demand",
+  fromPlan: true,
+});
+
 function PlanTable() {
   const [f, setF] = useState({ q: "", type: "", page: 1 });
   const [data, setData] = useState<any>(null);
   const [form, setForm] = useState<any>(null);
   const [del, setDel] = useState<any>(null);
   const [busy, setBusy] = useState(false);
+  const [open, setOpen] = useState<Record<string, boolean>>({}); // expanded client rows
+  const [conv, setConv] = useState<any>(null); // Convert to Invoice
   const perm = usePerm("clients:sales_order");
+  const invPerm = usePerm("clients:invoice");
   const toast = useToast();
-  const load = useCallback(() => api(`/co/clients-plans${qs(f)}`).then(setData), [f]);
+  const load = useCallback(() => api(`/co/clients-plans${qs({ ...f, group: "client" })}`).then(setData), [f]); // one row per client, services inside
   useEffect(() => {
     load();
   }, [load]);
@@ -137,48 +159,96 @@ function PlanTable() {
         <table className="w-full min-w-[900px]">
           <thead>
             <tr>
-              {["Client", "Service Type", "Licenses", "Rate", "Payment Amount", "Payment Type", "Frequency", "Starts", "Action"].map((h) => (
-                <th key={h} className={`th ${h === "Action" ? "text-right" : ""}`}>
+              {["Client", "Services", "Licenses", "Payment Amount", "Payment Type", "Frequency", "Starts", "Action"].map((h) => (
+                <th key={h} className={`th py-2.5 ${h === "Action" ? "text-right" : ""}`}>
                   {h}
                 </th>
               ))}
             </tr>
           </thead>
           <tbody>
-            {data?.items.map((p: any) => (
-              <tr key={p._id} className="hover:bg-hive-50/40">
-                <td className="td">
-                  <p className="font-semibold">{p.clientName || "NA"}</p>
-                  <p className="mono text-xs text-hive-800">{p.clientCode}</p>
-                </td>
-                <td className="td">{p.serviceType}</td>
-                <td className="td tabular-nums">{p.licenses ?? 1}</td>
-                <td className="td tabular-nums text-ink-700">{p.rate != null ? inr(p.rate) : "—"}</td>
-                <td className="td font-semibold tabular-nums">{inr(p.amount)}</td>
-                <td className="td">{p.type === "recurring" ? "Recurring" : "On-Demand"}</td>
-                <td className="td">{clientFreqLabel(p.frequency)}</td>
-                <td className="td text-ink-700">{p.startDate ? fmtDate(p.startDate, false) : "—"}</td>
-                <td className="td">
-                  <div className="flex justify-end gap-1">
-                    {perm.update && (
-                      <button className="btn-ghost" title="Edit" aria-label="Edit" onClick={() => setForm({ ...p, rate: String(p.rate ?? round2(p.amount / (p.licenses || 1))), licenses: p.licenses ?? 1, startDate: istDate(p.startDate) || today(), clientId: String(p.clientId) })}>
-                        <Pencil className="h-4 w-4" />
+            {data?.items.map((g: any) => {
+              const isOpen = !!open[g.clientId];
+              const freq = [...new Set(g.lines.map((l: any) => clientFreqLabel(l.frequency)))];
+              const types = g.recurring && g.onDemand ? "Recurring + On-Demand" : g.recurring ? "Recurring" : "On-Demand";
+              return (
+                <Fragment key={g.clientId}>
+                  <tr className={isOpen ? "bg-hive-50/60" : "hover:bg-hive-50/40"}>
+                    <td className="td py-2.5">
+                      <button className="flex items-start gap-1.5 text-left" onClick={() => setOpen({ ...open, [g.clientId]: !isOpen })} aria-expanded={isOpen} aria-label={`${isOpen ? "Hide" : "Show"} services of ${g.clientName}`}>
+                        <ChevronRight className={`mt-0.5 h-4 w-4 shrink-0 text-ink-400 transition-transform ${isOpen ? "rotate-90" : ""}`} />
+                        <span>
+                          <span className="block font-semibold">{g.clientName || "NA"}</span>
+                          <span className="mono block text-xs text-hive-800">{g.clientCode}</span>
+                        </span>
                       </button>
-                    )}
-                    {perm.delete && (
-                      <button className="btn-ghost text-red-600" title="Delete" aria-label="Delete" onClick={() => setDel(p)}>
-                        <Trash2 className="h-4 w-4" />
-                      </button>
-                    )}
-                    {perm.update && (
-                      <button className="btn-ghost" title={p.lastReminderAt ? `Reminder · last sent ${fmtDate(p.lastReminderAt)}` : "Reminder"} aria-label="Reminder" onClick={() => remind(p)}>
-                        <BellRing className="h-4 w-4" />
-                      </button>
-                    )}
-                  </div>
-                </td>
-              </tr>
-            ))}
+                    </td>
+                    <td className="td py-2.5">
+                      <span className="line-clamp-2" title={g.services.join(", ")}>
+                        {g.services.join(", ")}
+                      </span>
+                      <span className="text-[11px] text-ink-400">{g.lines.length} service{g.lines.length > 1 ? "s" : ""}</span>
+                    </td>
+                    <td className="td py-2.5 tabular-nums">{g.licenses}</td>
+                    <td className="td py-2.5 font-semibold tabular-nums">{inr(g.amount)}</td>
+                    <td className="td py-2.5">{types}</td>
+                    <td className="td py-2.5">{freq.join(", ")}</td>
+                    <td className="td py-2.5 text-ink-500">{g.nextStart ? fmtDate(g.nextStart, false) : "—"}</td>
+                    <td className="td py-2.5">
+                      <div className="flex justify-end gap-1">
+                        {invPerm.create && (
+                          <button className="btn-ghost" title="Convert to Invoice (all services)" aria-label="Convert to Invoice" onClick={() => setConv(convFrom(g, g.lines))}>
+                            <ReceiptText className="h-4 w-4" />
+                          </button>
+                        )}
+                        <button className="btn-ghost" title={isOpen ? "Hide services" : "Show services"} onClick={() => setOpen({ ...open, [g.clientId]: !isOpen })}>
+                          <ChevronRight className={`h-4 w-4 transition-transform ${isOpen ? "rotate-90" : ""}`} />
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                  {isOpen &&
+                    g.lines.map((p: any) => (
+                      <tr key={p._id} className="bg-[#f7f8f6] text-[13px]">
+                        <td className="td py-2 pl-10 text-ink-500">↳</td>
+                        <td className="td py-2">{p.serviceType}</td>
+                        <td className="td py-2 tabular-nums">{p.licenses ?? 1}</td>
+                        <td className="td py-2 tabular-nums">
+                          {inr(p.amount)}
+                          <span className="block text-[11px] text-ink-400">rate {p.rate != null ? inr(p.rate) : "—"}</span>
+                        </td>
+                        <td className="td py-2">{p.type === "recurring" ? "Recurring" : "On-Demand"}</td>
+                        <td className="td py-2">{clientFreqLabel(p.frequency)}</td>
+                        <td className="td py-2 text-ink-500">{p.startDate ? fmtDate(p.startDate, false) : "—"}</td>
+                        <td className="td py-2">
+                          <div className="flex justify-end gap-1">
+                            {invPerm.create && (
+                              <button className="btn-ghost" title="Convert to Invoice" aria-label={`Convert ${p.serviceType} to Invoice`} onClick={() => setConv(convFrom(g, [p]))}>
+                                <ReceiptText className="h-4 w-4" />
+                              </button>
+                            )}
+                            {perm.update && (
+                              <button className="btn-ghost" title="Edit" aria-label="Edit" onClick={() => setForm({ ...p, rate: String(p.rate ?? round2(p.amount / (p.licenses || 1))), licenses: p.licenses ?? 1, startDate: istDate(p.startDate) || today(), clientId: String(p.clientId) })}>
+                                <Pencil className="h-4 w-4" />
+                              </button>
+                            )}
+                            {perm.delete && (
+                              <button className="btn-ghost text-red-600" title="Delete" aria-label="Delete" onClick={() => setDel(p)}>
+                                <Trash2 className="h-4 w-4" />
+                              </button>
+                            )}
+                            {perm.update && (
+                              <button className="btn-ghost" title={p.lastReminderAt ? `Reminder · last sent ${fmtDate(p.lastReminderAt)}` : "Reminder"} aria-label="Reminder" onClick={() => remind(p)}>
+                                <BellRing className="h-4 w-4" />
+                              </button>
+                            )}
+                          </div>
+                        </td>
+                      </tr>
+                    ))}
+                </Fragment>
+              );
+            })}
           </tbody>
         </table>
         {!data && (
@@ -239,6 +309,30 @@ function PlanTable() {
           load();
         }}
       />
+      {conv && (
+        <PaymentForm
+          form={conv}
+          setForm={setConv}
+          view="on_demand"
+          busy={busy}
+          lockClient
+          onSave={async () => {
+            setBusy(true);
+            try {
+              const { fromPlan, clientCode, clientName, discountFixed, discountPct, ...rest } = conv;
+              await api("/co/clients-payments", {
+                body: { ...rest, amount: Number(conv.amount || 0), discountType: conv.discountType, discountValue: Number((conv.discountType === "percent" ? conv.discountPct : conv.discountFixed) || 0), dueDate: fromIst(conv.dueDate) },
+              });
+              toast("ok", "Invoice created — open the Invoice tab to see it");
+              setConv(null);
+            } catch (e: any) {
+              toast("err", e.message);
+            } finally {
+              setBusy(false);
+            }
+          }}
+        />
+      )}
     </div>
   );
 }
@@ -744,7 +838,7 @@ function PaymentTable({ view }: { view: View }) {
   );
 }
 
-function PaymentForm({ form, setForm, view, busy, onSave }: { form: any; setForm: (f: any) => void; view: View; busy: boolean; onSave: () => void }) {
+function PaymentForm({ form, setForm, view, busy, onSave, lockClient }: { form: any; setForm: (f: any) => void; view: View; busy: boolean; onSave: () => void; lockClient?: boolean }) {
   const [pricing, setPricing] = useState<{ missing: string[] } | null>(null);
   const lastKey = useRef("");
   const statusOnly = !!form?._id && view === "history";
@@ -785,7 +879,7 @@ function PaymentForm({ form, setForm, view, busy, onSave }: { form: any; setForm
     <Modal
       open
       onClose={() => setForm(null)}
-      title={statusOnly ? "Update invoice status" : form._id ? "Edit invoice" : "Create On-Demand invoice"}
+      title={statusOnly ? "Update invoice status" : form.fromPlan ? "Convert to Invoice" : form._id ? "Edit invoice" : "Create On-Demand invoice"}
       size="md"
       footer={
         <>
@@ -820,7 +914,7 @@ function PaymentForm({ form, setForm, view, busy, onSave }: { form: any; setForm
       ) : (
         <div className="grid gap-4 sm:grid-cols-2">
           <Field label="Client" required className="sm:col-span-2">
-            <ClientSelect value={form.clientId} disabled={!pickable} onChange={(v) => set("clientId", v)} />
+            {lockClient ? <input className="input bg-[#f6f7f5] font-semibold" readOnly value={`${form.clientName || ""} · ${form.clientCode || ""}`} /> : <ClientSelect value={form.clientId} disabled={!pickable} onChange={(v) => set("clientId", v)} />}
           </Field>
           <Field label="Service Type" required className="sm:col-span-2" hint={pricing?.missing?.length ? `No price in the Sales Order for: ${pricing.missing.join(", ")} — enter the amount` : "Multi-select · search or add new"}>
             {pickable ? <ServicePicker value={form.services} onChange={(v) => set("services", v)} placeholder="Select service type(s)…" /> : <input className="input" disabled value={form.services.join(", ")} />}

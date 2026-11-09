@@ -23,7 +23,7 @@ const STATUS_COLOR: Record<string, any> = {
   "Lost / Not Converted": "red",
 };
 
-const BLANK = { name: "", whatsapp: "", phone: "", email: "", address: "", comments: "", source: "manual", campaign: "", status: "New", consentWhatsapp: true, serviceLines: [] as { service: string; licenses: number }[], biz: bizFrom() };
+const BLANK = { name: "", companyName: "", whatsapp: "", phone: "", email: "", address: "", comments: "", source: "manual", campaign: "", status: "New", consentWhatsapp: true, serviceLines: [] as { service: string; licenses: number }[], biz: bizFrom() };
 /** Lead from the API → editable form state (business details are edited as a separate block). */
 const toEdit = (x: any) => ({ ...x, remark: "", serviceLines: linesOf(x), biz: bizFrom(x.business) });
 
@@ -131,10 +131,10 @@ function LeadsInner() {
           <input type="date" className="input w-auto" value={f.to} onChange={(e) => setF({ ...f, to: e.target.value, page: 1 })} aria-label="To" />
         </div>
         <div className="overflow-x-auto">
-          <table className="w-full min-w-[1250px]">
+          <table className="w-full min-w-[1380px]">
             <thead>
               <tr>
-                {["Name", "WhatsApp No", "Phone No", "Email ID", "Address", "Comments", "Source", "Status", "Action"].map((h) => (
+                {["Name", "Company Name", "WhatsApp No", "Phone No", "Email ID", "Address", "Comments", "Source", "Status", "Action"].map((h) => (
                   <th key={h} className={`th ${h === "Action" ? "text-right" : ""}`}>
                     {h}
                   </th>
@@ -144,11 +144,14 @@ function LeadsInner() {
             <tbody>
               {data?.items.map((l: any) => (
                 <tr key={l._id} className="hover:bg-hive-50/40">
-                  <td className="td">
+                  <td className="td min-w-[150px]">
                     <button className="text-left font-semibold text-ink-900 hover:text-hive-700" onClick={() => api(`/co/leads/${l._id}`).then((x) => setEdit(toEdit(x)))}>
                       {l.name || "NA"}
                     </button>
-                    <p className="text-xs text-ink-400">{fmtDate(l.createdAt)}</p>
+                    <p className="whitespace-nowrap text-xs text-ink-400">{fmtDate(l.createdAt)}</p>
+                  </td>
+                  <td className="td max-w-[170px] truncate" title={l.companyName}>
+                    {l.companyName || "NA"}
                   </td>
                   <td className="td mono">{l.whatsapp || "NA"}</td>
                   <td className="td mono">{l.phone || "NA"}</td>
@@ -264,8 +267,8 @@ function LeadsInner() {
                     if (edit.status === LOST_STATUS && !edit.lostReason) throw new Error("Select a lost reason");
                     const err = linesError(edit.serviceLines) || bizError(edit.biz);
                     if (err) throw new Error(err);
-                    const { _id, name, whatsapp, phone, email, address, comments, source, campaign, status, remark, lostReason, lostReasonOther, nextFollowUpAt, serviceLines, biz } = edit;
-                    const r = await api(`/co/leads/${_id}`, { method: "PUT", body: { name, whatsapp, phone, email, address, comments, source, campaign, status, remark: remark || undefined, lostReason: status === LOST_STATUS ? lostReason : undefined, lostReasonOther, nextFollowUpAt: nextFollowUpAt || null, serviceLines: linesPayload(serviceLines), business: bizPayload(biz) } });
+                    const { _id, name, companyName, whatsapp, phone, email, address, comments, source, campaign, status, remark, lostReason, lostReasonOther, nextFollowUpAt, serviceLines, biz } = edit;
+                    const r = await api(`/co/leads/${_id}`, { method: "PUT", body: { name, companyName, whatsapp, phone, email, address, comments, source, campaign, status, remark: remark || undefined, lostReason: status === LOST_STATUS ? lostReason : undefined, lostReasonOther, nextFollowUpAt: nextFollowUpAt || null, serviceLines: linesPayload(serviceLines), business: bizPayload(biz) } });
                     if (r.movedToClients) movedToast(r.clientCode);
                     else toast("ok", "Lead updated");
                     setEdit(null);
@@ -511,6 +514,9 @@ function LeadFields({ v, set }: { v: any; set: (x: any) => void }) {
     <div className="grid gap-4 sm:grid-cols-2">
       <Field label="Name">
         <input className="input" value={v.name || ""} onChange={(e) => u("name", e.target.value)} />
+      </Field>
+      <Field label="Company Name" hint="The business this lead represents">
+        <input className="input" placeholder={v._id ? "NA" : undefined} value={v.companyName || ""} onChange={(e) => u("companyName", e.target.value)} />
       </Field>
       <Field label="Status">
         <select className="input" value={v.status} onChange={(e) => u("status", e.target.value)}>

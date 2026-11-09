@@ -23,7 +23,7 @@ if (login.status !== 200) {
   process.exit(2);
 }
 if (process.env.COMPANY_ID) await call("POST", `/api/auth/impersonate/${process.env.COMPANY_ID}`); // Super Admin testing a company
-const reads = ["/api/auth/me", "/api/co/dashboard/overview?days=30", "/api/co/leads?page=1", "/api/co/leads/meta", "/api/co/clients?page=1", "/api/co/clients-board", "/api/co/clients-tickets?page=1", "/api/co/clients-payments?kind=recurring", "/api/co/wa-logs?page=1", "/api/co/ai-agents", "/api/co/subscription"];
+const reads = ["/api/auth/me", "/api/co/dashboard/overview?days=30", "/api/co/leads?page=1", "/api/co/leads/meta", "/api/co/clients?page=1", "/api/co/clients-board", "/api/co/clients-tickets?page=1", "/api/co/clients-payments?kind=recurring", "/api/co/clients-plans?group=client", "/api/co/integrations/failures", "/api/co/wa-logs?page=1", "/api/co/ai-agents", "/api/co/subscription"];
 const rows = [];
 let failed = false;
 for (const path of reads) {
