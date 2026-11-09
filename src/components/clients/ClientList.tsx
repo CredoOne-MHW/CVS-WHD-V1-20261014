@@ -1,6 +1,6 @@
 "use client";
 import { useCallback, useEffect, useState } from "react";
-import { Search, Eye, UserPlus, Flag, LifeBuoy, IndianRupee, CircleDollarSign, StickyNote, Briefcase, ArrowRightLeft } from "lucide-react";
+import { Search, Eye, UserPlus, Flag, LifeBuoy, IndianRupee, CircleDollarSign, StickyNote, Briefcase, ArrowRightLeft, Trash2, ShieldAlert } from "lucide-react";
 import { api, qs, fmtDate, inr } from "@/lib/api";
 import { Btn, Modal, Field, Badge, Empty, Pager, Spinner, useToast } from "../ui";
 import { usePerm } from "../Shell";
@@ -15,6 +15,8 @@ export function ClientList() {
   const [f, setF] = useState({ q: "", stage: "", service: "", page: 1 });
   const [data, setData] = useState<any>(null);
   const [open, setOpen] = useState<string | null>(null);
+  const [del, setDel] = useState<any>(null);
+  const perm = usePerm("clients:clients");
   const services = useServices();
   const load = useCallback(() => api(`/co/clients${qs(f)}`).then(setData), [f]);
   useEffect(() => {
@@ -90,9 +92,16 @@ export function ClientList() {
                   </td>
                   <td className="td text-ink-700">{fmtDate(c.clientSince, false)}</td>
                   <td className="td text-right">
-                    <button className="btn-ghost" title="View journey" aria-label="View journey" onClick={() => setOpen(c._id)}>
-                      <Eye className="h-4 w-4" />
-                    </button>
+                    <div className="inline-flex items-center gap-0.5">
+                      <button className="btn-ghost" title="View journey" aria-label="View journey" onClick={() => setOpen(c._id)}>
+                        <Eye className="h-4 w-4" />
+                      </button>
+                      {perm.delete && (
+                        <button className="btn-ghost text-red-600 hover:bg-red-50 hover:text-red-700" title="Delete client (OTP)" aria-label="Delete client" onClick={() => setDel(c)}>
+                          <Trash2 className="h-4 w-4" />
+                        </button>
+                      )}
+                    </div>
                   </td>
                 </tr>
               );
@@ -108,7 +117,118 @@ export function ClientList() {
       </div>
       {data?.total > 0 && <Pager page={data.page} limit={data.limit} total={data.total} onPage={(page) => setF({ ...f, page })} />}
       <ClientProfile id={open} onClose={() => setOpen(null)} onSaved={load} />
+      <DeleteClient client={del} onClose={() => setDel(null)} onDeleted={load} />
     </div>
+  );
+}
+
+/**
+ * Delete a client — the same WhatsApp-OTP gate Leads use, with the full footprint shown first.
+ * Nothing is erased: the profile, sales orders, invoices, pay-ins and tickets are archived in the
+ * company's own database (and in the activity log) before the live rows go.
+ */
+function DeleteClient({ client, onClose, onDeleted }: { client: any; onClose: () => void; onDeleted: () => void }) {
+  const [pre, setPre] = useState<any>(null);
+  const [sentTo, setSentTo] = useState("");
+  const [code, setCode] = useState("");
+  const [reason, setReason] = useState("");
+  const [busy, setBusy] = useState(false);
+  const toast = useToast();
+  useEffect(() => {
+    setPre(null);
+    setSentTo("");
+    setCode("");
+    setReason("");
+    if (client) api(`/co/clients/${client._id}/delete-preview`).then(setPre).catch(() => setPre({}));
+  }, [client]);
+
+  async function send() {
+    setBusy(true);
+    try {
+      const r = await api(`/co/clients/${client._id}/delete-otp`, { method: "POST" });
+      setSentTo(r.sentTo);
+      toast("ok", `OTP sent to ${r.sentTo}`);
+    } catch (e: any) {
+      toast("err", e.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+  async function confirm() {
+    setBusy(true);
+    try {
+      await api(`/co/clients/${client._id}/delete-confirm`, { body: { otp: code, reason: reason || undefined } });
+      toast("ok", "Client deleted — a full copy is archived");
+      onDeleted();
+      onClose();
+    } catch (e: any) {
+      toast("err", e.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+  const row = (label: string, value: string) => (
+    <li className="flex items-center justify-between gap-3 py-1">
+      <span className="text-ink-500">{label}</span>
+      <span className="font-semibold text-ink-900">{value}</span>
+    </li>
+  );
+
+  return (
+    <Modal
+      open={!!client}
+      onClose={onClose}
+      size="sm"
+      title={
+        <span className="flex items-center gap-2 text-red-700">
+          <ShieldAlert className="h-5 w-5" /> Delete client
+        </span>
+      }
+      footer={
+        <>
+          <Btn variant="secondary" onClick={onClose}>
+            Cancel
+          </Btn>
+          {!sentTo ? (
+            <Btn variant="danger" loading={busy} onClick={send}>
+              Send OTP
+            </Btn>
+          ) : (
+            <Btn variant="danger" loading={busy} disabled={code.length !== 6} onClick={confirm}>
+              Delete client
+            </Btn>
+          )}
+        </>
+      }
+    >
+      {client && (
+        <div className="space-y-3 text-sm">
+          <p className="text-ink-700">
+            <b>{client.name || client.phone}</b> <span className="mono text-xs text-ink-500">{client.clientCode}</span> will be removed from Clients, the Service Board and Subscription Management.
+          </p>
+          {pre && (
+            <ul className="divide-y divide-ink-400/10 rounded-2xl border border-ink-400/15 px-3 py-1 text-[13px]">
+              {row("Sales order lines", String(pre.plans ?? 0))}
+              {row("Invoices (unpaid)", `${pre.invoices ?? 0}${pre.invoiceAmount ? ` · ${inr(pre.invoiceAmount)}` : ""}`)}
+              {row("Pay-In (received)", `${pre.payins ?? 0}${pre.payinAmount ? ` · ${inr(pre.payinAmount)}` : ""}`)}
+              {row("Support tickets", `${pre.tickets ?? 0}${pre.openTickets ? ` (${pre.openTickets} open)` : ""}`)}
+            </ul>
+          )}
+          <p className="rounded-2xl bg-hive-50 px-3 py-2 text-[12px] text-ink-700">
+            A full copy — profile, sales orders, invoices, pay-ins and tickets — is archived in your company database and recorded in the activity log, so it can be restored. Payment attachments in S3 are left untouched.
+          </p>
+          {!sentTo ? (
+            <Field label="Reason (optional)" hint="Kept with the archive and in the activity log">
+              <input className="input" value={reason} onChange={(e) => setReason(e.target.value)} placeholder="e.g. duplicate record, contract ended" />
+            </Field>
+          ) : (
+            <Field label={`OTP sent to ${sentTo}`} hint="Valid for 5 minutes">
+              <input className="input text-center text-2xl font-bold tracking-[.5em]" inputMode="numeric" maxLength={6} autoFocus value={code} onChange={(e) => setCode(e.target.value.replace(/\D/g, ""))} />
+            </Field>
+          )}
+        </div>
+      )}
+    </Modal>
   );
 }
 

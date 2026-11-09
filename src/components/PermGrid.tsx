@@ -5,7 +5,7 @@ import { permRows, type PermMap, type Perm, type Action, type ModuleDef } from "
 const ACTIONS: (keyof Perm)[] = ["create", "read", "update", "delete"];
 const NONE: Perm = { create: false, read: false, update: false, delete: false };
 
-type Row = { key: string; label: string; group?: string; parent?: string; actions?: Action[] };
+type Row = { key: string; label: string; group?: string; parent?: string; actions?: Action[]; strict?: Action[] };
 
 /**
  * Module × CRUD grid. Rows come from the module registry, so any newly added
@@ -25,12 +25,12 @@ export function PermGrid({ modules, value, onChange, caps, disabled, withSubs }:
   /** Can this box be ticked at all? */
   // a sub-module cap exists when the company's caps are given (plan + Super Admin overrides per sub-module)
   const allowed = (r: Row, a: keyof Perm) => (r.parent ? applicable(r, a) && capOk(r.parent, a) && (!caps?.[r.key] || !!caps[r.key][a]) && !!value?.[r.parent]?.[a] : capOk(r.key, a));
-  /** What the role effectively gets (subs inherit from the module unless set). */
+  /** What the role effectively gets (subs inherit from the module unless set; `strict` actions never inherit). */
   const get = (r: Row, a: keyof Perm): boolean => {
     if (!r.parent) return !!value?.[r.key]?.[a];
     if (!allowed(r, a)) return false;
     const own = value?.[r.key];
-    return own ? !!own[a] : true;
+    return own ? !!own[a] : !r.strict?.includes(a as Action);
   };
   const effective = (r: Row): Perm => Object.fromEntries(ACTIONS.map((a) => [a, get(r, a)])) as unknown as Perm;
 
@@ -99,7 +99,10 @@ export function PermGrid({ modules, value, onChange, caps, disabled, withSubs }:
                             reset
                           </button>
                         ) : (
-                          <span className="ml-2 text-[11px] text-ink-400">follows module</span>
+                          <span className="ml-2 text-[11px] text-ink-400">
+                            follows module
+                            {r.strict?.length ? <span className="ml-1 text-amber-700">· {r.strict.join(", ")} only when ticked here</span> : null}
+                          </span>
                         )}
                       </span>
                     ) : (

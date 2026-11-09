@@ -34,7 +34,7 @@ export const WA_EVENTS = [
   { key: "lead_status_changed", scope: "company", group: "Leads", label: "Lead status changed", to: "Lead", module: "leads", description: "A lead's status changes (single or bulk update).", params: ["status", "previous"] },
   { key: "lead_reminder", scope: "company", group: "Leads", label: "Lead reminder (Lead → Reminder)", to: "Lead", module: "leads", description: "Sent when staff press Reminder on a lead.", params: ["lead_id", "status"] },
   { key: "followup_digest", scope: "company", group: "Leads", label: "Daily follow-up digest", to: "Company admin", module: "leads", description: "Morning summary of new leads and follow-ups due today.", params: ["new", "due"] },
-  { key: "delete_otp", scope: "company", group: "Leads", label: "Delete OTP (verification)", to: "Company admin", module: "leads", description: "One-time code to confirm deleting leads.", params: ["otp"] },
+  { key: "delete_otp", scope: "company", group: "Leads", label: "Delete OTP (verification)", to: "Company admin", module: "leads", description: "One-time code to confirm deleting a lead or a client.", params: ["otp"] },
 
   /* ───────────── Company › Client ───────────── */
   { key: "client_created", scope: "company", group: "Client", label: "Lead converted to client (welcome + Client ID)", to: "Client", module: "clients", description: "A lead becomes a client (status “Converted / Service Initiated”). Includes the Client ID and support page link.", params: ["client_id", "support_url"] },

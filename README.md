@@ -738,3 +738,42 @@ Refresh button, the payload opening inline under its row, `OK 200` result badges
 - Compact density applied to the shared primitives (`.input`, `.btn`, `.th`, `.td`, `.label`, PageHeader, Modal, Stat), so every screen tightened without any section or field being removed.
 - Client drawer: summary and Journey are a sticky column; Journey has its own scroll area and a count.
 - Local latency check (20 runs each): reads p95 4–73 ms, writes p95 21–26 ms, against budgets of 300 / 500 ms.
+
+## 19. v1.2.0 — deleting a client, verified by WhatsApp OTP (Nov 2026)
+
+A client can now be deleted from **Client › Clients**, behind the same one-time-code gate Leads already use. Everything from v1.0.0 and v1.1.0 is unchanged.
+
+### 19.1 The three steps
+| Step | Endpoint | What it does |
+| --- | --- | --- |
+| Footprint | `GET /api/co/clients/:id/delete-preview` | Sales order lines, unpaid invoices (count + amount), pay-ins received (count + amount), tickets (and how many are open), payment attachments |
+| Code | `POST /api/co/clients/:id/delete-otp` | 6-digit code to the signed-in user's WhatsApp (company number as fallback) over the existing `delete_otp` event. 5 minutes, 5 attempts, `Otp.purpose = "client_delete"` |
+| Delete | `POST /api/co/clients/:id/delete-confirm` | Verifies the code, archives the whole client, removes its live rows, soft-deletes the lead, writes the activity log |
+
+The dialog takes an optional **reason**, kept with the archive and in the activity log.
+
+### 19.2 Nothing is erased
+`ClientArchive` (company database) stores `{ client, plans, payments, tickets }` in full, plus `deletedBy`, `reason` and the counts, **before** anything is removed. S3 payment attachments are left in place, so a deleted client can be reconstructed completely. The client's own journey keeps a closing note recording the delete.
+
+### 19.3 Cascade — no orphans
+`ClientPlan`, `ClientPayment` and `SupportTicket` rows for the client are removed together with it, so Sales Order, Invoice, Pay-In and Support Tickets never show a row pointing at a client that is gone. The lead is soft-deleted (`deletedAt`), which also keeps it out of Leads, the Service Board, the client picker and the public support page; `promoteClients()` skips deleted records, so it is never silently re-created, and no further recurring dues are generated. `clientbill:<companyId>` is invalidated so the billing summaries recount at once.
+
+### 19.4 Permission — a non-inheriting action
+`clients:clients` now offers **delete**, and `SubModuleDef` gained `strict?: Action[]` for actions that must not follow their module:
+
+```ts
+{ key: "clients", label: "Clients", actions: ["read", "update", "delete"], strict: ["delete"] }
+```
+
+In `withSubPerms()` a `strict` action is granted only when the role's own grid ticks it (`own ? !!own[a] : follows(a)`), and `follows()` returns false for strict actions **only when a role grid is in play**. So:
+
+| Who | Client module delete | Clients sub-module delete | Can delete a client |
+| --- | --- | --- | --- |
+| Company owner (no role) | — | — | yes (unchanged) |
+| Role, module delete only | ✓ | untouched | **no** |
+| Role, box ticked | ✓ | ✓ | yes |
+
+That keeps every role that existed before v1.2.0 exactly as it was — none of them gains a destructive new power by inheritance. Company caps (`companyCaps`) and Super Admin › Company › Modules are unaffected, so the capability can still be restricted or paused per company. `PermGrid` applies the same rule and labels the row "delete only when ticked here". Server-side all three endpoints use `can("clients:clients", "delete")`.
+
+### 19.5 Event copy
+`delete_otp` now reads "One-time code to confirm deleting a lead or a client." The key, template and any webhook already configured are untouched.
