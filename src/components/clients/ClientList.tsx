@@ -84,7 +84,10 @@ export function ClientList() {
                       </span>
                     )}
                   </td>
-                  <td className="td">{c.outstanding ? <span className="font-semibold text-red-700">{inr(c.outstanding.amount)}</span> : <span className="text-ink-400">—</span>}</td>
+                  <td className="td">
+                    {c.outstanding?.amount ? <span className="font-semibold text-red-700">{inr(c.outstanding.amount)}</span> : <span className="text-ink-400">—</span>}
+                    {c.outstanding?.upcoming > 0 && <p className="text-[11px] text-ink-400">+{inr(c.outstanding.upcoming)} upcoming</p>}
+                  </td>
                   <td className="td text-ink-700">{fmtDate(c.clientSince, false)}</td>
                   <td className="td text-right">
                     <button className="btn-ghost" title="View journey" aria-label="View journey" onClick={() => setOpen(c._id)}>
@@ -122,7 +125,7 @@ export function ClientProfile({ id, onClose, onSaved }: { id: string | null; onC
     api(`/co/clients/${id}`).then((x) => {
       setD(x);
       const c = x.client;
-      setForm({ name: c.name || "", phone: c.phone || "", whatsapp: c.whatsapp || "", email: c.email || "", address: c.address || "", serviceLines: linesOf(c), biz: bizFrom(c.business), remark: "" });
+      setForm({ name: c.name || "", companyName: c.companyName || "", phone: c.phone || "", whatsapp: c.whatsapp || "", email: c.email || "", address: c.address || "", serviceLines: linesOf(c), biz: bizFrom(c.business), remark: "" });
     });
   }, [id]);
 
@@ -178,10 +181,13 @@ export function ClientProfile({ id, onClose, onSaved }: { id: string | null; onC
           <Spinner className="h-6 w-6" />
         </div>
       ) : (
-        <div className="grid gap-6 lg:grid-cols-[1fr_380px]">
+        <div className="grid items-start gap-5 lg:grid-cols-[1fr_370px]">
           <div className="grid content-start gap-4 sm:grid-cols-2">
             <Field label="Name">
               <input className="input" value={form.name} disabled={!perm.update} onChange={(e) => u("name", e.target.value)} />
+            </Field>
+            <Field label="Company Name">
+              <input className="input" placeholder="NA" value={form.companyName} disabled={!perm.update} onChange={(e) => u("companyName", e.target.value)} />
             </Field>
             <Field label="Email ID">
               <input className="input" type="email" placeholder="NA" value={form.email} disabled={!perm.update} onChange={(e) => u("email", e.target.value)} />
@@ -203,16 +209,25 @@ export function ClientProfile({ id, onClose, onSaved }: { id: string | null; onC
               </Field>
             )}
           </div>
-          <aside className="space-y-5">
+          {/* summary + journey stay in view while the form scrolls, so the timeline is never cut off */}
+          <aside className="space-y-3 lg:sticky lg:top-0 lg:max-h-[calc(92vh-11rem)] lg:self-start lg:overflow-y-auto lg:pr-1">
             <div className="grid grid-cols-2 gap-3">
-              <div className="rounded-2xl bg-red-50/70 p-3.5">
+              <div className="rounded-2xl bg-red-50/70 p-3">
                 <p className="text-[11px] font-bold uppercase tracking-wider text-red-700/80">Outstanding</p>
-                <p className="mt-1 text-lg font-extrabold text-red-700">{inr(d.totals.outstanding)}</p>
+                <p className="mt-0.5 text-lg font-extrabold leading-tight text-red-700">{inr(d.totals.outstanding)}</p>
+                <p className="text-[11px] text-ink-500">due till today</p>
               </div>
-              <div className="rounded-2xl bg-hive-50 p-3.5">
+              <div className="rounded-2xl bg-hive-50 p-3">
                 <p className="text-[11px] font-bold uppercase tracking-wider text-hive-700/80">Paid</p>
-                <p className="mt-1 text-lg font-extrabold text-hive-800">{inr(d.totals.paid)}</p>
+                <p className="mt-0.5 text-lg font-extrabold leading-tight text-hive-800">{inr(d.totals.paid)}</p>
+                <p className="text-[11px] text-ink-500">received</p>
               </div>
+              {d.totals.upcoming > 0 && (
+                <div className="col-span-2 flex items-center justify-between rounded-2xl border border-ink-400/15 px-3 py-2">
+                  <span className="text-[11px] font-bold uppercase tracking-wider text-ink-500">Upcoming</span>
+                  <span className="text-sm font-bold text-ink-900">{inr(d.totals.upcoming)}</span>
+                </div>
+              )}
             </div>
             <div className="rounded-2xl border border-ink-400/15 p-3.5 text-sm">
               <p className="flex items-center justify-between">
@@ -265,11 +280,15 @@ export function ClientProfile({ id, onClose, onSaved }: { id: string | null; onC
                 </ul>
               </div>
             )}
-            <div>
-              <p className="mb-2 flex items-center gap-1.5 text-xs font-bold uppercase tracking-wider text-ink-500">
-                <ArrowRightLeft className="h-3.5 w-3.5" /> Journey
+            <div className="rounded-2xl border border-ink-400/15">
+              <p className="flex items-center justify-between gap-1.5 border-b border-ink-400/10 px-3 py-2 text-xs font-bold uppercase tracking-wider text-ink-500">
+                <span className="flex items-center gap-1.5">
+                  <ArrowRightLeft className="h-3.5 w-3.5" /> Journey
+                </span>
+                <span className="rounded-full bg-hive-50 px-2 py-0.5 text-[10px] text-hive-800">{d.events.length}</span>
               </p>
-              <ol className="max-h-[420px] space-y-3 overflow-y-auto border-l-2 border-hive-100 pl-4">
+              {/* own scroll area so the last entry is never cut off by the drawer edge */}
+              <ol className="max-h-[42vh] space-y-2.5 overflow-y-auto border-l-2 border-hive-100 py-3 pl-4 pr-3 ml-3">
                 {d.events.map((e: any, i: number) => {
                   const I = EVENT_ICON[e.type] || StickyNote;
                   return (
@@ -286,6 +305,7 @@ export function ClientProfile({ id, onClose, onSaved }: { id: string | null; onC
                     </li>
                   );
                 })}
+                {!d.events.length && <li className="text-xs text-ink-400">Nothing recorded yet.</li>}
               </ol>
             </div>
           </aside>

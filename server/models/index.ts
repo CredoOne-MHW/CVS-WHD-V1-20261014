@@ -179,6 +179,7 @@ const LeadSchema = new Schema(
   {
     companyId: { type: ObjectId, ref: "Company", required: true, index: true },
     name: { type: String, default: "" },
+    companyName: { type: String, default: "" }, // business the lead represents (B2B); shown on Lead and carried to Client
     whatsapp: { type: String, index: true },
     phone: { type: String, index: true },
     email: { type: String, lowercase: true },
@@ -301,6 +302,8 @@ const IntakeEventSchema = new Schema(
 );
 IntakeEventSchema.index({ connectorId: 1, idemKey: 1 }, { unique: true });
 IntakeEventSchema.index({ createdAt: 1 }, { expireAfterSeconds: 60 * 60 * 24 * 90 });
+IntakeEventSchema.index({ companyId: 1, status: 1, createdAt: -1 }); // Integration › Needs attention
+IntakeEventSchema.index({ status: 1, nextAttemptAt: 1 }); // retry cron
 export const IntakeEvent = tm<any>("IntakeEvent", IntakeEventSchema);
 
 /** People removed from Leads who must not be collected again by Public Web Prospecting. Only one-way hashes are kept. */
@@ -369,6 +372,7 @@ const ClientPlanSchema = new Schema(
   ts
 );
 ClientPlanSchema.index({ companyId: 1, createdAt: -1 });
+ClientPlanSchema.index({ companyId: 1, clientId: 1, createdAt: -1 }); // Sales Order grouped by client
 ClientPlanSchema.index({ companyId: 1, clientId: 1, serviceType: 1 });
 ClientPlanSchema.index({ companyId: 1, type: 1, active: 1 });
 export const ClientPlan = tm<any>("ClientPlan", ClientPlanSchema);
@@ -403,6 +407,7 @@ const ClientPaymentSchema = new Schema(
 ClientPaymentSchema.index({ companyId: 1, kind: 1, status: 1, dueDate: 1 });
 ClientPaymentSchema.index({ companyId: 1, status: 1, paidAt: -1 });
 ClientPaymentSchema.index({ companyId: 1, clientId: 1, dueDate: -1 });
+ClientPaymentSchema.index({ companyId: 1, status: 1, dueDate: 1 }); // Outstanding (due till today) vs Upcoming
 ClientPaymentSchema.index({ planId: 1, dueDate: 1 }, { unique: true, partialFilterExpression: { planId: { $type: "objectId" } } });
 export const ClientPayment = tm<any>("ClientPayment", ClientPaymentSchema);
 

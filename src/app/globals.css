@@ -36,13 +36,13 @@ body {
 
 @layer components {
   .input {
-    @apply w-full rounded-xl border border-ink-400/25 bg-white px-3.5 py-2.5 text-sm text-ink-900 shadow-[0_1px_0_rgba(16,24,40,.03)] outline-none transition placeholder:text-ink-400 hover:border-ink-400/40 focus:border-hive-500 focus:ring-4 focus:ring-hive-100 disabled:bg-hive-50/60;
+    @apply w-full rounded-xl border border-ink-400/25 bg-white px-3 py-2 text-[13.5px] text-ink-900 shadow-[0_1px_0_rgba(16,24,40,.03)] outline-none transition placeholder:text-ink-400 hover:border-ink-400/40 focus:border-hive-500 focus:ring-4 focus:ring-hive-100 disabled:bg-hive-50/60;
   }
   .label {
-    @apply mb-1.5 block text-[13px] font-semibold text-ink-700;
+    @apply mb-1 block text-[12.5px] font-semibold text-ink-700;
   }
   .btn {
-    @apply inline-flex min-h-[40px] items-center justify-center gap-2 rounded-xl px-4 py-2.5 text-sm font-semibold transition focus:outline-none focus-visible:ring-4 focus-visible:ring-hive-200 disabled:cursor-not-allowed disabled:opacity-50;
+    @apply inline-flex min-h-[36px] items-center justify-center gap-2 rounded-xl px-3.5 py-2 text-[13.5px] font-semibold transition focus:outline-none focus-visible:ring-4 focus-visible:ring-hive-200 disabled:cursor-not-allowed disabled:opacity-50;
   }
   .btn-primary {
     @apply btn bg-gradient-to-b from-hive-600 to-hive-700 text-white shadow-glow hover:from-hive-700 hover:to-hive-800;
@@ -51,7 +51,7 @@ body {
     @apply btn border border-ink-400/25 bg-white text-ink-900 shadow-card hover:border-ink-400/40 hover:bg-hive-50;
   }
   .btn-ghost {
-    @apply btn min-h-0 px-2.5 py-1.5 text-ink-700 hover:bg-hive-50 hover:text-hive-800;
+    @apply btn min-h-0 px-2 py-1 text-ink-700 hover:bg-hive-50 hover:text-hive-800;
   }
   .btn-danger {
     @apply btn bg-red-600 text-white shadow-sm hover:bg-red-700;
@@ -60,10 +60,10 @@ body {
     @apply rounded-2xl border border-ink-400/15 bg-white shadow-card;
   }
   .th {
-    @apply whitespace-nowrap border-b border-ink-400/15 bg-[#fafbf9] px-4 py-3 text-left text-[11.5px] font-bold uppercase tracking-[.06em] text-ink-500;
+    @apply whitespace-nowrap border-b border-ink-400/15 bg-[#fafbf9] px-3 py-2.5 text-left text-[11px] font-bold uppercase tracking-[.06em] text-ink-500;
   }
   .td {
-    @apply border-b border-ink-400/10 px-4 py-3.5 align-top text-sm text-ink-900;
+    @apply border-b border-ink-400/10 px-3 py-2.5 align-top text-[13.5px] text-ink-900;
   }
   .mono {
     @apply font-mono text-[12.5px];

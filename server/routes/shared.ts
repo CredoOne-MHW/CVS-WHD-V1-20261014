@@ -156,8 +156,10 @@ export function waLogRoutes(scope: Scope) {
     if (req.query.event) q.event = req.query.event;
     if (req.query.phone) q.to = { $regex: escapeRegex(String(req.query.phone).replace(/\D/g, "")) }; // "To" filter (`to` is the date range end)
     if (req.query.result) q.result = req.query.result;
-    const [items, total] = await Promise.all([WaLog.find(q).sort({ createdAt: -1, _id: -1 }).skip(skip).limit(limit).select("-response").lean(), WaLog.countDocuments(q)]);
-    res.json({ items, total, page, limit });
+    const [items, total] = await Promise.all([WaLog.find(q).sort({ createdAt: -1, _id: -1 }).skip(skip).limit(limit).lean(), WaLog.countDocuments(q)]);
+    // the list shows the provider's own reply in Detail; the full bodies stay behind GET /:id (Payload)
+    const brief = items.map(({ response, request, ...rest }: any) => ({ ...rest, responseText: typeof response === "string" ? response.slice(0, 200) : response ? JSON.stringify(response).slice(0, 200) : "" }));
+    res.json({ items: brief, total, page, limit });
   }));
   r.get("/:id", can("wa_logs", "read"), h(async (req, res) => {
     if (scope === "super" && /^[a-f0-9]{24}$/.test(String(req.query.companyId || ""))) setTenantDb(await dbOf(req.query.companyId));

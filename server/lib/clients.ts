@@ -48,6 +48,11 @@ export function throttled(key: string, ms: number) {
 }
 
 const inrFmt = (n: number) => `₹${Number(n || 0).toLocaleString("en-IN", { maximumFractionDigits: 2 })}`;
+/** End of today in IST — dues up to this moment are money owed now; later ones are "Upcoming". */
+export function endOfToday() {
+  return new Date(`${new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Kolkata" })}T23:59:59.999+05:30`);
+}
+
 const dmy = (d: any) => (d ? new Date(d).toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric", timeZone: "Asia/Kolkata" }) : "");
 
 /**
