@@ -10,10 +10,11 @@ import { ctxUpload } from "../../lib/context";
 import { putObject, getObject, deleteObject, attachmentFolder } from "../../lib/s3";
 import { z } from "zod";
 import mongoose from "mongoose";
-import { Lead, Company, ServiceType, ClientBoard, SupportTicket, ClientPlan, ClientPayment } from "../../models";
+import crypto from "crypto";
+import { Lead, Company, ServiceType, ClientBoard, SupportTicket, ClientPlan, ClientPayment, ClientArchive, Otp, User } from "../../models";
 import { can, tenant, permOf } from "../../middleware/auth";
 import { h, parse, notFound, badRequest, forbidden, paging, escapeRegex, HttpError } from "../../lib/http";
-import { encrypt } from "../../lib/crypto";
+import { encrypt, sha256 } from "../../lib/crypto";
 import { fireEvent } from "../../lib/whatsapp";
 import { cached, invalidate } from "../../lib/cache";
 import { getBoard, newColumnId, promoteClients, throttled, notifyClient, refreshBilling, ensureRecurringDues, refreshOverdue, nextSeq, clientPhone, endOfToday } from "../../lib/clients";
@@ -298,6 +299,110 @@ r.put("/clients/:id", can("clients:clients", "update"), h(async (req, res) => {
   if (serviceLines || services) await syncPlanLicenses(c);
   res.locals.item = `${c.clientCode} ${c.name}`;
   res.json(safeLead(c));
+}));
+
+/* ───────────── Delete a client (WhatsApp OTP, same as Leads) ─────────────
+ * Three steps, so a client is never removed by a stray click:
+ *   1. /delete-preview  — exactly what goes with it (sales orders, invoices, pay-ins, tickets)
+ *   2. /delete-otp      — a 6-digit code to the signed-in user's WhatsApp
+ *   3. /delete-confirm  — code verified → full snapshot archived, live rows removed, client soft-deleted
+ * Nothing is erased: ClientArchive keeps the whole record and the activity log keeps who did it and why.
+ */
+
+/** Everything attached to this client, counted for the confirm dialog. */
+async function clientFootprint(c: any) {
+  const [plans, payments, tickets] = await Promise.all([
+    ClientPlan.find({ companyId: c.companyId, clientId: c._id }).lean<any[]>(),
+    ClientPayment.find({ companyId: c.companyId, clientId: c._id }).lean<any[]>(),
+    SupportTicket.find({ companyId: c.companyId, clientId: c._id }).lean<any[]>(),
+  ]);
+  const paid = payments.filter((p) => p.status === "paid");
+  const due = payments.filter((p) => p.status !== "paid");
+  return {
+    plans,
+    payments,
+    tickets,
+    counts: {
+      plans: plans.length,
+      invoices: due.length,
+      invoiceAmount: round2(due.reduce((a, p) => a + (p.gross || 0), 0)),
+      payins: paid.length,
+      payinAmount: round2(paid.reduce((a, p) => a + (p.gross || 0), 0)),
+      tickets: tickets.length,
+      openTickets: tickets.filter((t) => !["Resolved", "Closed"].includes(t.status)).length,
+      attachments: payments.reduce((a, p) => a + (p.attachments?.length || 0), 0),
+    },
+  };
+}
+
+r.get("/clients/:id/delete-preview", can("clients:clients", "delete"), h(async (req, res) => {
+  const c = await loadClient(req);
+  const { counts } = await clientFootprint(c);
+  res.json({ clientCode: c.clientCode, name: c.name || c.phone, ...counts });
+}));
+
+/** Step 1 — send a 6-digit code to the signed-in user's WhatsApp. */
+r.post("/clients/:id/delete-otp", can("clients:clients", "delete"), h(async (req, res) => {
+  const c = await loadClient(req);
+  const [user, company] = await Promise.all([User.findById(req.auth!.userId).lean<any>(), Company.findById(req.auth!.companyId).lean<any>()]);
+  const phone = user?.phone || company?.whatsapp;
+  if (!phone) throw badRequest("Add your WhatsApp number to your profile to receive delete OTPs");
+  const code = String(crypto.randomInt(100000, 1000000));
+  await Otp.deleteMany({ userId: user._id, purpose: "client_delete", target: String(c._id) });
+  await Otp.create({ userId: user._id, purpose: "client_delete", target: String(c._id), codeHash: sha256(`${code}:${user._id}`), expiresAt: new Date(Date.now() + 5 * 60_000) });
+  const sent = await fireEvent(
+    "company",
+    req.auth!.companyId,
+    "delete_otp",
+    { phone, name: user.name, company: company?.name, message: `${code} is your OTP to delete client ${c.clientCode} "${c.name || c.phone}" and its sales orders, invoices and tickets. Valid for 5 minutes. Do not share.`, params: { otp: code } },
+    "auto",
+    req.auth!.email
+  );
+  if (!sent.sent) throw new HttpError(424, `Could not send OTP: ${sent.reason || "webhook failed"}. Create an active webhook for the "Delete OTP" event.`);
+  res.locals.action = "Delete OTP sent";
+  res.locals.item = `${c.clientCode} ${c.name || ""}`.trim();
+  res.json({ sentTo: `••••••${String(phone).slice(-4)}`, expiresInSec: 300 });
+}));
+
+/** Step 2 — verify the code, archive the whole client, then remove it. */
+r.post("/clients/:id/delete-confirm", can("clients:clients", "delete"), h(async (req, res) => {
+  const b = parse(z.object({ otp: z.string().regex(/^\d{6}$/), reason: z.string().trim().max(300).optional() }), req.body);
+  const rec = await Otp.findOne({ userId: req.auth!.userId, purpose: "client_delete", target: req.params.id, expiresAt: { $gt: new Date() } });
+  if (!rec) throw badRequest("OTP expired. Request a new one.");
+  if (rec.attempts >= 5) throw badRequest("Too many wrong attempts. Request a new OTP.");
+  if (rec.codeHash !== sha256(`${b.otp}:${req.auth!.userId}`)) {
+    rec.attempts += 1;
+    await rec.save();
+    throw badRequest("Incorrect OTP");
+  }
+  await rec.deleteOne();
+
+  const c = await loadClient(req);
+  const { plans, payments, tickets, counts } = await clientFootprint(c);
+  const by = `${req.auth!.name} <${req.auth!.email}>`;
+  // snapshot first — if anything below fails, the record is still recoverable
+  await ClientArchive.create({
+    companyId: c.companyId,
+    clientId: c._id,
+    clientCode: c.clientCode,
+    clientName: c.name,
+    deletedBy: by,
+    reason: b.reason,
+    counts: { plans: counts.plans, invoices: counts.invoices, payins: counts.payins, tickets: counts.tickets, invoiceAmount: counts.invoiceAmount, payinAmount: counts.payinAmount },
+    snapshot: { client: c.toObject(), plans, payments, tickets },
+  });
+  await Promise.all([
+    ClientPlan.deleteMany({ companyId: c.companyId, clientId: c._id }),
+    ClientPayment.deleteMany({ companyId: c.companyId, clientId: c._id }),
+    SupportTicket.deleteMany({ companyId: c.companyId, clientId: c._id }),
+  ]);
+  c.remarks.push({ by: req.auth!.name, text: `Client deleted${b.reason ? ` — ${b.reason}` : ""} (OTP verified; ${counts.plans} sales order line(s), ${counts.invoices} invoice(s), ${counts.payins} pay-in(s), ${counts.tickets} ticket(s) archived)` });
+  c.deletedAt = new Date();
+  await c.save();
+  await invalidate(`clientbill:${c.companyId}`); // Invoice / Pay-In summaries recount without this client
+  res.locals.action = "Delete client (OTP verified)";
+  res.locals.item = `${c.clientCode} ${c.name || ""}`.trim();
+  res.json({ ok: true, archived: counts });
 }));
 
 /* ───────────── Kanban board ───────────── */

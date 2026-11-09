@@ -28,3 +28,14 @@ summary: The exact messages platforms show, why, and the fix.
 | Google: **“This Google account can’t open that sheet”** | Sheet not shared with that account | Share the sheet, or sign in with its owner |
 | Connector says **“Login expired — reconnect”** | The token expired or was revoked | Open the connector → **Reconnect** |
 | Website form / WhatsApp returns **401** | The API key is missing from the call | Send `x-api-key`, or add `?key=` to the URL (REST API & webhooks) |
+
+## Deleting a client
+
+| What you see | Cause | Fix |
+|---|---|---|
+| No delete icon on a client row | The role doesn’t have Delete on **Client → Clients**, or Super Admin has restricted or paused it for the company | Role Management → tick Delete on the Clients sub-module |
+| **“Could not send OTP … Create an active webhook for the ‘Delete OTP’ event”** | No active webhook for `delete_otp` | Settings → Webhooks → add one for **Delete OTP (verification)** |
+| **“Add your WhatsApp number to your profile to receive delete OTPs”** | Neither your profile nor the company has a WhatsApp number | Add your number in your profile |
+| **“OTP expired. Request a new one.”** | More than 5 minutes passed | Close the dialog and start again |
+| **“Too many wrong attempts.”** | 5 wrong codes | Request a new code |
+| A client was deleted by mistake | — | Nothing is lost: the whole client, with its sales orders, invoices, pay-ins and tickets, is archived in your company’s database (and the delete is in the activity log). Ask your administrator to restore it. |
