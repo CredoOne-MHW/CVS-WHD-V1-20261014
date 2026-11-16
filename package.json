@@ -1,6 +1,6 @@
 {
   "name": "leadhive-lms",
-  "version": "1.8.5",
+  "version": "1.8.7",
   "private": true,
   "description": "Multi-tenant Lead Management System — Next.js UI + Express API (Vercel), MongoDB, S3",
   "scripts": {
@@ -15,7 +15,9 @@
     "perf:check": "node scripts/perf-check.mjs",
     "kb": "node scripts/build-kb.mjs",
     "releases": "node scripts/build-releases.mjs",
-    "test:gate": "tsx tests/build-gate.test.ts"
+    "test:gate": "tsx tests/build-gate.test.ts",
+    "test:errors": "tsx tests/error-messages.test.ts",
+    "test": "npm run test:gate && npm run test:errors"
   },
   "engines": {
     "node": ">=20"

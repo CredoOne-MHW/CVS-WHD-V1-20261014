@@ -924,3 +924,13 @@ One React Native (Expo) source in `mobile/`, built once per company and per plat
 It is now `BUILD_WORKFLOW_FILE = "build-mobile.yml"`, a constant, and the requirement row is gone from the checklist. `ignoredWorkflowSetting()` reports a leftover value so both panels can say it is being ignored and can be deleted.
 
 **The general shape of this mistake is worth remembering:** a setting with exactly one correct value is not configuration, it is a way to be wrong. The cost of removing it is that renaming the workflow is no longer supported — genuinely rare — against a wrong value that arrives free with every copied `.env`.
+
+## 28. v1.8.7 — errors that are the user's to fix (Nov 2026)
+
+`errorHandler` mapped everything that was not an `HttpError`, a `ZodError` or a duplicate key to `500 "Internal server error"`. Two whole classes of ordinary, fixable failure were hiding in there: `multer` limit errors (an image over the upload size) and every AWS SDK refusal (wrong bucket, missing `s3:PutObject`, expired key). The person saw a reference number; the reason was in a server log they cannot read.
+
+`known(err)` in `server/lib/http.ts` translates both, once, so every upload route in the platform benefits rather than each one needing its own `.catch`. A genuine fault still returns 500 with a ref and still keeps its message server-side.
+
+**This is the third time the same shape of bug has been fixed** — the Mobile App tab spinning on an uncaught rejection (v1.7.0), builds reporting `ref …` instead of GitHub's own 404 (v1.8.3), and now uploads. The pattern: an error carrying a perfectly good explanation, thrown somewhere that discards it. Worth checking for directly whenever a route can fail outside our own code.
+
+`tests/error-messages.test.ts` covers twelve cases, including that a real crash still does not leak its message. `npm test` runs it with the build-gate test; neither needs a database.

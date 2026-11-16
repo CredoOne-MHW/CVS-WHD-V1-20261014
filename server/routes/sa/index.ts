@@ -636,7 +636,8 @@ r.get("/companies-lite", can("activity_logs", "read"), h(async (_req, res) => {
 }));
 
 /* ───────────── Branding assets (logo / side banner / favicon) ───────────── */
-const imgUpload = ctxUpload(multer({ storage: multer.memoryStorage(), limits: { fileSize: 3 * 1024 * 1024 } }));
+const BRAND_IMAGE_MAX_MB = 8; // a side banner is a large image by nature — 3 MB refused ordinary ones
+const imgUpload = ctxUpload(multer({ storage: multer.memoryStorage(), limits: { fileSize: BRAND_IMAGE_MAX_MB * 1024 * 1024 } }));
 r.post("/companies/:id/brand-asset/:kind", can("companies", "update"), imgUpload.single("file"), h(async (req, res) => {
   const kind = req.params.kind;
   if (!["logo", "banner", "favicon"].includes(kind)) throw badRequest("kind must be logo, banner or favicon");
@@ -655,7 +656,7 @@ r.post("/companies/:id/brand-asset/:kind", can("companies", "update"), imgUpload
   await relayoutCompany(c._id).catch(() => undefined); // bring any older files into <Company Name>/logo|banner|brain
   clearTenantCache();
   res.locals.action = `Upload ${kind}`;
-  res.locals.item = c.name;
+  res.locals.item = `${c.name} · ${kind}`;
   res.json({ ok: true, branding: publicBranding(c.toObject()) });
 }));
 /** Re-organise S3 files into <Company Name>/logo · /banner · /brain (one company, or all with id "all"). */
