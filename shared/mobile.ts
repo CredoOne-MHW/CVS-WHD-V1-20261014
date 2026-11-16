@@ -116,12 +116,6 @@ export const SHAPE = {
       : `This goes straight into a GitHub address, so it must be just owner/repo — no https://, no github.com/, no .git. ${
           /github\.com[/:]([\w.-]+\/[\w.-]+?)(\.git)?\/?$/.exec(v) ? `Use ${/github\.com[/:]([\w.-]+\/[\w.-]+?)(\.git)?\/?$/.exec(v)![1]}` : ""
         }`.trim(),
-  workflow: (v: string) => (/\.ya?ml$/.test(v) ? null : "This must be the workflow's file name, ending in .yml — the app's one is build-mobile.yml."),
-  /** This platform ships exactly one workflow, so anything else is worth a second look. */
-  workflowName: (v: string) =>
-    v === "build-mobile.yml"
-      ? null
-      : `This platform ships .github/workflows/build-mobile.yml. ${/desktop/i.test(v) ? `“${v}” is another project's desktop workflow and will not build an app.` : `If you renamed it, ignore this.`} Press “Check GitHub setup” to have GitHub settle it.`,
   longSecret: (v: string) => (v.length >= 16 ? null : "Too short to be a secret. Make one with: openssl rand -hex 32"),
 };
 
@@ -129,7 +123,6 @@ export const BUILD_REQUIREMENTS: BuildRequirement[] = [
   { key: "GITHUB_BUILD_REPO", where: "platform", label: "Build repository", description: "owner/repo holding this code and .github/workflows/build-mobile.yml", required: true, check: (v) => SHAPE.repo(v) },
   { key: "GITHUB_BUILD_TOKEN", where: "platform", label: "GitHub token", description: "Fine-grained token with Actions: read and write on that repository", required: true, secret: true },
   { key: "GITHUB_BUILD_REF", where: "platform", label: "Branch", description: "Branch to build from; empty uses the default branch", required: false },
-  { key: "GITHUB_BUILD_WORKFLOW", where: "platform", label: "Workflow file", description: "Defaults to build-mobile.yml. The desktop workflow of another project will not build an app.", required: false, check: (v) => SHAPE.workflow(v), warn: (v) => SHAPE.workflowName(v) },
   { key: "MOBILE_BUILD_SECRET", where: "platform", label: "Build callback secret", description: "The platform makes and keeps this one, so there is nothing to set here. It signs what a finished build reports back and proves a build may collect a signing key — the SAME value must also be a repository secret of this name, or builds run but never turn Ready.", required: true, secret: true, check: (v) => SHAPE.longSecret(v) },
   {
     key: "MOBILE_SIGNING_SECRET",

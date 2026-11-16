@@ -39,7 +39,6 @@ Set these where the platform runs (Vercel → Settings → Environment Variables
 | `GITHUB_BUILD_REPO` | `owner/repo` of the repository above |
 | `GITHUB_BUILD_TOKEN` | A fine-grained token with **Actions: read and write** on that repository |
 | `GITHUB_BUILD_REF` | The branch to build from — leave empty for the default branch |
-| `GITHUB_BUILD_WORKFLOW` | Leave empty unless you renamed `build-mobile.yml` |
 | `MOBILE_BUILD_SECRET` | A long random value. **The same value goes in the repository's secrets** — it is how a finished build proves it is yours |
 | `MOBILE_BASE_VERSION` | `1.0.0` — builds are numbered `1.0.0.1`, `1.0.0.2`, … per company |
 | `MOBILE_PACKAGE_PREFIX` | e.g. `in.credoone.lms` → each company gets `in.credoone.lms.<code>` |
@@ -170,3 +169,11 @@ Both routes are equally correct; the second always works, whatever the token can
 **If you had `MOBILE_BUILD_SECRET` in the environment already**, it still wins and nothing changes — the panel says which of the two is in use. Remove it if you would rather the platform kept one.
 
 **Making a new one** is on the same panel. Everything building at that moment will fail to report back, so do it when nothing is running.
+
+## The workflow file is not a setting (from v1.8.4)
+
+This platform builds mobile apps with the one workflow it ships, **`.github/workflows/build-mobile.yml`**. There is no setting for it.
+
+There used to be, `GITHUB_BUILD_WORKFLOW`, and it caused more trouble than it was worth: the restaurant platform has a variable of the same name naming a *desktop installer* workflow, environment files get copied between projects, and the wrong value made every build answer 404. If that variable is still set here it is **ignored**, and the set-up panel says so — you can delete it.
+
+What this does mean: **do not rename `build-mobile.yml` in your repository.** The platform asks GitHub for it by that name.

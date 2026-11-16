@@ -10,7 +10,7 @@ import { z } from "zod";
 import { Company, MobileBuild, PushDevice } from "../../models";
 import { can } from "../../middleware/auth";
 import { h, parse, notFound, badRequest, paging } from "../../lib/http";
-import { startBuild, buildRepo, buildWorkflow, readyToBuild, setupState, iosEnabled } from "../../lib/mobilebuild";
+import { startBuild, buildRepo, buildWorkflow, readyToBuild, setupState, iosEnabled, ignoredWorkflowSetting } from "../../lib/mobilebuild";
 import { signingEnabled } from "../../lib/signing";
 import { state as autoState, saveState, newSecret, rebuildAll } from "../../lib/autobuild";
 import { buildSecret, ensureBuildSecret, rotateBuildSecret } from "../../lib/buildsecret";
@@ -55,6 +55,7 @@ r.get("/mobile-releases/summary", read, h(async (req, res) => {
       ...gate,
       repo: buildRepo(),
       workflow: buildWorkflow(),
+      ignoredWorkflow: ignoredWorkflowSetting(),
       requirements: setupState(held),
       signingEnabled: signingEnabled(),
       buildSecret: { source: secretSource, present: !!secret },

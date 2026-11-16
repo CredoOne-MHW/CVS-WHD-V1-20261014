@@ -13,7 +13,7 @@ import { can } from "../middleware/auth";
 import { h, parse, notFound, badRequest, paging } from "../lib/http";
 import { putAt, getObject, deleteObject } from "../lib/s3";
 import { s3Area } from "../../shared/platform";
-import { appConfig, startBuild, setupState, readyToBuild, latestReady, buildRepo, buildWorkflow, buildRef, iosEnabled } from "../lib/mobilebuild";
+import { appConfig, startBuild, setupState, readyToBuild, latestReady, buildRepo, buildWorkflow, buildRef, iosEnabled, ignoredWorkflowSetting } from "../lib/mobilebuild";
 import { signingSummary } from "../lib/signing";
 import { buildSecret } from "../lib/buildsecret";
 import { PLATFORMS, APP_SCREENS, platformLabel, type Platform } from "../../shared/mobile";
@@ -69,7 +69,7 @@ export function mobileRoutes(scope: Scope) {
       limit,
       latest: await latestReady(c._id, scope !== "super").catch(() => ({})),
       signing: scope === "super" ? await signingSummary(c).catch(() => null) : null,
-      setup: scope === "super" ? { ...gate, repo: buildRepo(), workflow: buildWorkflow(), ref: buildRef() || "default branch", requirements: safe(() => setupState(held), []) } : { ok: gate.ok },
+      setup: scope === "super" ? { ...gate, repo: buildRepo(), workflow: buildWorkflow(), ignoredWorkflow: ignoredWorkflowSetting(), ref: buildRef() || "default branch", requirements: safe(() => setupState(held), []) } : { ok: gate.ok },
       prefix: safe(() => s3Area(c.code, "app"), ""),
     });
   }));

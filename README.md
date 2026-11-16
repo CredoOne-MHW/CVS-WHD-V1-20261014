@@ -916,3 +916,11 @@ One React Native (Expo) source in `mobile/`, built once per company and per plat
 **`setupState(platformHeld)` and `readyToBuild(platformHeld)`** take a map of what the platform keeps, so a deliberately absent variable is a tick with its own line rather than a red cross. Called with no argument both behave exactly as in v1.7.1, which is what keeps every existing caller correct.
 
 **Writing secrets into GitHub** (`server/lib/githubsecrets.ts`): GitHub will not take a secret in the clear even over TLS — it publishes a per-repository public key and expects a libsodium sealed box. Hence `libsodium-wrappers`; Node's `crypto` has X25519 but not `crypto_box_seal`, which also needs blake2b and xsalsa20poly1305, and hand-rolling that to save a dependency would be a poor trade. The token needs **Secrets: write**, which many fine-grained tokens lack, so every secret reports its own outcome and the panel always keeps the copy-by-hand route.
+
+## 27. v1.8.4 — the workflow file is a constant (Nov 2026)
+
+`buildWorkflow()` was `env("GITHUB_BUILD_WORKFLOW") || "build-mobile.yml"`. The sibling restaurant platform has a variable of that exact name holding `build-desktop.yml`, environment files get copied between projects, and the result was a mobile platform dispatching a desktop workflow that does not exist in this repository — a 404 on every build, which (before v1.8.3) surfaced as an opaque 500.
+
+It is now `BUILD_WORKFLOW_FILE = "build-mobile.yml"`, a constant, and the requirement row is gone from the checklist. `ignoredWorkflowSetting()` reports a leftover value so both panels can say it is being ignored and can be deleted.
+
+**The general shape of this mistake is worth remembering:** a setting with exactly one correct value is not configuration, it is a way to be wrong. The cost of removing it is that renaming the workflow is no longer supported — genuinely rare — against a wrong value that arrives free with every copied `.env`.
