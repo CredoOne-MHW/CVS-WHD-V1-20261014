@@ -17,7 +17,7 @@ import { Company, MobileBuild } from "../models";
 import { tenantUrls } from "./tenant";
 import { s3Area } from "../../shared/platform";
 import { bundleIdFor, nextVersion, platformLabel, artifactExt, BUILD_REQUIREMENTS, type Platform, type MobileConfig, type BuildTarget } from "../../shared/mobile";
-import { ensureKey, signingEnabled } from "./signing";
+import { ensureKey, signingEnabled, signingRoute, SIGNING_HELP } from "./signing";
 import { buildSecret, ensureBuildSecret } from "./buildsecret";
 
 const env = (k: string) => (process.env[k] || "").trim();
@@ -134,9 +134,20 @@ export async function startBuild(company: any, platform: Platform, by: string, o
   if (await MobileBuild.exists({ companyId: company._id, platform, status: { $in: ["queued", "building"] } })) throw new Error(`An ${platformLabel(platform)} build is already running for this company`);
 
   const cfg = appConfig(company);
-  // Android needs one permanent key for the life of the app, so it is made (once) before anything is queued
+
+  /**
+   * Android needs one permanent key for the life of the app. Finding out there isn't one costs ten minutes
+   * of CI and a failed build, so it is settled here in a second instead. "unknown" means GitHub could not be
+   * asked, and that is never a reason to refuse — the build itself will say so.
+   */
   let signing: any = null;
-  if (platform === "android" && signingEnabled()) signing = await ensureKey(company, by);
+  if (platform === "android") {
+    if (signingEnabled()) signing = await ensureKey(company, by);
+    else {
+      const { route, missing } = await signingRoute().catch(() => ({ route: "unknown" as const, missing: [] as string[] }));
+      if (route === "none") throw new Error(`${SIGNING_HELP}${missing.length ? ` The repository is missing: ${missing.join(", ")}.` : ""}`);
+    }
+  }
 
   const n = (await MobileBuild.countDocuments({ companyId: company._id, platform })) + 1;
   const version = nextVersion(env("MOBILE_BASE_VERSION") || "1.0.0", n);

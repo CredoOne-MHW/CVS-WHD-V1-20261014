@@ -9,6 +9,7 @@
  * So this asks. Four questions, four plain answers, each with what to do about it.
  */
 import { buildRepo, buildWorkflow, buildRef } from "./mobilebuild";
+import { signingRoute, SIGNING_HELP } from "./signing";
 
 const env = (k: string) => (process.env[k] || "").trim();
 const API = "https://api.github.com";
@@ -118,6 +119,28 @@ export async function verifySetup(): Promise<{ ok: boolean; findings: Finding[] 
     }
   } catch {
     findings.push({ key: "actions", label: "Actions", ok: false, detail: "Could not check Actions." });
+  }
+
+  /* 5 — can an Android app actually be signed? Neither route set up means a build that gets all the way to
+         the signing step and dies there, which costs ten minutes to discover. */
+  try {
+    const { route, missing } = await signingRoute(true);
+    if (route === "platform") findings.push({ key: "signing", label: "Signing", ok: true, detail: "The platform makes and keeps one permanent Android key per company." });
+    else if (route === "github") findings.push({ key: "signing", label: "Signing", ok: true, detail: "The repository holds the four ANDROID_* secrets, so builds are signed with your own key." });
+    else if (route === "unknown")
+      findings.push({
+        key: "signing", label: "Signing", ok: true,
+        detail: "Could not read the repository's secrets, so this one is unverified.",
+        fix: "Give the token Secrets: read to have this checked. The build itself still refuses an unsigned app.",
+      });
+    else
+      findings.push({
+        key: "signing", label: "Signing", ok: false,
+        detail: `An Android build would fail at the signing step. The repository is missing ${missing.join(", ")}.`,
+        fix: SIGNING_HELP,
+      });
+  } catch {
+    findings.push({ key: "signing", label: "Signing", ok: true, detail: "Not checked." });
   }
 
   return { ok: findings.every((f) => f.ok), findings };
