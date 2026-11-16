@@ -326,6 +326,63 @@ r.post("/public/mobile/build", h(async (req: any, res) => {
   res.json({ ok: true, status: build.status });
 }));
 
+/**
+ * The signing key for one build, collected by the workflow itself.
+ *
+ * It is not a workflow input because inputs are printed in the run's own log. The build proves it is that
+ * build by signing its id with the same shared secret the result callback uses, and the key is only given out
+ * while the build is still running — a finished build's id is worth nothing.
+ */
+r.get("/public/mobile/signing/:buildId", h(async (req, res) => {
+  const { callbackValid } = await import("../lib/mobilebuild");
+  const { keyForBuild } = await import("../lib/signing");
+  const { MobileBuild } = await import("../models");
+  const id = String(req.params.buildId);
+  if (!callbackValid(id, req.headers["x-build-signature"] as string)) throw new HttpError(401, "Bad signature");
+
+  const build = await MobileBuild.findById(id).lean<any>();
+  if (!build) throw new HttpError(404, "Unknown build");
+  if (!["queued", "building"].includes(build.status)) throw new HttpError(409, "That build is no longer running");
+  const key = await keyForBuild(build.companyId);
+  if (!key) throw new HttpError(404, "No signing key for this company");
+
+  res.setHeader("Cache-Control", "no-store");
+  res.json({ alias: key.alias, keystore_base64: key.keystoreBase64, store_password: key.storePass, key_password: key.keyPass });
+}));
+
+/**
+ * A push to the app's own repository — every company set to rebuild automatically gets a fresh app.
+ *
+ * Both routes into this are the same shape: a step in the repository's workflow, or a repository webhook with
+ * "Just the push event". Either way the body is signed with the trigger secret, and a push to any branch but
+ * the configured one is accepted and ignored, so a feature branch never rebuilds anyone's app.
+ */
+r.post("/public/webhooks/github/push", h(async (req: any, res) => {
+  const { state, pushSignatureValid, saveState, rebuildAll } = await import("../lib/autobuild");
+  const cfg = await state();
+  const raw = typeof req.rawBody === "string" ? req.rawBody : JSON.stringify(req.body || {});
+  const header = (req.headers["x-hub-signature-256"] || req.headers["x-build-signature"]) as string | undefined;
+  if (!pushSignatureValid(raw, header, cfg.secret)) throw new HttpError(401, "Bad signature");
+  if (!cfg.on) return res.json({ ok: true, skipped: "automatic rebuilds are switched off" });
+
+  const b = req.body || {};
+  const branch = String(b.ref || "").replace("refs/heads/", "") || String(b.branch || "");
+  if (branch && cfg.branch && branch !== cfg.branch) return res.json({ ok: true, skipped: `push to ${branch}, watching ${cfg.branch}` });
+
+  const head = b.head_commit || {};
+  const out = await rebuildAll("github-push", "push");
+  await saveState({
+    lastPush: {
+      sha: String(head.id || b.after || "").slice(0, 7),
+      message: String(head.message || "").split("\n")[0].slice(0, 160),
+      at: new Date(),
+      builds: out.builds,
+      companies: out.companies,
+    },
+  });
+  res.json({ ok: true, ...out });
+}));
+
 /* ───────────────────────── The company website (public) ───────────────────────── */
 
 r.get("/public/site", h(async (req, res) => {

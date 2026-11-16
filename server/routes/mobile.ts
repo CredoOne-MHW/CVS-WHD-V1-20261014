@@ -14,6 +14,7 @@ import { h, parse, notFound, badRequest, paging } from "../lib/http";
 import { putAt, getObject, deleteObject } from "../lib/s3";
 import { s3Area } from "../../shared/platform";
 import { appConfig, startBuild, setupState, readyToBuild, latestReady, buildRepo, buildWorkflow, buildRef, iosEnabled } from "../lib/mobilebuild";
+import { signingSummary } from "../lib/signing";
 import { PLATFORMS, APP_SCREENS, platformLabel, type Platform } from "../../shared/mobile";
 import { tenantUrls } from "../lib/tenant";
 
@@ -41,20 +42,32 @@ export function mobileRoutes(scope: Scope) {
       MobileBuild.countDocuments({ companyId: c._id }),
     ]);
     const gate = readyToBuild();
+    /**
+     * Every part below is a convenience, not the page. One of them failing used to 500 the whole tab, and
+     * the browser showed a spinner for ever; now a part that cannot be worked out is simply left out.
+     */
+    const safe = <T,>(fn: () => T, fallback: T): T => {
+      try {
+        return fn();
+      } catch {
+        return fallback;
+      }
+    };
     res.json({
-      company: { _id: c._id, name: c.name, code: c.code, ...tenantUrls(c) },
-      config: appConfig(c),
+      company: { _id: c._id, name: c.name, code: c.code, ...safe(() => tenantUrls(c), {} as any) },
+      config: safe(() => appConfig(c), { appName: c.name, bundleId: "", primary: "#2f5c24", accent: "#d9b52a", platforms: ["android"] } as any),
       saved: c.mobile || {},
       screens: APP_SCREENS,
       platforms: PLATFORMS,
-      ios: iosEnabled(),
+      ios: safe(() => iosEnabled(), false),
       builds,
       total,
       page,
       limit,
-      latest: await latestReady(c._id),
-      setup: scope === "super" ? { ...gate, repo: buildRepo(), workflow: buildWorkflow(), ref: buildRef() || "default branch", requirements: setupState() } : { ok: gate.ok },
-      prefix: s3Area(c.code, "app"),
+      latest: await latestReady(c._id).catch(() => ({})),
+      signing: scope === "super" ? await signingSummary(c).catch(() => null) : null,
+      setup: scope === "super" ? { ...gate, repo: buildRepo(), workflow: buildWorkflow(), ref: buildRef() || "default branch", requirements: safe(() => setupState(), []) } : { ok: gate.ok },
+      prefix: safe(() => s3Area(c.code, "app"), ""),
     });
   }));
 
