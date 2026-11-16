@@ -24,6 +24,8 @@ import systemRoutes from "./system";
 import { COMPANY_MODULES, PLAN_TIERS, ACTIONS, type PermMap, LOGIN_TEMPLATE_KEYS } from "../../../shared/constants";
 import { SIDEBAR_STYLES, CORNER_STYLES, FONTS, CRON_JOBS, LOG_KINDS, NOTIFY_KINDS, s3Area } from "../../../shared/platform";
 import companyWorkspace from "./company";
+import { dpdpRoutes } from "../dpdp";
+import { mobileRoutes } from "../mobile";
 
 const r = Router();
 r.use(requireScope("super"));
@@ -891,6 +893,9 @@ r.get("/knowledgebase/domains", can("knowledgebase", "read"), h(async (req, res)
 }));
 
 r.use(companyWorkspace); // Company workspace tabs: overview, roles, cron, retention, storage, sounds
+r.use(dpdpRoutes("super")); // /dpdp (platform default) and /companies/:id/dpdp…
+r.use("/companies/:id", dpdpRoutes("super"));
+r.use("/companies/:id", mobileRoutes("super"));
 r.use("/subscriptions", subscriptionRoutes);
 r.use("/reports", reportRoutes("super"));
 r.use("/roles", roleRoutes("super"));

@@ -1,0 +1,67 @@
+import { useCallback, useEffect, useState } from "react";
+import { ActivityIndicator, RefreshControl, ScrollView, StyleSheet, Text, View } from "react-native";
+import { api } from "../lib/api";
+import { T } from "../theme";
+
+/** Today at a glance — the same figures the web dashboard shows, read from the same endpoint. */
+export default function Dashboard() {
+  const [d, setD] = useState<any>(null);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+
+  const load = useCallback(async () => {
+    setBusy(true);
+    try {
+      setD(await api("/co/dashboard/overview?days=30"));
+      setErr("");
+    } catch (e: any) {
+      setErr(e.message);
+    } finally {
+      setBusy(false);
+    }
+  }, []);
+  useEffect(() => {
+    load();
+  }, [load]);
+
+  if (!d && busy)
+    return (
+      <View style={s.center}>
+        <ActivityIndicator color={T.brand} />
+      </View>
+    );
+
+  const cards = [
+    { label: "New leads", value: d?.totals?.newLeads ?? d?.newLeads ?? 0, hint: "last 30 days" },
+    { label: "Follow-ups due", value: d?.totals?.dueToday ?? d?.dueToday ?? 0, hint: "today" },
+    { label: "Converted", value: d?.totals?.won ?? d?.won ?? 0, hint: "last 30 days" },
+    { label: "Clients", value: d?.totals?.clients ?? d?.clients ?? 0, hint: "in all" },
+  ];
+
+  return (
+    <ScrollView style={{ backgroundColor: T.bg }} contentContainerStyle={{ padding: T.pad }} refreshControl={<RefreshControl refreshing={busy} onRefresh={load} tintColor={T.brand} />}>
+      {!!err && <Text style={s.err}>{err}</Text>}
+      <View style={s.grid}>
+        {cards.map((c) => (
+          <View key={c.label} style={s.card}>
+            <Text style={s.cardLabel}>{c.label}</Text>
+            <Text style={s.cardValue}>{String(c.value)}</Text>
+            <Text style={s.cardHint}>{c.hint}</Text>
+          </View>
+        ))}
+      </View>
+      <Text style={s.note}>Pull down to refresh. Leads, clients and chats are on the menu.</Text>
+    </ScrollView>
+  );
+}
+
+const s = StyleSheet.create({
+  center: { flex: 1, alignItems: "center", justifyContent: "center", backgroundColor: T.bg },
+  grid: { flexDirection: "row", flexWrap: "wrap", gap: 12 },
+  card: { flexGrow: 1, flexBasis: "46%", backgroundColor: T.card, borderRadius: T.radius, padding: 16, borderWidth: 1, borderColor: T.line },
+  cardLabel: { color: T.muted, fontWeight: "700", fontSize: 12, textTransform: "uppercase", letterSpacing: 0.6 },
+  cardValue: { marginTop: 8, fontSize: 30, fontWeight: "800", color: T.text },
+  cardHint: { marginTop: 2, color: T.muted, fontSize: 12 },
+  note: { marginTop: 18, color: T.muted, fontSize: 12, textAlign: "center" },
+  err: { color: T.danger, fontWeight: "600", marginBottom: 12 },
+});

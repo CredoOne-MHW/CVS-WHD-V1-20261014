@@ -40,8 +40,8 @@ export async function retentionRows(company: any) {
       try {
         const c = coll(def);
         records = await c.countDocuments({}, { maxTimeMS: 4000 });
-        const first = await c.find({}, { projection: { createdAt: 1, startedAt: 1 }, sort: { _id: 1 }, limit: 1 }).toArray();
-        oldest = (first[0]?.createdAt || first[0]?.startedAt || null) as Date | null;
+        const first = await c.find({}, { projection: { createdAt: 1, startedAt: 1, [def.dateField || "createdAt"]: 1 }, sort: { _id: 1 }, limit: 1 }).toArray();
+        oldest = (first[0]?.[def.dateField || "createdAt"] || first[0]?.createdAt || first[0]?.startedAt || null) as Date | null;
       } catch {
         /* a collection that does not exist yet simply has no records */
       }
@@ -66,7 +66,9 @@ export async function applyRetention(company: any, only?: string) {
         const c = coll(def);
         for (let i = 0; i < 25; i++) {
           // bounded batches: ids first, then one delete — portable across engines that lack $expr deletes
-          const ids = (await c.find({ $or: [{ createdAt: { $lt: cutoff } }, { startedAt: { $lt: cutoff } }] }, { projection: { _id: 1 }, limit: BATCH }).toArray()).map((d: any) => d._id);
+          // most kinds age from when they were written; a few (a registered phone) from when they were last used
+          const older = def.dateField ? [{ [def.dateField]: { $lt: cutoff } }] : [{ createdAt: { $lt: cutoff } }, { startedAt: { $lt: cutoff } }];
+          const ids = (await c.find({ $or: older }, { projection: { _id: 1 }, limit: BATCH }).toArray()).map((d: any) => d._id);
           if (!ids.length) break;
           const r = await c.deleteMany({ _id: { $in: ids } });
           removed += r.deletedCount || 0;

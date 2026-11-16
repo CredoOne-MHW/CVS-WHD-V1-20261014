@@ -260,3 +260,20 @@ body {
 .kb-doc th { @apply whitespace-nowrap border-b border-ink-400/15 bg-[#f7f8f6] px-3 py-2.5 text-left font-bold text-ink-900; }
 .kb-doc td { @apply border-b border-ink-400/10 px-3 py-2.5 align-top; }
 .kb-doc tr:last-child td { @apply border-b-0; }
+
+/* Scrolling notice (Chats › Notices). The text slides only when it is longer than the bar, and holds
+   still for anyone whose system asks for reduced motion. */
+.marquee { overflow: hidden; white-space: nowrap; }
+.marquee-track { display: inline-block; padding-left: 0; animation: marquee 22s linear infinite; }
+.marquee:hover .marquee-track { animation-play-state: paused; }
+@keyframes marquee {
+  0% { transform: translateX(0); }
+  10% { transform: translateX(0); }
+  100% { transform: translateX(-100%); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .marquee { overflow-x: auto; }
+  .marquee-track { animation: none; }
+}
+/* a notice that fits the bar does not move at all */
+.marquee-still { display: inline-block; }

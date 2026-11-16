@@ -60,6 +60,13 @@ export const COMPANY_MODULES: ModuleDef[] = [
       { key: "payin", label: "Pay-In", actions: ["read", "update", "delete"] },
     ],
   },
+  {
+    key: "chats", label: "Chats", group: "Main", path: "/app/chats", icon: "MessageCircle",
+    subs: [
+      { key: "groups", label: "Groups (create & manage)", actions: ["create", "update"] },
+      { key: "notices", label: "Notices (scrolling)", actions: ["read", "create", "update"] },
+    ],
+  },
   { key: "integrations", label: "Integration", group: "Main", path: "/app/integrations", icon: "PlugZap" },
   {
     key: "reports", label: "Report", group: "Main", path: "/app/reports", icon: "BarChart3",
@@ -76,7 +83,22 @@ export const COMPANY_MODULES: ModuleDef[] = [
       { key: "users", label: "Users", actions: CRUD },
     ],
   },
-  { key: "activity_logs", label: "Activity Logs", group: "Settings", path: "/app/settings/activity-logs", icon: "ScrollText" },
+  {
+    key: "activity_logs", label: "Activity Logs", group: "Settings", path: "/app/settings/activity-logs", icon: "ScrollText",
+    subs: [
+      { key: "activity", label: "Activity", actions: ["read"] },
+      { key: "dpdp", label: "DPDP", actions: ["read"] }, // consent: who read the notice, how far they scrolled, what they accepted
+    ],
+  },
+  { key: "mobile_app", label: "Mobile App", group: "Settings", path: "/app/settings/mobile-app", icon: "Smartphone" },
+  {
+    key: "dpdp", label: "DPDP", group: "Settings", path: "/app/settings/dpdp", icon: "ShieldCheck",
+    subs: [
+      { key: "document", label: "Consent notice", actions: ["read", "create", "update"] },
+      { key: "acceptance", label: "Acceptance status", actions: ["read"] },
+      { key: "cookies", label: "Cookie consent", actions: ["read"] },
+    ],
+  },
   {
     key: "wa_webhooks", label: "WhatsApp Webhook", group: "Settings", path: "/app/settings/whatsapp", icon: "Webhook",
     subs: [

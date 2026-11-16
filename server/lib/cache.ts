@@ -1,19 +1,58 @@
 /**
  * Two-level cache: per-instance memory (microseconds) + optional Upstash Redis (shared by every
- * serverless instance). Set UPSTASH_REDIS_REST_URL + UPSTASH_REDIS_REST_TOKEN to enable Redis.
- * Invalidation is generation-based, so one `invalidate("tenant:")` clears every instance within ~5 s.
+ * serverless instance). Invalidation is generation-based, so one `invalidate("tenant:")` clears every
+ * instance within ~5 s.
+ *
+ * The REST endpoint is found by itself, because Vercel's Upstash and KV integrations name the pair
+ * differently depending on how the store was added:
+ *
+ *   UPSTASH_REDIS_REST_URL            + UPSTASH_REDIS_REST_TOKEN            (set by hand)
+ *   KV_REST_API_URL                   + KV_REST_API_TOKEN                   (Vercel KV)
+ *   <STORE>_KV_REST_API_URL           + <STORE>_KV_REST_API_TOKEN           (Upstash integration, prefixed per store)
+ *
+ * Any prefixed pair is accepted, so a store added from the Vercel marketplace needs no renaming.
+ * A read-only token is ignored: the cache has to write.
  */
 type Entry = { at: number; ttl: number; v: unknown };
 const mem = new Map<string, Entry>();
 const MAX = 5000;
 
-const redisOn = () => !!(process.env.UPSTASH_REDIS_REST_URL && process.env.UPSTASH_REDIS_REST_TOKEN);
+/** The first REST url + token pair present in the environment, worked out once. */
+let creds: { url: string; token: string } | null | undefined;
+function redisCreds() {
+  if (creds !== undefined) return creds;
+  const env = process.env as Record<string, string | undefined>;
+  const pairs: [string | undefined, string | undefined][] = [
+    [env.UPSTASH_REDIS_REST_URL, env.UPSTASH_REDIS_REST_TOKEN],
+    [env.KV_REST_API_URL, env.KV_REST_API_TOKEN],
+  ];
+  // …plus every <STORE>_KV_REST_API_URL / _TOKEN pair an integration may have added
+  for (const key of Object.keys(env)) {
+    if (!key.endsWith("_KV_REST_API_URL")) continue;
+    const stem = key.slice(0, -"_KV_REST_API_URL".length);
+    pairs.push([env[key], env[`${stem}_KV_REST_API_TOKEN`]]);
+  }
+  const hit = pairs.find(([u, t]) => u && t && /^https?:\/\//.test(u));
+  creds = hit ? { url: hit[0]!, token: hit[1]! } : null;
+  return creds;
+}
+/** Which variables the cache is using — shown in Super Admin › System Health. */
+export const redisSource = () => {
+  const env = process.env as Record<string, string | undefined>;
+  const c = redisCreds();
+  if (!c) return null;
+  const name = Object.keys(env).find((k) => env[k] === c.url && k.endsWith("URL"));
+  return name || "UPSTASH_REDIS_REST_URL";
+};
+const redisOn = () => !!redisCreds();
+
 export async function redis(cmd: (string | number)[]): Promise<any> {
-  if (!redisOn()) return null;
+  const c = redisCreds();
+  if (!c) return null;
   try {
-    const r = await fetch(process.env.UPSTASH_REDIS_REST_URL!, {
+    const r = await fetch(c.url, {
       method: "POST",
-      headers: { Authorization: `Bearer ${process.env.UPSTASH_REDIS_REST_TOKEN}`, "Content-Type": "application/json" },
+      headers: { Authorization: `Bearer ${c.token}`, "Content-Type": "application/json" },
       body: JSON.stringify(cmd),
       signal: AbortSignal.timeout(800),
     });

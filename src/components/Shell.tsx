@@ -16,6 +16,7 @@ import { Spinner } from "./ui";
 import type { PermMap } from "@shared/constants";
 import { applyTheme, setFavicon } from "@shared/theme";
 import { LogoDisc } from "./LogoDisc";
+import NoticeBar from "./NoticeBar";
 
 export interface Branding {
   kind: "platform" | "company";
@@ -304,6 +305,12 @@ export default function Shell({ scope, children }: { scope: "super" | "company";
             )}
           </div>
         </header>
+
+        {scope === "company" && me.perms?.chats?.read && (
+          <ErrorBoundary where="notice-bar" fallback={() => null}>
+            <NoticeBar companyId={me.companyId} />
+          </ErrorBoundary>
+        )}
 
         <main id="main" className="mx-auto max-w-[1480px] px-4 py-7 sm:px-6 lg:px-8 lg:py-8">
           {current?.paused ? (

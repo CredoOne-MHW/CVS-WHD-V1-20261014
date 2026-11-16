@@ -1,6 +1,6 @@
 "use client";
 import { useCallback, useEffect, useState } from "react";
-import { RefreshCw, RotateCcw, Gauge, Layers, PlugZap, CheckCircle2, AlertTriangle } from "lucide-react";
+import { RefreshCw, RotateCcw, Gauge, Layers, PlugZap, CheckCircle2, AlertTriangle, Database } from "lucide-react";
 import { api } from "@/lib/api";
 import { PageHeader, Badge, Btn, Spinner, Empty, useToast } from "@/components/ui";
 import { usePerm } from "@/components/Shell";
@@ -62,9 +62,25 @@ export default function SystemHealth() {
         </div>
       ) : (
         <div className="space-y-6">
+          {d.cache && !d.cache.on && (
+            <div className="rounded-2xl border border-honey-500/40 bg-honey-500/10 px-4 py-3 text-sm text-ink-700">
+              <b>Shared cache is off.</b> Each serverless instance is keeping its own copy, so a change can take a few seconds to show everywhere. Add an Upstash or Vercel KV store — any of{" "}
+              <span className="mono text-xs">UPSTASH_REDIS_REST_URL</span>, <span className="mono text-xs">KV_REST_API_URL</span> or a store-prefixed <span className="mono text-xs">…_KV_REST_API_URL</span> with its token is picked up by itself.
+            </div>
+          )}
           <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
             <Budget title="Read APIs (GET)" x={d.overall.read} />
             <Budget title="Write APIs" x={d.overall.write} />
+            <div className="card p-5">
+              <p className="flex items-center gap-2 text-sm font-semibold text-ink-500">
+                <Database className="h-4 w-4" /> Shared cache
+              </p>
+              <p className="mt-2 text-3xl font-extrabold text-ink-900">
+                {d.cache?.on ? (d.cache.reachable ? "On" : "Set") : "Off"}
+                {d.cache?.ms != null && <span className="text-base font-semibold text-ink-400"> · {d.cache.ms} ms</span>}
+              </p>
+              <p className="mt-1 break-all text-sm text-ink-500">{d.cache?.on ? (d.cache.reachable ? d.cache.source : `${d.cache.source} — not answering`) : "memory only, per instance"}</p>
+            </div>
             <div className="card p-5">
               <p className="flex items-center gap-2 text-sm font-semibold text-ink-500">
                 <Layers className="h-4 w-4" /> Background jobs

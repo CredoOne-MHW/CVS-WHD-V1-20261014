@@ -65,7 +65,9 @@ export async function runJobForCompany(job: string, company: any): Promise<any> 
     }
     case "housekeeping": {
       const removed = await applyRetention(company);
-      return { removed, total: Object.values(removed).reduce((a: number, n: any) => a + n, 0) };
+      const { sweepStuckBuilds } = await import("./mobilebuild");
+      const stuck = await sweepStuckBuilds().catch(() => 0);
+      return { removed, total: Object.values(removed).reduce((a: number, n: any) => a + n, 0), stuckBuilds: stuck };
     }
     case "jobs":
       return { note: "The job worker runs for the whole platform, not per company" };
