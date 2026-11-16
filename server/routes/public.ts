@@ -16,6 +16,8 @@ import { setTenantDb } from "../lib/context";
 import { forEachCompanyDb, inCompanyDb, sweepStragglers } from "../lib/tenantdb";
 import { runPullConnectors } from "../lib/pull";
 import { prospectWorker } from "../lib/prospect";
+import { runFor, runPlatform } from "../lib/cron";
+import { runJobForCompany, activeCompanies } from "../lib/cronjobs";
 import { requestHost, resolveHost, baseDomain, publicBranding, platformBranding, loadPlatformBranding } from "../lib/tenant";
 import { LOST_STATUS, WON_STATUS } from "../../shared/constants";
 import { getCompliance, platformUrl } from "../lib/oauth";
@@ -320,13 +322,13 @@ function cronAuth(req: any) {
 r.get("/cron/insights", h(async (req, res) => {
   cronAuth(req);
   const { scheduleInsights } = await import("../lib/insights");
-  res.json({ queued: await scheduleInsights() });
+  res.json({ queued: await runPlatform("insights", () => scheduleInsights(), { force: true }) });
 }));
 
 /** Every minute: background job worker (imports, exports, WhatsApp redelivery, scheduled AI digests). */
 r.get("/cron/jobs", h(async (req, res) => {
   cronAuth(req);
-  const ran = await pump({ budgetMs: 50_000 });
+  const ran = await runPlatform("jobs", () => pump({ budgetMs: 50_000 }), { force: true });
   res.json({ ran });
 }));
 
@@ -334,66 +336,80 @@ r.get("/cron/retry", h(async (req, res) => {
   cronAuth(req);
   let retried = 0;
   let ok = 0;
-  await forEachCompanyDb(async () => {
-    const due = await IntakeEvent.find({ status: "failed", nextAttemptAt: { $lte: new Date() } }).limit(50).lean<any[]>();
-    for (const ev of due) {
-      const c = await Connector.findById(ev.connectorId).lean();
-      if (!c) continue;
-      retried++;
-      const r2: any = await runEvent(c, ev._id, ev.payload);
-      if (r2.ok) ok++;
-    }
-  });
+  let skipped = 0;
+  // Each company's own schedule (Super Admin › Company › Cron Jobs) decides whether its share runs on this beat.
+  for (const co of await activeCompanies()) {
+    const out = await runFor("retry", co, async () => {
+      const r2: any = await runJobForCompany("retry", co);
+      retried += r2.retried || 0;
+      ok += r2.ok || 0;
+      return r2;
+    }).catch(() => null);
+    if (out === null) skipped++;
+  }
   const moved = await sweepStragglers().catch(() => 0);
-  res.json({ retried, ok, moved });
+  res.json({ retried, ok, skipped, moved });
+}));
+
+/** Daily 01:00 IST: delete log records older than each company's Retention Policy. */
+r.get("/cron/housekeeping", h(async (req, res) => {
+  cronAuth(req);
+  const out: Record<string, any> = {};
+  for (const co of await activeCompanies()) {
+    const r2 = await runFor("housekeeping", co, () => runJobForCompany("housekeeping", co)).catch((e) => ({ error: e.message }));
+    if (r2) out[co.code] = (r2 as any).total ?? r2;
+  }
+  res.json({ companies: Object.keys(out).length, removed: out });
 }));
 
 /** Daily 02:00 IST: MCP server connectors. */
 r.get("/cron/pull", h(async (req, res) => {
   cronAuth(req);
-  res.json(await runPullConnectors("daily"));
+  res.json(await runPlatform("pull", () => runPullConnectors("daily"), { force: true }));
 }));
 
 /** Every 15 minutes: Public Web Prospecting — seeds each connector daily from 02:00 IST, then reads its queue in time-boxed slices. */
 r.get("/cron/prospect", h(async (req, res) => {
   cronAuth(req);
-  res.json(await prospectWorker());
+  res.json(await runPlatform("prospect", () => prospectWorker(), { force: true }));
 }));
 
 /** Every 15 minutes: IndiaMART Pull API, TradeIndia My Inquiry API, WooCommerce REST safety net. */
 r.get("/cron/pull-frequent", h(async (req, res) => {
   cronAuth(req);
-  res.json(await runPullConnectors("frequent"));
+  res.json(await runPlatform("pull_frequent", () => runPullConnectors("frequent"), { force: true }));
 }));
 
 /** Daily 02:00 IST: AI allocation renewals, subscription cycles, Unpaid → Over Due → Expired, 1/3/7-day reminders. */
 r.get("/cron/billing", h(async (req, res) => {
   cronAuth(req);
   const platform = await runBillingJobs();
-  // Client module: generate this period's recurring dues and mark unpaid past-due ones Over-Due, in every company
-  const clients = await forEachCompanyDb(async (co) => (co.db ? refreshBilling(co._id, true).then(() => 1) : 0), { concurrency: 6 });
-  res.json({ ...platform, clientBilling: { companies: clients.reduce((a: number, x: any) => a + (x.value || 0), 0) } });
+  // Client module: generate this period's recurring dues and mark unpaid past-due ones Over-Due, company by company,
+  // each one on the schedule set for it in Super Admin › Company › Cron Jobs.
+  let ran = 0;
+  let skipped = 0;
+  for (const co of await activeCompanies()) {
+    const out = await runFor("billing", co, () => runJobForCompany("billing", co)).catch(() => null);
+    out === null ? skipped++ : ran++;
+  }
+  res.json({ ...platform, clientBilling: { companies: ran, skipped } });
 }));
 
 /** Daily 08:00 IST: follow-up digest per company (event: followup_digest). */
 r.get("/cron/followups", h(async (req, res) => {
   cronAuth(req);
-  const per = await forEachCompanyDb(async (co) => ((await Webhook.exists({ scope: "company", companyId: co._id, event: "followup_digest", active: true })) ? String(co._id) : null));
-  const companyIds = per.map((x) => x.value).filter(Boolean) as string[];
   let sent = 0;
-  for (const cid of companyIds) {
-    await inCompanyDb(cid, async () => {
-    const company = await Company.findOne({ _id: cid, status: "active", deletedAt: null }).lean<any>();
-    if (!company?.whatsapp) return;
-    const due = await Lead.find({ companyId: cid, deletedAt: null, status: { $nin: [LOST_STATUS, WON_STATUS] }, $or: [{ status: "Follow-ups needed" }, { nextFollowUpAt: { $lte: new Date(Date.now() + 86400_000) } }] }).limit(40).select("name phone status").lean<any[]>();
-    const fresh = await Lead.countDocuments({ companyId: cid, deletedAt: null, status: "New" });
-    if (!due.length && !fresh) return;
-    const message = [`Good morning! ${company.name} lead digest:`, `• ${fresh} new lead(s) not yet contacted`, `• ${due.length} follow-up(s) due today`, "", ...due.map((l, i) => `${i + 1}. ${l.name || "—"} (${l.phone || ""}) – ${l.status}`)].join("\n");
-    const r2 = await fireEvent("company", cid, "followup_digest", { phone: company.whatsapp, name: company.contactPerson, company: company.name, message, params: { new: fresh, due: due.length } }, "cron");
-    sent += r2.sent;
-    });
+  let companies = 0;
+  let skipped = 0;
+  for (const co of await activeCompanies()) {
+    const out: any = await runFor("followups", co, () => runJobForCompany("followups", co)).catch(() => null);
+    if (out === null) skipped++;
+    else {
+      companies++;
+      sent += out?.sent || 0;
+    }
   }
-  res.json({ companies: companyIds.length, sent });
+  res.json({ companies, sent, skipped });
 }));
 
 export default r;

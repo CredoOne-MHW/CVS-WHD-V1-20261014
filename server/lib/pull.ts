@@ -172,8 +172,11 @@ export async function runPull(c: any) {
 }
 
 /** Scheduled pulls for every company, each in its own database. `frequent` = IndiaMART + TradeIndia + WooCommerce (15 min); otherwise MCP (daily). */
-export async function runPullConnectors(which: "frequent" | "daily" = "daily") {
-  const regs = await ConnectorKey.find({ type: { $in: which === "frequent" ? FREQUENT : DAILY }, active: true }).lean<any[]>();
+/** `only.companyId` limits the run to one company — used by Super Admin › Company › Cron Jobs › Run now. */
+export async function runPullConnectors(which: "frequent" | "daily" = "daily", only?: { companyId?: any }) {
+  const q: any = { type: { $in: which === "frequent" ? FREQUENT : DAILY }, active: true };
+  if (only?.companyId) q.companyId = only.companyId;
+  const regs = await ConnectorKey.find(q).lean<any[]>();
   const out: any[] = [];
   for (const reg of regs) {
     const r = await runInDb(reg.db, async () => {

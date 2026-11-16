@@ -22,6 +22,8 @@ import { webhookRoutes, waLogRoutes, activityRoutes, roleRoutes } from "../share
 import { reportRoutes } from "../reports";
 import systemRoutes from "./system";
 import { COMPANY_MODULES, PLAN_TIERS, ACTIONS, type PermMap, LOGIN_TEMPLATE_KEYS } from "../../../shared/constants";
+import { SIDEBAR_STYLES, CORNER_STYLES, FONTS, CRON_JOBS, LOG_KINDS, NOTIFY_KINDS, s3Area } from "../../../shared/platform";
+import companyWorkspace from "./company";
 
 const r = Router();
 r.use(requireScope("super"));
@@ -103,6 +105,31 @@ const companyBody = z.object({
   plan: z.string().min(1).default(PLAN_TIERS[0]),
   gstin: z.string().regex(/^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z][1-9A-Z]Z[0-9A-Z]$/, "Invalid GSTIN").optional().or(z.literal("")),
   address: z.string().max(500).optional(),
+  /* Company details tab */
+  legalName: z.string().max(180).optional(),
+  businessType: z.string().max(60).optional(),
+  city: z.string().max(60).optional(),
+  state: z.string().max(60).optional(),
+  pin: z.string().regex(/^\d{6}$/, "6-digit PIN code").optional().or(z.literal("")),
+  contactEmail: z.string().email().optional().or(z.literal("")),
+  /* Mobile Modules tab — module or "module:sub" keys the apps may use */
+  mobileModules: z.array(z.string().refine((k) => MODULE_KEYS.has(k), "Unknown module")).max(200).optional(),
+  /* White label tab */
+  whiteLabel: z
+    .object({
+      hideBranding: z.boolean().optional(),
+      supportUrl: z.string().max(300).optional().or(z.literal("")),
+      emailSender: z.string().max(80).optional(),
+      appNames: z.object({ web: z.string().max(40).optional(), mobile: z.string().max(40).optional(), admin: z.string().max(40).optional() }).optional(),
+      sidebar: z.enum(SIDEBAR_STYLES).optional(),
+      corners: z.enum(CORNER_STYLES).optional(),
+      font: z.enum(FONTS).optional(),
+      customCss: z.string().max(8000).optional(),
+    })
+    .optional(),
+  /* Notifications tab */
+  notify: z.record(z.string().max(40), z.object({ mobile: z.boolean().optional(), desktop: z.boolean().optional(), sound: z.string().max(40).optional() })).optional(),
+  notifySound: z.string().max(40).optional().or(z.literal("")),
   s3Enabled: z.boolean().optional(), // "S3 storage required"
   // Modules tab: per-company override of the plan (module or "module:sub" keys)
   moduleAccess: z
@@ -133,6 +160,10 @@ const companyBody = z.object({
       loginTemplate: z.enum(LOGIN_TEMPLATE_KEYS).optional(),
       supportEmail: z.string().email().optional().or(z.literal("")),
       supportPhone: z.string().max(20).optional(),
+      /* Login page colours: every part may override the design's own colour; "" = Auto */
+      loginColors: z.record(z.enum(["headline", "subheadline", "companyName", "tagline", "signInTitle", "formText", "button", "buttonText"]), z.string().regex(/^(#[0-9a-fA-F]{6})?$/, "Use a hex colour like #52e811").optional()).optional(),
+      /* Per-app look: { web: {...}, mobile: { theme, useThemeColors } } */
+      appTheme: z.record(z.enum(["web", "mobile", "admin"]), z.object({ theme: z.string().max(30).optional(), useThemeColors: z.boolean().optional() })).optional(),
     })
     .optional(),
 });
@@ -859,6 +890,7 @@ r.get("/knowledgebase/domains", can("knowledgebase", "read"), h(async (req, res)
   res.json(rows);
 }));
 
+r.use(companyWorkspace); // Company workspace tabs: overview, roles, cron, retention, storage, sounds
 r.use("/subscriptions", subscriptionRoutes);
 r.use("/reports", reportRoutes("super"));
 r.use("/roles", roleRoutes("super"));

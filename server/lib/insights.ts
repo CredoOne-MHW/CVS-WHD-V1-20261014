@@ -406,13 +406,15 @@ defineJob(
  * Hourly: queue the AI insights digest for every webhook whose schedule matches this IST hour (and weekday for weekly).
  * Idempotent — a webhook is claimed once per day/week (lastScheduledKey) and the job has an idempotency key.
  */
-export async function scheduleInsights(now = new Date()) {
+/** `only.companyId` limits the run to one company — used by Super Admin › Company › Cron Jobs › Run now. */
+export async function scheduleInsights(now = new Date(), only?: { companyId?: any }) {
   const ist = new Date(now.getTime() + 330 * 60_000);
   const hour = ist.getUTCHours();
   const weekday = ist.getUTCDay();
   const day = ist.toISOString().slice(0, 10);
   let queued = 0;
   await forEachCompanyDb(async (c) => {
+    if (only?.companyId && String(c._id) !== String(only.companyId)) return;
     const hooks = await Webhook.find({ scope: "company", companyId: c._id, event: "ai_insights", active: true, "schedule.freq": { $in: ["daily", "weekly"] }, "schedule.hour": hour }).lean<any[]>();
     for (const h of hooks) {
       if (h.schedule.freq === "weekly" && (h.schedule.weekday ?? 1) !== weekday) continue;
