@@ -1,6 +1,8 @@
 "use client";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Plus, Pencil, Power, BellRing, LogIn, Trash2, Search, Bot, MoreHorizontal, Globe2, ImagePlus, X, Building2, KeyRound, Palette, HardDrive } from "lucide-react";
+import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { api, qs, fmtDate } from "@/lib/api";
 import { PageHeader, Btn, Modal, Field, Badge, Empty, Pager, Confirm, Spinner, useToast } from "@/components/ui";
 import { usePerm } from "@/components/Shell";
@@ -49,6 +51,7 @@ export default function Companies() {
   const [menu, setMenu] = useState<string | null>(null);
   const perm = usePerm("companies");
   const toast = useToast();
+  const router = useRouter();
 
   const load = useCallback(() => api(`/sa/companies${qs(f)}`).then(setData), [f]);
   useEffect(() => {
@@ -111,6 +114,7 @@ export default function Companies() {
       setForm(null);
       load();
       if (created || (form.customDomain && form.customDomain !== saved.customDomain) || body.customDomain) setDns({ c: { _id: id, name: body.name }, fresh: created });
+      if (created) router.push(`/sa/companies/${id}`); // the rest of the setup happens on the company's own page
     } catch (e: any) {
       toast("err", e.message);
     } finally {
@@ -204,7 +208,10 @@ export default function Companies() {
                       <span className="h-9 w-1.5 shrink-0 rounded-full" style={{ background: c.branding?.themeColor || "#2f5c24" }} aria-hidden />
                       <div className="min-w-0">
                         <p className="font-semibold">
-                          {c.name} <span className="mono ml-1 text-ink-400">{c.code}</span>
+                          <Link href={`/sa/companies/${c._id}`} className="hover:text-hive-700 hover:underline">
+                            {c.name}
+                          </Link>{" "}
+                          <span className="mono ml-1 text-ink-400">{c.code}</span>
                         </p>
                         {(c.customUrl || c.platformUrl) && (
                           <a href={c.customUrl || c.platformUrl} target="_blank" rel="noreferrer" className="block truncate font-mono text-[12px] text-hive-700 hover:underline">
@@ -229,9 +236,9 @@ export default function Companies() {
                   <td className="td">
                     <div className="flex items-center justify-end gap-0.5">
                       {perm.update && (
-                        <button className="btn-ghost" title="Edit" aria-label="Edit" onClick={() => openForm(c)}>
+                        <Link href={`/sa/companies/${c._id}`} className="btn-ghost" title="Open company" aria-label="Open company">
                           <Pencil className="h-4 w-4" />
-                        </button>
+                        </Link>
                       )}
                       {perm.update && (
                         <button className="btn-ghost" title="Reminder" aria-label="Reminder" onClick={() => (setReminder(c), setRemMsg(`Dear ${c.contactPerson || c.name},\n`))}>

@@ -621,9 +621,12 @@ export async function runProspectNow(c: any, budgetMs = 45_000) {
 }
 
 /** The 15-minute worker: seeds connectors that are due (daily from 02:00 IST) and works through queues, fairly, within budget. */
-export async function prospectWorker(budgetMs = 48_000) {
+/** `only.companyId` limits the run to one company — used by Super Admin › Company › Cron Jobs › Run now. */
+export async function prospectWorker(budgetMs = 48_000, only?: { companyId?: any }) {
   const deadline = Date.now() + budgetMs;
-  const regs = await ConnectorKey.find({ type: "web_prospect", active: true }).lean<any[]>();
+  const q: any = { type: "web_prospect", active: true };
+  if (only?.companyId) q.companyId = only.companyId;
+  const regs = await ConnectorKey.find(q).lean<any[]>();
   const results: any[] = [];
   const list: { reg: any; c: any }[] = [];
   for (const reg of regs) {

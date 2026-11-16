@@ -7,7 +7,7 @@ import { icon } from "./icons";
 import { Assistant } from "./Assistant";
 import { BillingAlert } from "./BillingAlert";
 import { ErrorBoundary, InlineError as InlineErrorCard } from "./ErrorBoundary";
-import { installGlobalErrorHandlers } from "@/lib/clientErrors";
+import { installGlobalErrorHandlers, reportClientError } from "@/lib/clientErrors";
 import { api, clearApiCache } from "@/lib/api";
 import RELEASES from "@shared/releases.generated.json";
 
@@ -101,6 +101,40 @@ export default function Shell({ scope, children }: { scope: "super" | "company";
   useEffect(() => {
     setDrawer(false);
   }, [path]);
+
+  /**
+   * Safety net for a click on the menu that does not land.
+   *
+   * A tab left open across a deployment no longer has the code chunks the new build serves. Next cancels that
+   * route change silently — the screen simply stays where it was, and clicking another menu item does the same,
+   * until the page is reloaded by hand. (The automatic stale-build reload is throttled to once every 30 s, so the
+   * second and third click are left stranded.) Here every menu click is watched: if the address has not changed a
+   * moment later, the browser is sent there directly, which fetches the new build and lands on the page that was
+   * clicked. When navigation works normally the timer is cleared and nothing happens.
+   */
+  const pending = useRef<{ href: string; timer: any } | null>(null);
+  const watchNav = (href: string) => {
+    if (href === path) return;
+    if (pending.current) clearTimeout(pending.current.timer);
+    pending.current = {
+      href,
+      timer: setTimeout(() => {
+        if (typeof window === "undefined" || document.hidden) return;
+        if (window.location.pathname === href) return; // it did land; the effect below usually clears this first
+        reportClientError(new Error(`Navigation to ${href} did not complete`), "nav-timeout");
+        window.location.assign(href);
+      }, 2500),
+    };
+  };
+  useEffect(() => {
+    if (pending.current && path === pending.current.href) {
+      clearTimeout(pending.current.timer);
+      pending.current = null;
+    }
+    return () => {
+      if (pending.current) clearTimeout(pending.current.timer);
+    };
+  }, [path]);
   useEffect(() => {
     const close = (e: MouseEvent) => menuRef.current && !menuRef.current.contains(e.target as Node) && setMenu(false);
     document.addEventListener("mousedown", close);
@@ -163,6 +197,7 @@ export default function Shell({ scope, children }: { scope: "super" | "company";
                       <Link
                         href={n.path}
                         prefetch
+                        onClick={() => watchNav(n.path)}
                         aria-current={active ? "page" : undefined}
                         aria-label={full ? undefined : n.label}
                         className={`group flex items-center rounded-xl text-[13.5px] font-semibold transition ${full ? "gap-3 px-3 py-2.5" : "h-11 w-11 justify-center"} ${active ? "bg-white text-hive-900 shadow-lg shadow-black/10" : "text-white/75 hover:bg-white/10 hover:text-white"}`}

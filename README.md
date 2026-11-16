@@ -777,3 +777,27 @@ That keeps every role that existed before v1.2.0 exactly as it was — none of t
 
 ### 19.5 Event copy
 `delete_otp` now reads "One-time code to confirm deleting a lead or a client." The key, template and any webhook already configured are untouched.
+
+## 20. v1.3.0 — the Super Admin company workspace (Nov 2026)
+
+Editing a company moved from a pop-up to a page of its own at `/sa/companies/[id]`. Creating one still uses the pop-up on the list page, unchanged.
+
+### 20.1 The page
+`src/app/sa/companies/[id]/page.tsx` loads the company once, keeps it in `form`, and renders one tab at a time. Tabs that edit the company record (details, subscription, login, branding, white label, modules, mobile modules, notifications) share that state and are written by the existing `PUT /sa/companies/:id`; Role access, Cron Jobs and Retention Policy save themselves through their own endpoints and say so. The tab strip scrolls sideways rather than wrapping. DPDP, Mobile App and Website are listed with what they will do and the version they arrive in, so the shape of the workspace is final.
+
+### 20.2 New server pieces
+| Area | Where | What it does |
+| --- | --- | --- |
+| Registries | `shared/platform.ts` | `CRON_JOBS`, `LOG_KINDS`, `NOTIFY_KINDS`, white-label options, business types, states, the S3 area layout. Add an entry and the tab lists it. |
+| Jobs | `server/lib/cron.ts`, `server/lib/cronjobs.ts` | `gate()` / `runFor()` apply a company's schedule and write a `CronRun`; `runJobForCompany()` is one company's share of a job and backs both the cron routes and Run now. |
+| Retention | `server/lib/retention.ts` | Counts, oldest record, and bounded batch deletes per log kind, with a floor for the logs an audit needs. |
+| Workspace API | `server/routes/sa/company.ts` | Overview figures, the company's roles (read and written inside its own database), cron, retention, storage and notification sounds. |
+| Storage | `server/lib/s3.ts` | `listPrefix()` summarises an area; `putAt()` writes to an exact key. |
+
+`Company` gained `legalName`, `businessType`, `city`, `state`, `pin`, `contactEmail`, `mobileModules`, `whiteLabel`, `cron`, `retention`, `notify`, `notifySound`, and `branding.loginColors`, `branding.appTheme`, `branding.sounds`. `CronRun` is new.
+
+### 20.3 Which jobs are per company
+`retry`, `billing`, `followups` and the new `housekeeping` walk the companies and honour each one's schedule and on/off switch. `jobs`, `insights`, `pull`, `pull_frequent` and `prospect` are connector- or platform-wide: they behave exactly as before and only record their runs, and the tab marks them **platform-wide**. Run now works for every job: `runPullConnectors`, `prospectWorker` and `scheduleInsights` gained an optional company filter, which leaves their existing callers untouched.
+
+### 20.4 The stuck-menu fix
+A tab left open across a deployment can no longer load the code chunks the new build serves, so Next cancels the route change without a word. `Shell` now watches every menu click and, if the address has not changed 2.5 s later, calls `location.assign(href)` — the new build is fetched and the clicked page opens. The event is reported as a screen error so it shows in Activity Logs.

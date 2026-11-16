@@ -1,4 +1,4 @@
-import { S3Client, PutObjectCommand, GetObjectCommand, DeleteObjectCommand, CopyObjectCommand } from "@aws-sdk/client-s3";
+import { S3Client, PutObjectCommand, GetObjectCommand, DeleteObjectCommand, CopyObjectCommand, ListObjectsV2Command } from "@aws-sdk/client-s3";
 import { randomKey } from "./crypto";
 import { HttpError } from "./http";
 
@@ -87,6 +87,25 @@ export async function putObject(prefix: string, fileName: string, body: Buffer |
   const key = `${prefix.replace(/\/+$/, "")}/${Date.now()}-${randomKey(4)}-${safe}`;
   await s3().send(new PutObjectCommand({ Bucket: bucket(), Key: key, Body: body, ContentType: contentType, ServerSideEncryption: "AES256", CacheControl: "private, max-age=31536000, immutable" }));
   return { key, url: publicUrl(key) };
+}
+
+/**
+ * What sits under one prefix — used by Super Admin › Company › Branding & domain to show how much a company's
+ * branding, app builds and knowledge files take. Reads at most 1,000 keys: it is a summary, not a file manager.
+ */
+export async function listPrefix(prefix: string, limit = 1000) {
+  if (!process.env.S3_BUCKET) return { files: 0, bytes: 0, items: [] as { key: string; size: number; at?: Date }[] };
+  const full = [basePath(), prefix].filter(Boolean).join("/");
+  const r = await s3().send(new ListObjectsV2Command({ Bucket: bucket(), Prefix: `${full.replace(/\/+$/, "")}/`, MaxKeys: Math.min(1000, limit) }));
+  const items = (r.Contents || []).map((o) => ({ key: o.Key || "", size: o.Size || 0, at: o.LastModified }));
+  return { files: items.length, bytes: items.reduce((a, x) => a + x.size, 0), items: items.slice(-25).reverse(), truncated: !!r.IsTruncated };
+}
+
+/** Write to an exact key (no timestamp prefix) — for files whose path the caller owns, like notification sounds. */
+export async function putAt(key: string, body: Buffer | string, contentType = "application/octet-stream") {
+  const full = [basePath(), key].filter(Boolean).join("/");
+  await s3().send(new PutObjectCommand({ Bucket: bucket(), Key: full, Body: body, ContentType: contentType, ServerSideEncryption: "AES256", CacheControl: "private, max-age=31536000, immutable" }));
+  return { key: full, url: publicUrl(full) };
 }
 
 export async function getObjectText(key: string) {
