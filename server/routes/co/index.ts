@@ -26,11 +26,14 @@ import { runPull, PULL_TYPES, wooBase } from "../../lib/pull";
 import { suppress, fromProspecting } from "../../lib/suppress";
 import { testProspect, runProspectNow, BLOCKED_SITES } from "../../lib/prospect";
 import ssoRoutes from "./sso";
+import chatRoutes from "./chat";
 import { disconnect as ssoDisconnect } from "../../lib/oauth";
 import { isSsoType } from "../../../shared/sso";
 import clientRoutes, { businessBody, applyBusiness, safeLead, assertServices, applyServiceLines, syncPlanLicenses, serviceLinesBody } from "./clients";
 import { linesOf } from "../../../shared/clients";
 import { promoteClients } from "../../lib/clients";
+import { dpdpRoutes } from "../dpdp";
+import { mobileRoutes } from "../mobile";
 import { webhookRoutes, waLogRoutes, activityRoutes, roleRoutes } from "../shared";
 import { reportRoutes } from "../reports";
 import { assistantChat, assistantInfo, withAgentDb, endpointChat, testChat } from "../../lib/agentic";
@@ -48,6 +51,7 @@ r.use("/integrations", (req, res, next) => {
 });
 // Vercel caps request bodies at ~4.5 MB; keep uploads under that.
 r.use(clientRoutes); // Client module + service master
+r.use(chatRoutes); // Chats: one-to-one, groups, notices, push devices
 r.use(ssoRoutes); // sign-in connectors (Facebook, Instagram, LinkedIn, Google Sheets)
 
 const upload = ctxUpload(multer({ storage: multer.memoryStorage(), limits: { fileSize: 4 * 1024 * 1024, files: 10 } }));
@@ -1185,6 +1189,8 @@ r.get("/billing-alert", h(async (req, res) => {
 }));
 
 r.use("/reports", reportRoutes("company"));
+r.use(dpdpRoutes("company")); // Settings › DPDP: the notice, acceptance log, cookie consent, reports
+r.use(mobileRoutes("company")); // Settings > Mobile App: download the apps
 r.use("/roles", roleRoutes("company"));
 r.use("/activity-logs", activityRoutes("company"));
 r.use("/webhooks", webhookRoutes("company"));

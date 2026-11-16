@@ -79,6 +79,8 @@ export interface LogKindDef {
   defaultDays: number;
   /** a record this old can never be deleted automatically (0 = no floor) */
   minDays?: number;
+  /** the date the period is measured from, when it is not when the record was written */
+  dateField?: string;
 }
 
 export const LOG_KINDS: LogKindDef[] = [
@@ -89,6 +91,10 @@ export const LOG_KINDS: LogKindDef[] = [
   { key: "jobs", label: "Finished jobs", collection: "jobs", where: "main", description: "Completed imports, exports and digests (dead ones are kept).", defaultDays: 30 },
   { key: "otps", label: "Expired OTPs", collection: "otps", where: "tenant", description: "One-time codes that were used or have expired.", defaultDays: 7 },
   { key: "oauth_states", label: "Sign-in handshakes", collection: "oauthstates", where: "main", description: "Half-finished channel sign-ins.", defaultDays: 7 },
+  { key: "dpdp_consents", label: "DPDP consents", collection: "dpdpconsents", where: "tenant", description: "Who accepted the data-protection notice, and the evidence that they read it. Kept for ever unless you say otherwise.", defaultDays: 0, minDays: 365 },
+  { key: "cookie_consents", label: "Cookie choices", collection: "cookieconsents", where: "tenant", description: "What each visitor chose in the cookie banner.", defaultDays: 730, minDays: 180 },
+  { key: "chat_messages", label: "Chat messages", collection: "chatmessages", where: "tenant", description: "One-to-one and group messages. Kept for ever unless you choose a period — a conversation is a record, not a log.", defaultDays: 0 },
+  { key: "push_devices", label: "Dormant phones", collection: "pushdevices", where: "tenant", description: "Phones registered for notifications that have not opened the app for a while.", defaultDays: 180, minDays: 30, dateField: "lastSeenAt" },
 ];
 export const RETAIN_CHOICES = [7, 30, 60, 90, 180, 365, 730, 0]; // 0 = keep for ever
 export const retainText = (d: number) => (d === 0 ? "Keep for ever" : d % 365 === 0 ? `${d / 365} year${d > 365 ? "s" : ""}` : `${d} days`);

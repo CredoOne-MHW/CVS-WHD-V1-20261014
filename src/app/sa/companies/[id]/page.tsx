@@ -12,6 +12,9 @@ import { templateOf, type LoginBrand } from "@/components/LoginTemplates";
 import { OverviewTab, DetailsTab, SubscriptionTab, LoginTab, MobileModulesTab } from "@/components/sa/CompanyTabs";
 import { BrandingTab, WhiteLabelTab, type Kind } from "@/components/sa/CompanyBranding";
 import { RoleAccessTab, CronTab, RetentionTab, NotificationsTab } from "@/components/sa/CompanyOps";
+import { Dpdp } from "@/components/Dpdp";
+import { WebsiteTab } from "@/components/sa/CompanyWebsite";
+import { MobileAppTab } from "@/components/sa/CompanyMobile";
 import { COMPANY_MODULES } from "@shared/constants";
 
 const BLANK_BRANDING = {
@@ -50,9 +53,6 @@ type TabKey = (typeof TABS)[number]["key"];
 
 /** Tabs whose own screens arrive in a later release — shown, named and explained rather than hidden. */
 const COMING: Partial<Record<TabKey, { icon: any; title: string; body: string }>> = {
-  dpdp: { icon: ShieldCheck, title: "DPDP consent", body: "Upload or write the consent document, publish it as a link the website, apps and CRM must show, and read the per-user acceptance, scrolling and cookie logs. Arriving in v1.4.0." },
-  mobileapp: { icon: Smartphone, title: "Mobile App", body: "Name and brand this company’s Android and iOS apps, build them through GitHub Actions, and release the signed files from this company’s own S3 folder. Arriving in v1.5.0." },
-  website: { icon: FileText, title: "Website", body: "The company’s public website — sections, pages, SEO and the download page — generic for any industry. Arriving in v1.4.0." },
 };
 
 export default function CompanyWorkspace() {
@@ -256,6 +256,9 @@ export default function CompanyWorkspace() {
         {tab === "notifications" && <NotificationsTab id={id} form={form} set={set} />}
         {tab === "cron" && <CronTab id={id} companyName={form.name} />}
         {tab === "retention" && <RetentionTab id={id} companyName={form.name} />}
+        {tab === "dpdp" && <Dpdp base={`/sa/companies/${id}`} canEdit={perm.update} />}
+        {tab === "website" && <WebsiteTab id={id} />}
+        {tab === "mobileapp" && <MobileAppTab id={id} canEdit={perm.update} />}
         {Coming && (
           <div className="mx-auto max-w-xl py-12 text-center">
             <Coming.icon className="mx-auto h-10 w-10 text-hive-700" />

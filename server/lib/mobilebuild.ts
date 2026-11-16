@@ -1,0 +1,161 @@
+/**
+ * Building a company's Android / iOS app.
+ *
+ *   Super Admin presses Build
+ *     → a MobileBuild row is created (queued) and the GitHub workflow is dispatched with everything the
+ *       build needs: the company's code, name, colours, application id, version and its own address;
+ *     → the workflow reports back as it goes (building → ready / failed), signing each message with
+ *       MOBILE_BUILD_SECRET so nothing else can post a result;
+ *     → the signed file is uploaded by the workflow to <COMPANY CODE>/app/<platform>/<version>/ and the
+ *       key comes back with the result.
+ *
+ * The platform never holds a signing key: Android and iOS certificates live in the build repository's own
+ * GitHub secrets, where a build can use them and nobody can read them back.
+ */
+import { createHmac, timingSafeEqual } from "crypto";
+import { Company, MobileBuild } from "../models";
+import { tenantUrls } from "./tenant";
+import { s3Area } from "../../shared/platform";
+import { bundleIdFor, nextVersion, platformLabel, artifactExt, BUILD_REQUIREMENTS, type Platform, type MobileConfig } from "../../shared/mobile";
+
+const env = (k: string) => (process.env[k] || "").trim();
+export const buildRepo = () => env("GITHUB_BUILD_REPO");
+export const buildWorkflow = () => env("GITHUB_BUILD_WORKFLOW") || "build-mobile.yml";
+export const buildRef = () => env("GITHUB_BUILD_REF");
+export const iosEnabled = () => env("MOBILE_IOS_SIGNING") === "1";
+
+/** Which requirements are met — the Knowledge Base article and the Mobile App tab both show this. */
+export function setupState() {
+  return BUILD_REQUIREMENTS.map((r) => ({
+    ...r,
+    // only the platform's own settings can be checked from here; the repository's secrets are checked by the build itself
+    set: r.where === "platform" ? !!env(r.key) : null,
+    value: r.where === "platform" && !r.secret ? env(r.key) || null : null,
+  }));
+}
+export function readyToBuild() {
+  const missing = BUILD_REQUIREMENTS.filter((r) => r.where === "platform" && r.required && !env(r.key)).map((r) => r.key);
+  return { ok: !missing.length, missing };
+}
+
+/** The settings a company's app is built with, filled in from the company where it has not been set. */
+export function appConfig(company: any): Required<Pick<MobileConfig, "appName" | "bundleId" | "primary" | "accent">> & MobileConfig {
+  const m: MobileConfig = company.mobile || {};
+  const urls = tenantUrls(company);
+  return {
+    ...m,
+    appName: m.appName || company.whiteLabel?.appNames?.mobile || company.branding?.shortName || company.name,
+    shortName: m.shortName || company.branding?.shortName || company.name,
+    bundleId: bundleIdFor(env("MOBILE_PACKAGE_PREFIX"), company.code, m.bundleId),
+    primary: m.primary || company.branding?.themeColor || "#2f5c24",
+    accent: m.accent || company.branding?.accentColor || "#d9b52a",
+    platforms: m.platforms?.length ? m.platforms : (["android"] as Platform[]),
+    apiBase: urls.customUrl || urls.platformUrl,
+  } as any;
+}
+
+const sign = (body: string) => `sha256=${createHmac("sha256", env("MOBILE_BUILD_SECRET") || "dev").update(body).digest("hex")}`;
+/** Checks the signature the workflow sends with its result. */
+export function callbackValid(raw: string, header?: string) {
+  if (!header) return false;
+  const mine = Buffer.from(sign(raw));
+  const theirs = Buffer.from(String(header));
+  return mine.length === theirs.length && timingSafeEqual(mine, theirs);
+}
+
+/** Starts a build and dispatches the workflow. Throws with a plain reason when something is not set up. */
+export async function startBuild(company: any, platform: Platform, by: string, opts: { notes?: string } = {}) {
+  const gate = readyToBuild();
+  if (!gate.ok) throw new Error(`Not set up yet — missing ${gate.missing.join(", ")}. See Knowledge Base › GitHub build.`);
+  if (company.s3Enabled === false) throw new Error("Switch on S3 storage for this company — the finished app is kept in its folder");
+  if (platform === "ios" && !iosEnabled()) throw new Error("iOS signing is not switched on yet (MOBILE_IOS_SIGNING=1 once the certificates are in the repository's secrets)");
+  if (await MobileBuild.exists({ companyId: company._id, platform, status: { $in: ["queued", "building"] } })) throw new Error(`An ${platformLabel(platform)} build is already running for this company`);
+
+  const cfg = appConfig(company);
+  const n = (await MobileBuild.countDocuments({ companyId: company._id, platform })) + 1;
+  const version = nextVersion(env("MOBILE_BASE_VERSION") || "1.0.0", n);
+  const build = await MobileBuild.create({
+    companyId: company._id,
+    companyCode: company.code,
+    platform,
+    version,
+    buildNumber: n,
+    bundleId: cfg.bundleId,
+    appName: cfg.appName,
+    status: "queued",
+    notes: opts.notes,
+    startedBy: by,
+    startedAt: new Date(),
+  });
+
+  const inputs = {
+    build_id: String(build._id),
+    company_code: String(company.code).toUpperCase(),
+    company_name: cfg.appName,
+    platform,
+    version,
+    build_number: String(n),
+    bundle_id: cfg.bundleId,
+    primary: cfg.primary,
+    accent: cfg.accent,
+    api_base: (cfg as any).apiBase || "",
+    s3_prefix: s3Area(company.code, "app", platform, version),
+    callback_url: `${(cfg as any).apiBase || env("APP_BASE_URL")}/api/public/mobile/build`,
+  };
+
+  try {
+    const res = await fetch(`https://api.github.com/repos/${buildRepo()}/actions/workflows/${encodeURIComponent(buildWorkflow())}/dispatches`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${env("GITHUB_BUILD_TOKEN")}`, Accept: "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28", "Content-Type": "application/json" },
+      body: JSON.stringify({ ref: buildRef() || (await defaultBranch()), inputs }),
+      signal: AbortSignal.timeout(15_000),
+    });
+    if (!res.ok) {
+      const text = (await res.text()).slice(0, 300);
+      throw new Error(res.status === 404 ? `GitHub refused the build (404). Push .github/workflows/${buildWorkflow()} to the branch and open the Actions tab once so Actions are enabled.` : `GitHub refused the build (${res.status}): ${text}`);
+    }
+  } catch (e: any) {
+    await MobileBuild.updateOne({ _id: build._id }, { $set: { status: "failed", error: e.message, finishedAt: new Date() } });
+    throw e;
+  }
+  return build.toObject();
+}
+
+let branchCache: { at: number; name: string } | null = null;
+async function defaultBranch() {
+  if (branchCache && Date.now() - branchCache.at < 600_000) return branchCache.name;
+  try {
+    const r = await fetch(`https://api.github.com/repos/${buildRepo()}`, { headers: { Authorization: `Bearer ${env("GITHUB_BUILD_TOKEN")}`, Accept: "application/vnd.github+json" }, signal: AbortSignal.timeout(10_000) });
+    const j: any = await r.json();
+    branchCache = { at: Date.now(), name: j?.default_branch || "main" };
+  } catch {
+    branchCache = { at: Date.now(), name: "main" };
+  }
+  return branchCache.name;
+}
+
+/** What the workflow sends back as it goes. */
+export async function updateBuild(buildId: string, patch: { status?: string; runId?: string; runUrl?: string; fileKey?: string; fileName?: string; fileSize?: number; sha256?: string; error?: string }) {
+  const set: any = {};
+  for (const [k, v] of Object.entries(patch)) if (v !== undefined && v !== null && v !== "") set[k] = v;
+  if (patch.status === "ready" || patch.status === "failed") set.finishedAt = new Date();
+  const build = await MobileBuild.findByIdAndUpdate(buildId, { $set: set }, { new: true }).lean<any>();
+  return build;
+}
+
+/** A build that has been running far too long is marked failed, so the tab never shows a spinner for ever. */
+export async function sweepStuckBuilds(maxMinutes = 90) {
+  const cutoff = new Date(Date.now() - maxMinutes * 60_000);
+  const r = await MobileBuild.updateMany({ status: { $in: ["queued", "building"] }, startedAt: { $lt: cutoff } }, { $set: { status: "failed", error: `No result after ${maxMinutes} minutes — check the run on GitHub`, finishedAt: new Date() } });
+  return r.modifiedCount || 0;
+}
+
+/** The builds a company can offer for download: the newest ready one per platform. */
+export async function latestReady(companyId: any) {
+  const rows = await MobileBuild.find({ companyId, status: "ready" }).sort({ createdAt: -1 }).limit(20).lean<any[]>();
+  const out: Record<string, any> = {};
+  for (const r of rows) if (!out[r.platform]) out[r.platform] = r;
+  return out;
+}
+
+export const artifactName = (company: any, platform: string, version: string) => `${String(company.code).toLowerCase()}-${platform}-${version}.${artifactExt(platform)}`;

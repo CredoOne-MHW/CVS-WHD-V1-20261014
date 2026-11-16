@@ -4,6 +4,7 @@
  */
 import { Router } from "express";
 import mongoose from "mongoose";
+import { redis, redisSource } from "../../lib/cache";
 import { Job, PerfStat, ProviderState, Company } from "../../models";
 import { can } from "../../middleware/auth";
 import { h, notFound } from "../../lib/http";
@@ -64,8 +65,14 @@ r.get("/system/health", can("system", "read"), h(async (req, res) => {
     ProviderState.find().sort({ lastFailureAt: -1 }).limit(30).lean<any[]>(),
   ]);
   const names = new Map((await Company.find({ _id: { $in: problems.map((j) => j.companyId).filter(Boolean) } }).select("name").lean<any[]>()).map((c) => [String(c._id), c.name]));
+  // Shared cache: whether Redis is actually in use, and through which variables
+  const t0 = Date.now();
+  const pong = await redis(["PING"]).catch(() => null);
+  const cache = { on: !!redisSource(), source: redisSource(), reachable: !!pong, ms: pong ? Date.now() - t0 : null };
+
   res.json({
     hours,
+    cache,
     budgets: { read: READ_BUDGET_MS, write: WRITE_BUDGET_MS },
     overall: { read: overall("read"), write: overall("write") },
     routes,

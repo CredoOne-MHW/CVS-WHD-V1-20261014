@@ -156,3 +156,19 @@ export async function extractText(buf: Buffer, fileName: string, depth = 0): Pro
 }
 
 export const KB_EXTENSIONS = ["csv", "xlsx", "zip", "txt", "json", "docx", "pdf", "md"];
+
+/**
+ * Rows of plain objects → an .xlsx buffer, with the first row's keys as the header.
+ * Used by the DPDP report downloads; the report builder has its own formatter.
+ */
+export async function sheet(rows: Record<string, any>[], name = "Report") {
+  const ExcelJS = (await import("exceljs")).default;
+  const wb = new ExcelJS.Workbook();
+  const ws = wb.addWorksheet(name.slice(0, 30));
+  const headers = rows.length ? Object.keys(rows[0]) : ["No records"];
+  ws.columns = headers.map((h) => ({ header: h, key: h, width: Math.min(40, Math.max(12, h.length + 4)) }));
+  for (const r of rows) ws.addRow(headers.map((h) => (r[h] instanceof Date ? r[h] : (r[h] ?? ""))));
+  ws.getRow(1).font = { bold: true };
+  ws.views = [{ state: "frozen", ySplit: 1 }];
+  return Buffer.from(await wb.xlsx.writeBuffer());
+}
