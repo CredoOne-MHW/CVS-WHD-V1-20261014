@@ -206,6 +206,9 @@ const MobileBuildSchema = new Schema(
     fileName: String,
     fileSize: Number,
     sha256: String,
+    signedBy: { type: String, enum: ["platform", "github", "none"] }, // which key this build was signed with
+    signingFingerprint: String,
+    trigger: { type: String, enum: ["manual", "push", "auto"], default: "manual" }, // what started it
     notes: String,
     error: String,
     startedBy: String,
@@ -216,8 +219,30 @@ const MobileBuildSchema = new Schema(
   ts
 );
 MobileBuildSchema.index({ companyId: 1, platform: 1, createdAt: -1 });
+MobileBuildSchema.index({ status: 1, createdAt: -1 }); // the all-company release console
 MobileBuildSchema.index({ companyId: 1, status: 1 });
 export const MobileBuild = m<any>("MobileBuild", MobileBuildSchema);
+
+/**
+ * The Android signing key of one company's app. Android refuses an update signed with a different key, so
+ * this is made once and kept for the life of the app. The keystore and both passwords are stored encrypted
+ * (AES-256-GCM, under MOBILE_SIGNING_SECRET) — see server/lib/signing.ts. Nothing here reaches a browser.
+ */
+const MobileSigningKeySchema = new Schema(
+  {
+    companyId: { type: ObjectId, required: true, unique: true }, // one key per company, enforced here
+    companyCode: String,
+    platform: { type: String, default: "android" },
+    alias: String,
+    keystore: String, // encrypted
+    storePass: String, // encrypted
+    keyPass: String, // encrypted
+    fingerprint: String, // SHA-256 of the certificate — safe to show
+    createdBy: String,
+  },
+  ts
+);
+export const MobileSigningKey = m<any>("MobileSigningKey", MobileSigningKeySchema);
 
 /** One document per plan tier: which company modules + CRUD scope are allowed. */
 const PlanSchema = new Schema(
