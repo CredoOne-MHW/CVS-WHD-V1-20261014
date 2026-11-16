@@ -363,12 +363,23 @@ function StartBuild({ sum, companies, onStarted, toast, busy, setBusy }: any) {
   const [target, setTarget] = useState<"test" | "store">("test");
   const [all, setAll] = useState(false);
   const withApp = useMemo(() => companies.filter((c: any) => c.hasApp).length, [companies]);
+  const picked = companies.find((c: any) => String(c._id) === companyId);
+
+  /**
+   * Nobody can have an app before the first one is built, so "every company" is a guaranteed nothing until
+   * at least one exists. It used to stay pressable and answer "0 builds started", which says what happened
+   * and not one word about why.
+   */
+  useEffect(() => {
+    if (all && withApp === 0) setAll(false);
+  }, [all, withApp]);
 
   const go = async () => {
     setBusy("build");
     try {
       const r = await api<any>("/sa/mobile-releases/build", { body: { companyId: companyId || undefined, platform, target, all } });
-      toast("ok", all ? `${r.started} build${r.started === 1 ? "" : "s"} started${r.skipped ? `, ${r.skipped} skipped` : ""}` : "Build started — it takes 10–20 minutes");
+      if (all) toast(r.started ? "ok" : "err", r.started ? `${r.started} build${r.started === 1 ? "" : "s"} started${r.skipped ? `, ${r.skipped} skipped` : ""}` : r.message || "Nothing was started.");
+      else toast("ok", picked && !picked.hasApp ? "First build started — it takes 10–20 minutes and fixes this company's application id." : "Build started — it takes 10–20 minutes");
       onStarted();
     } catch (e: any) {
       toast("err", e.message);
@@ -425,16 +436,21 @@ function StartBuild({ sum, companies, onStarted, toast, busy, setBusy }: any) {
         </Field>
         <Field label="Scope">
           <label className="flex items-center gap-2 pt-3 text-sm">
-            <input type="checkbox" className="h-4 w-4 accent-hive-700" checked={all} onChange={(e) => setAll(e.target.checked)} />
+            <input type="checkbox" className="h-4 w-4 accent-hive-700 disabled:opacity-40" checked={all} disabled={withApp === 0} onChange={(e) => setAll(e.target.checked)} />
             Every company that already has an app ({withApp})
           </label>
+          {withApp === 0 && (
+            <p className="mt-1.5 text-xs text-honey-800">
+              No company has an app yet, so there is nothing to rebuild. Pick a company above and build its first one.
+            </p>
+          )}
         </Field>
       </div>
       <div className="mt-4 flex flex-wrap items-center justify-between gap-3">
         <p className="max-w-xl text-xs text-ink-500">
           <span className="font-semibold text-ink-700">{targetHint(platform, target)}</span> One build per company. Every build carries the platform's version; building again gives the next build number. A company with no app yet is skipped by “every company” — its first build decides the application id and the signing key, so it is always started by hand.
         </p>
-        <Btn onClick={go} loading={busy === "build"} disabled={!sum.setup.ok || (!all && !companyId)}>
+        <Btn onClick={go} loading={busy === "build"} disabled={!sum.setup.ok || (all ? withApp === 0 : !companyId)}>
           <Hammer className="h-4 w-4" /> Start build
         </Btn>
       </div>
