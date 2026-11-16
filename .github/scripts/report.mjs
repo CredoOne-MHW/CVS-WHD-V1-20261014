@@ -16,6 +16,9 @@ const body = JSON.stringify({
   file_name: process.env.FILE_NAME || undefined,
   file_size: process.env.FILE_SIZE ? Number(process.env.FILE_SIZE) : undefined,
   sha256: process.env.SHA256 || undefined,
+  // only a store build has these: what happened when the artefact was sent to Google or Apple
+  target: process.env.TARGET || undefined,
+  store_note: process.env.STORE_NOTE || undefined,
   error: status === "failed" ? process.env.ERROR || "The build failed" : undefined,
 });
 const signature = `sha256=${createHmac("sha256", process.env.MOBILE_BUILD_SECRET || "dev").update(body).digest("hex")}`;

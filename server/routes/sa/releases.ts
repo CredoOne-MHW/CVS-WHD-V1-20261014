@@ -111,6 +111,7 @@ r.post("/mobile-releases/build", write, h(async (req, res) => {
     z.object({
       companyId: z.string().regex(/^[a-f0-9]{24}$/).optional(),
       platform: z.enum(["android", "ios"]).default("android"),
+      target: z.enum(["test", "store"]).default("test"),
       all: z.boolean().default(false),
     }),
     req.body
@@ -122,9 +123,9 @@ r.post("/mobile-releases/build", write, h(async (req, res) => {
     if (!b.companyId) throw badRequest("Pick a company, or tick every company with an app");
     const c = await Company.findOne({ _id: b.companyId, deletedAt: null }).lean<any>();
     if (!c) throw notFound("Company not found");
-    const build = await startBuild(c, platform, by);
+    const build = await startBuild(c, platform, by, { target: b.target || "test" });
     res.locals.action = "Start mobile build";
-    res.locals.item = `${c.code} ${platform}`;
+    res.locals.item = `${c.code} ${platform} ${b.target || "test"}`;
     return res.status(201).json({ started: 1, builds: [build] });
   }
 
@@ -134,7 +135,7 @@ r.post("/mobile-releases/build", write, h(async (req, res) => {
   const problems: string[] = [];
   for (const c of companies) {
     try {
-      await startBuild(c, platform, by, { trigger: "auto" });
+      await startBuild(c, platform, by, { trigger: "auto", target: b.target || "test" });
       started++;
     } catch (e: any) {
       problems.push(`${c.code}: ${e?.message || e}`);

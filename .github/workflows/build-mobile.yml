@@ -25,6 +25,7 @@ on:
       s3_prefix: { description: "Where the finished file goes", required: true }
       callback_url: { description: "Where to report back", required: true }
       signing_url: { description: "Where to collect the platform's signing key (empty = use the repository secrets)", required: false, default: "" }
+      target: { description: "test = .apk / ad-hoc .ipa to install directly; store = .aab / App Store .ipa for the stores", required: false, default: "test" }
 
 concurrency:
   group: mobile-${{ inputs.company_code }}-${{ inputs.platform }}
@@ -130,26 +131,19 @@ jobs:
             echo "MYAPP_UPLOAD_STORE_PASSWORD=$STORE_PW"
             echo "MYAPP_UPLOAD_KEY_PASSWORD=$KEY_PW"
           } >> android/gradle.properties
-          python3 - <<'PY'
-          import re, pathlib
-          p = pathlib.Path("android/app/build.gradle")
-          s = p.read_text()
-          if "MYAPP_UPLOAD_STORE_FILE" not in s:
-              s = s.replace("signingConfigs {", """signingConfigs {
-        release {
-            storeFile file(MYAPP_UPLOAD_STORE_FILE)
-            storePassword MYAPP_UPLOAD_STORE_PASSWORD
-            keyAlias MYAPP_UPLOAD_KEY_ALIAS
-            keyPassword MYAPP_UPLOAD_KEY_PASSWORD
-        }""", 1)
-              s = re.sub(r"(buildTypes\s*\{[\s\S]*?release\s*\{[\s\S]*?signingConfig signingConfigs\.)debug", r"\1release", s, count=1)
-              p.write_text(s)
-              print("signing config added")
-          PY
+          python3 .github/scripts/android-signing-config.py
 
-      - name: Build the APK
+      # Google Play takes an Android App Bundle and makes the phone-ready files itself; an .apk is what you
+      # hand to a phone directly. They are different artefacts, so the target decides which one is built.
+      - name: Build the Android app
         if: inputs.platform == 'android'
-        run: cd android && ./gradlew assembleRelease --no-daemon
+        run: |
+          cd android
+          if [ "${{ inputs.target }}" = "store" ]; then
+            ./gradlew bundleRelease --no-daemon
+          else
+            ./gradlew assembleRelease --no-daemon
+          fi
 
       # ── iOS ──────────────────────────────────────────────────────────────
       - name: Certificates
@@ -175,8 +169,11 @@ jobs:
           xcodebuild -workspace *.xcworkspace -scheme "$(ls *.xcworkspace | sed 's/.xcworkspace//')" \
             -configuration Release -archivePath build/app.xcarchive archive \
             DEVELOPMENT_TEAM="${{ secrets.IOS_TEAM_ID }}" CODE_SIGN_STYLE=Manual
+          # app-store for App Store Connect, ad-hoc for the devices on the provisioning profile
+          PLIST=../.github/ios-export.plist
+          [ "${{ inputs.target }}" = "store" ] && PLIST=../.github/ios-export-store.plist
           xcodebuild -exportArchive -archivePath build/app.xcarchive -exportPath build/ipa \
-            -exportOptionsPlist ../.github/ios-export.plist
+            -exportOptionsPlist "$PLIST"
 
       # ── Upload and report ────────────────────────────────────────────────
       - name: Upload to the company's folder
@@ -187,7 +184,10 @@ jobs:
           AWS_DEFAULT_REGION: ${{ secrets.AWS_REGION || 'ap-south-1' }}
         run: |
           set -e
-          if [ "${{ inputs.platform }}" = "android" ]; then
+          if [ "${{ inputs.platform }}" = "android" ] && [ "${{ inputs.target }}" = "store" ]; then
+            SRC=$(ls android/app/build/outputs/bundle/release/*.aab | head -1)
+            NAME="$(echo ${{ inputs.company_code }} | tr '[:upper:]' '[:lower:]')-android-${{ inputs.version }}.aab"
+          elif [ "${{ inputs.platform }}" = "android" ]; then
             SRC=$(ls android/app/build/outputs/apk/release/*.apk | head -1)
             NAME="$(echo ${{ inputs.company_code }} | tr '[:upper:]' '[:lower:]')-android-${{ inputs.version }}.apk"
           else
@@ -200,6 +200,53 @@ jobs:
           echo "file_name=$NAME" >> $GITHUB_OUTPUT
           echo "file_size=$(stat -f%z "$SRC" 2>/dev/null || stat -c%s "$SRC")" >> $GITHUB_OUTPUT
           echo "sha256=$(shasum -a 256 "$SRC" | cut -d' ' -f1)" >> $GITHUB_OUTPUT
+
+      # ── The stores ───────────────────────────────────────────────────────
+      # Both uploads are optional and neither can fail the build: the artefact is already on S3 and can be
+      # uploaded by hand, so a store that refuses costs a retry, not a rebuild.
+      - name: Send to Google Play
+        id: play
+        if: inputs.platform == 'android' && inputs.target == 'store'
+        continue-on-error: true
+        env:
+          PLAY_PACKAGE: ${{ inputs.bundle_id }}
+          PLAY_SA_JSON: /tmp/play.json
+          SA_JSON: ${{ secrets.GOOGLE_PLAY_SERVICE_ACCOUNT_JSON }}
+        run: |
+          if [ -z "$SA_JSON" ]; then
+            echo "note=kept on S3 — add GOOGLE_PLAY_SERVICE_ACCOUNT_JSON to upload automatically" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+          printf '%s' "$SA_JSON" > /tmp/play.json
+          python3 -m pip install --quiet google-api-python-client google-auth
+          PLAY_AAB="$(ls android/app/build/outputs/bundle/release/*.aab | head -1)" \
+            python3 .github/scripts/play-upload.py
+          rm -f /tmp/play.json
+
+      - name: Send to App Store Connect
+        id: appstore
+        if: inputs.platform == 'ios' && inputs.target == 'store'
+        continue-on-error: true
+        env:
+          KEY_ID: ${{ secrets.APP_STORE_CONNECT_KEY_ID }}
+          ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
+          KEY_P8: ${{ secrets.APP_STORE_CONNECT_KEY_P8 }}
+        run: |
+          if [ -z "$KEY_ID" ] || [ -z "$ISSUER_ID" ] || [ -z "$KEY_P8" ]; then
+            echo "note=kept on S3 — add the three APP_STORE_CONNECT_* secrets to upload automatically" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+          # altool looks for the key in this exact place, under this exact name
+          mkdir -p ~/private_keys
+          printf '%s' "$KEY_P8" | base64 -d > ~/private_keys/AuthKey_$KEY_ID.p8
+          IPA=$(ls ios/build/ipa/*.ipa | head -1)
+          if xcrun altool --upload-app -f "$IPA" -t ios --apiKey "$KEY_ID" --apiIssuer "$ISSUER_ID"; then
+            echo "note=uploaded — it appears in TestFlight once Apple has processed it" >> $GITHUB_OUTPUT
+          else
+            echo "::warning::App Store Connect refused the upload. The .ipa is on S3; check that the app exists in App Store Connect with this bundle id and that the build number has not been used before."
+            echo "note=App Store Connect refused it — the .ipa is on S3" >> $GITHUB_OUTPUT
+          fi
+          rm -f ~/private_keys/*.p8
 
       - name: Tell the platform it is ready
         working-directory: .
@@ -214,6 +261,8 @@ jobs:
           FILE_NAME: ${{ steps.upload.outputs.file_name }}
           FILE_SIZE: ${{ steps.upload.outputs.file_size }}
           SHA256: ${{ steps.upload.outputs.sha256 }}
+          STORE_NOTE: ${{ steps.play.outputs.note || steps.appstore.outputs.note }}
+          TARGET: ${{ inputs.target }}
 
       # the runner is thrown away, but a key is worth deleting the moment it is no longer needed
       - name: Shred the signing key

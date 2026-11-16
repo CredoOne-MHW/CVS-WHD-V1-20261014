@@ -206,6 +206,14 @@ const MobileBuildSchema = new Schema(
     fileName: String,
     fileSize: Number,
     sha256: String,
+    target: { type: String, enum: ["test", "store"], default: "test" }, // direct install, or for the stores
+    store: {
+      // only a store build fills this in
+      uploaded: Boolean,
+      track: String, // "internal" on Play, "TestFlight" on Apple
+      at: Date,
+      message: String,
+    },
     signedBy: { type: String, enum: ["platform", "github", "none"] }, // which key this build was signed with
     signingFingerprint: String,
     trigger: { type: String, enum: ["manual", "push", "auto"], default: "manual" }, // what started it

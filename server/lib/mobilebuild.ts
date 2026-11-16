@@ -16,7 +16,7 @@ import { createHmac, timingSafeEqual } from "crypto";
 import { Company, MobileBuild } from "../models";
 import { tenantUrls } from "./tenant";
 import { s3Area } from "../../shared/platform";
-import { bundleIdFor, nextVersion, platformLabel, artifactExt, BUILD_REQUIREMENTS, type Platform, type MobileConfig } from "../../shared/mobile";
+import { bundleIdFor, nextVersion, platformLabel, artifactExt, BUILD_REQUIREMENTS, type Platform, type MobileConfig, type BuildTarget } from "../../shared/mobile";
 import { ensureKey, signingEnabled } from "./signing";
 
 const env = (k: string) => (process.env[k] || "").trim();
@@ -27,16 +27,33 @@ export const iosEnabled = () => env("MOBILE_IOS_SIGNING") === "1";
 
 /** Which requirements are met — the Knowledge Base article and the Mobile App tab both show this. */
 export function setupState() {
-  return BUILD_REQUIREMENTS.map((r) => ({
-    ...r,
-    // only the platform's own settings can be checked from here; the repository's secrets are checked by the build itself
-    set: r.where === "platform" ? !!env(r.key) : null,
-    value: r.where === "platform" && !r.secret ? env(r.key) || null : null,
-  }));
+  return BUILD_REQUIREMENTS.map((r) => {
+    const value = r.where === "platform" ? env(r.key) : "";
+    // a value that is present but unusable used to pass silently and then fail the build with a 404
+    const problem = r.where === "platform" && value && r.check ? r.check(value) : null;
+    return {
+      ...r,
+      check: undefined, // a function cannot be sent to the browser
+      // only the platform's own settings can be checked from here; the repository's secrets are checked by the build itself
+      set: r.where === "platform" ? !!value : null,
+      problem,
+      value: r.where === "platform" && !r.secret ? value || null : null,
+    };
+  });
 }
+
+/**
+ * Whether a build can be started at all. A setting that is present but malformed counts as missing, because
+ * a build started with it fails on GitHub a minute later with nothing useful to show for it.
+ */
 export function readyToBuild() {
-  const missing = BUILD_REQUIREMENTS.filter((r) => r.where === "platform" && r.required && !env(r.key)).map((r) => r.key);
-  return { ok: !missing.length, missing };
+  const bad = BUILD_REQUIREMENTS.filter((r) => {
+    if (r.where !== "platform") return false;
+    const v = env(r.key);
+    if (r.required && !v) return true;
+    return !!(v && r.check && r.check(v));
+  }).map((r) => r.key);
+  return { ok: !bad.length, missing: bad };
 }
 
 /** The settings a company's app is built with, filled in from the company where it has not been set. */
@@ -65,7 +82,7 @@ export function callbackValid(raw: string, header?: string) {
 }
 
 /** Starts a build and dispatches the workflow. Throws with a plain reason when something is not set up. */
-export async function startBuild(company: any, platform: Platform, by: string, opts: { notes?: string; trigger?: "manual" | "push" | "auto" } = {}) {
+export async function startBuild(company: any, platform: Platform, by: string, opts: { notes?: string; trigger?: "manual" | "push" | "auto"; target?: BuildTarget } = {}) {
   const gate = readyToBuild();
   if (!gate.ok) throw new Error(`Not set up yet — missing ${gate.missing.join(", ")}. See Knowledge Base › GitHub build.`);
   if (company.s3Enabled === false) throw new Error("Switch on S3 storage for this company — the finished app is kept in its folder");
@@ -89,6 +106,7 @@ export async function startBuild(company: any, platform: Platform, by: string, o
     appName: cfg.appName,
     status: "queued",
     notes: opts.notes,
+    target: opts.target || "test",
     trigger: opts.trigger || "manual",
     signedBy: platform === "android" ? (signing ? "platform" : "github") : "github",
     signingFingerprint: signing?.fingerprint,
@@ -111,6 +129,8 @@ export async function startBuild(company: any, platform: Platform, by: string, o
     callback_url: `${(cfg as any).apiBase || env("APP_BASE_URL")}/api/public/mobile/build`,
     // where the build collects the signing key — never the key itself, which a workflow input would print
     signing_url: signing ? `${(cfg as any).apiBase || env("APP_BASE_URL")}/api/public/mobile/signing/${build._id}` : "",
+    // "test" makes an .apk / ad-hoc .ipa; "store" makes an .aab / App Store .ipa and uploads it if it can
+    target: opts.target || "test",
   };
 
   try {
@@ -145,7 +165,10 @@ async function defaultBranch() {
 }
 
 /** What the workflow sends back as it goes. */
-export async function updateBuild(buildId: string, patch: { status?: string; runId?: string; runUrl?: string; fileKey?: string; fileName?: string; fileSize?: number; sha256?: string; error?: string }) {
+export async function updateBuild(
+  buildId: string,
+  patch: { status?: string; runId?: string; runUrl?: string; fileKey?: string; fileName?: string; fileSize?: number; sha256?: string; error?: string; store?: any }
+) {
   const set: any = {};
   for (const [k, v] of Object.entries(patch)) if (v !== undefined && v !== null && v !== "") set[k] = v;
   if (patch.status === "ready" || patch.status === "failed") set.finishedAt = new Date();
@@ -161,11 +184,21 @@ export async function sweepStuckBuilds(maxMinutes = 90) {
 }
 
 /** The builds a company can offer for download: the newest ready one per platform. */
-export async function latestReady(companyId: any) {
-  const rows = await MobileBuild.find({ companyId, status: "ready" }).sort({ createdAt: -1 }).limit(20).lean<any[]>();
+/**
+ * The newest finished build of each platform.
+ *
+ * `onlyInstallable` leaves out store builds, because an .aab and an App Store .ipa do not install on a phone
+ * — offering one on a company's download page gives somebody a file that cannot work and no way to know why.
+ * The Super Admin screens ask for everything; the download page asks for installable only.
+ */
+export async function latestReady(companyId: any, onlyInstallable = false) {
+  const find: any = { companyId, status: "ready" };
+  if (onlyInstallable) find.target = { $ne: "store" };
+  const rows = await MobileBuild.find(find).sort({ createdAt: -1 }).limit(30).lean<any[]>();
   const out: Record<string, any> = {};
   for (const r of rows) if (!out[r.platform]) out[r.platform] = r;
   return out;
 }
 
-export const artifactName = (company: any, platform: string, version: string) => `${String(company.code).toLowerCase()}-${platform}-${version}.${artifactExt(platform)}`;
+export const artifactName = (company: any, platform: string, version: string, target = "test") =>
+  `${String(company.code).toLowerCase()}-${platform}-${version}.${artifactExt(platform, target)}`;

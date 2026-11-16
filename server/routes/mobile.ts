@@ -64,7 +64,7 @@ export function mobileRoutes(scope: Scope) {
       total,
       page,
       limit,
-      latest: await latestReady(c._id).catch(() => ({})),
+      latest: await latestReady(c._id, scope !== "super").catch(() => ({})),
       signing: scope === "super" ? await signingSummary(c).catch(() => null) : null,
       setup: scope === "super" ? { ...gate, repo: buildRepo(), workflow: buildWorkflow(), ref: buildRef() || "default branch", requirements: safe(() => setupState(), []) } : { ok: gate.ok },
       prefix: safe(() => s3Area(c.code, "app"), ""),
@@ -115,12 +115,15 @@ export function mobileRoutes(scope: Scope) {
     /** Build now. */
     r.post("/mobile/build", write, h(async (req, res) => {
       const c = await target(req, scope);
-      const b = parse(z.object({ platform: z.enum(["android", "ios"]), notes: z.string().max(300).optional() }), req.body);
-      const build = await startBuild(c, b.platform as Platform, req.auth!.email, { notes: b.notes }).catch((e: any) => {
+      const b = parse(
+        z.object({ platform: z.enum(["android", "ios"]), notes: z.string().max(300).optional(), target: z.enum(["test", "store"]).optional() }),
+        req.body
+      );
+      const build = await startBuild(c, b.platform as Platform, req.auth!.email, { notes: b.notes, target: b.target || "test" }).catch((e: any) => {
         throw badRequest(e.message);
       });
       res.locals.action = "Build app";
-      res.locals.item = `${c.name} · ${platformLabel(b.platform)} ${build.version}`;
+      res.locals.item = `${c.name} · ${platformLabel(b.platform)} ${build.version}${b.target === "store" ? " · store" : ""}`;
       res.status(201).json(build);
     }));
 
