@@ -22,10 +22,56 @@ export function parse<T>(schema: ZodSchema<T>, data: unknown): T {
   return r.data;
 }
 
+/**
+ * Errors that are not ours but are the user's to fix.
+ *
+ * An upload that is too large, or an S3 bucket that refuses us, is not an internal fault — it is a thing
+ * somebody can do something about. Left untranslated, every one of them came back as "Internal server error
+ * (ref …)", which tells the person nothing and sends them to us to read a log. Each one here is turned into
+ * the sentence that says what to do.
+ */
+function known(err: any): { status: number; message: string } | null {
+  // multer, on an upload that breaks one of its limits
+  if (err?.name === "MulterError") {
+    const mb = (n?: number) => (n ? `${Math.round(n / 1024 / 1024)} MB` : "the limit");
+    const map: Record<string, string> = {
+      LIMIT_FILE_SIZE: `That file is too large. The most this accepts is ${mb(err.limit)} — save it smaller and try again.`,
+      LIMIT_FILE_COUNT: "Too many files at once.",
+      LIMIT_UNEXPECTED_FILE: `This expects the file under “${err.field || "file"}”. If you are using the normal screen, this is a fault worth reporting.`,
+      LIMIT_PART_COUNT: "Too many parts in that upload.",
+      LIMIT_FIELD_VALUE: "One of the fields in that upload is too long.",
+    };
+    return { status: 400, message: map[err.code] || `That upload was refused (${err.code}).` };
+  }
+
+  // the AWS SDK, when the bucket or the credentials are not what the platform thinks they are
+  const aws = err?.name || err?.Code;
+  if (err?.$metadata || ["CredentialsProviderError", "NoSuchBucket", "AccessDenied", "InvalidAccessKeyId", "SignatureDoesNotMatch", "ExpiredToken", "RequestTimeTooSkewed"].includes(aws)) {
+    const map: Record<string, string> = {
+      NoSuchBucket: "The S3 bucket named in S3_BUCKET does not exist. Check the name and the region.",
+      AccessDenied: "S3 refused the write. The access key needs s3:PutObject on this bucket and prefix.",
+      InvalidAccessKeyId: "S3 does not recognise AWS_ACCESS_KEY_ID.",
+      SignatureDoesNotMatch: "S3 rejected the signature — AWS_SECRET_ACCESS_KEY does not match the key id.",
+      ExpiredToken: "The AWS credentials have expired.",
+      CredentialsProviderError: "No AWS credentials are set, so nothing can be stored. Set AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY.",
+      RequestTimeTooSkewed: "S3 rejected the request because this server's clock is out of step.",
+    };
+    if (map[aws]) return { status: 502, message: `File storage: ${map[aws]}` };
+    if (err?.$metadata?.httpStatusCode) return { status: 502, message: `File storage refused this (${aws || err.$metadata.httpStatusCode}). ${err.message || ""}`.trim() };
+  }
+  return null;
+}
+
 export function errorHandler(err: any, req: Request, res: Response, _next: NextFunction) {
-  const status = err instanceof HttpError ? err.status : err instanceof ZodError ? 400 : err?.code === 11000 ? 409 : 500;
-  const message =
-    err?.code === 11000 ? `Duplicate value for ${Object.keys(err.keyPattern || {}).join(", ")}` : status === 500 ? "Internal server error" : err.message;
+  const k = known(err);
+  const status = k ? k.status : err instanceof HttpError ? err.status : err instanceof ZodError ? 400 : err?.code === 11000 ? 409 : 500;
+  const message = k
+    ? k.message
+    : err?.code === 11000
+      ? `Duplicate value for ${Object.keys(err.keyPattern || {}).join(", ")}`
+      : status === 500
+        ? "Internal server error"
+        : err.message;
   const requestId = (req as any).requestId;
   if (status === 500) console.error(`[${requestId}]`, err); // the id is shown to the user, so support can find this line
   res.locals.error = err?.message;

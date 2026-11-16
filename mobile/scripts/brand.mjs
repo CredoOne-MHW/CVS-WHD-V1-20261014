@@ -40,9 +40,34 @@ e.extra = {
 };
 writeFileSync("app.json", JSON.stringify(app, null, 2) + "\n");
 
-// the company's own icon, when one was downloaded by the workflow
+/**
+ * The company's own icon, when the workflow managed to download one from its S3 folder.
+ *
+ * It replaces both icon shapes: the full-bleed one iOS and the stores use, and the Android adaptive
+ * foreground. That second one is a compromise — Android masks it to a circle or squircle and will crop the
+ * edges of a square logo — but a company's own icon cropped is better than the platform's default, and a
+ * company that cares can upload an already-padded image.
+ */
 if (existsSync("assets/company-icon.png")) {
   copyFileSync("assets/company-icon.png", "assets/icon.png");
-  console.log("using the company's icon");
+  copyFileSync("assets/company-icon.png", "assets/adaptive-icon.png");
+  console.log("using the company's own icon");
+} else {
+  console.log("no company icon uploaded — using the platform's default. Upload one under Branding to replace it.");
 }
+
+/**
+ * Every image app.json names must exist before prebuild runs. Expo's own failure for a missing one is an
+ * ENOENT stack trace from deep inside @expo/image-utils, which says nothing about what to do — so this
+ * checks first and says it plainly.
+ */
+const needed = ["assets/icon.png", "assets/adaptive-icon.png", "assets/splash.png", "assets/notification-icon.png"];
+const missing = needed.filter((f) => !existsSync(f));
+if (missing.length) {
+  console.error(`\nMissing app images: ${missing.join(", ")}`);
+  console.error("These are committed in mobile/assets/ and the build cannot run without them. If this is a fresh");
+  console.error("clone, check they were not lost to a .gitignore rule covering *.png.\n");
+  process.exit(1);
+}
+
 console.log(`branded ${name} · ${bundleId} · v${version} (${buildNumber}) → ${get("API_BASE")}`);

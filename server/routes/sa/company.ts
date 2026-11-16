@@ -26,7 +26,7 @@ import { endOfToday } from "../../lib/clients";
 import { WON_STATUS } from "../../../shared/constants";
 
 const r = Router();
-const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 2 * 1024 * 1024 } });
+const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 8 * 1024 * 1024 } }); // matches the branding limit
 
 async function load(req: any) {
   const c = await Company.findOne({ _id: req.params.id, deletedAt: null }).lean<any>();
