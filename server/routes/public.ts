@@ -321,6 +321,15 @@ r.post("/public/mobile/build", h(async (req: any, res) => {
     fileSize: b.file_size ? Number(b.file_size) : undefined,
     sha256: b.sha256 ? String(b.sha256).slice(0, 80) : undefined,
     error: b.error ? String(b.error).slice(0, 600) : undefined,
+    // a store build also says what became of it at Google or Apple
+    store: b.store_note
+      ? {
+          uploaded: /^uploaded/i.test(String(b.store_note)),
+          track: /TestFlight/i.test(String(b.store_note)) ? "TestFlight" : /internal/i.test(String(b.store_note)) ? "Internal testing" : undefined,
+          at: new Date(),
+          message: String(b.store_note).slice(0, 300),
+        }
+      : undefined,
   });
   if (!build) throw new HttpError(404, "Unknown build");
   res.json({ ok: true, status: build.status });

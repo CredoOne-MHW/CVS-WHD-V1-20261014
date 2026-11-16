@@ -10,7 +10,7 @@ import { useCallback, useEffect, useState } from "react";
 import { Smartphone, Hammer, Download, RotateCcw, Trash2, Save, ExternalLink, CheckCircle2, XCircle, Clock, AlertTriangle, Upload, Apple, Loader2 } from "lucide-react";
 import { api, fmtDate } from "@/lib/api";
 import { Field, Btn, Badge, Spinner, Empty, Confirm, useToast } from "@/components/ui";
-import { platformLabel, BUILD_LABEL, type BuildStatus } from "@shared/mobile";
+import { platformLabel, BUILD_LABEL, targetHint, type BuildStatus } from "@shared/mobile";
 
 const size = (n?: number) => (!n ? "—" : n > 1048576 ? `${(n / 1048576).toFixed(1)} MB` : `${Math.round(n / 1024)} KB`);
 const TONE: Record<BuildStatus, "green" | "honey" | "red" | "gray"> = { ready: "green", building: "honey", queued: "gray", failed: "red", cancelled: "gray" };
@@ -22,6 +22,7 @@ export function MobileAppTab({ id, canEdit }: { id: string; canEdit: boolean }) 
   const [dirty, setDirty] = useState(false);
   const [busy, setBusy] = useState("");
   const [kill, setKill] = useState<any>(null);
+  const [storeBuild, setStoreBuild] = useState(false); // .aab / App Store .ipa instead of a directly installable file
   const toast = useToast();
 
   /**
@@ -104,10 +105,10 @@ export function MobileAppTab({ id, canEdit }: { id: string; canEdit: boolean }) 
       setBusy("");
     }
   }
-  async function build(platform: string) {
+  async function build(platform: string, target: "test" | "store" = "test") {
     setBusy(platform);
     try {
-      await api(`/sa/companies/${id}/mobile/build`, { body: { platform } });
+      await api(`/sa/companies/${id}/mobile/build`, { body: { platform, target } });
       toast("ok", `${platformLabel(platform)} build started — it takes 10–20 minutes`);
       await load();
     } catch (e: any) {
@@ -214,10 +215,15 @@ export function MobileAppTab({ id, canEdit }: { id: string; canEdit: boolean }) 
             <p className="text-sm text-ink-500">
               Takes 10–20 minutes. {running ? `${running.platform === "ios" ? "An iOS" : "An Android"} build is running now.` : "The finished file appears below and on the company's own Mobile App page."}
             </p>
+            <p className="mt-1 max-w-xl text-xs font-semibold text-ink-600">{targetHint((form.platforms || ["android"])[0], storeBuild ? "store" : "test")}</p>
           </div>
-          <div className="flex flex-wrap gap-2">
+          <div className="flex flex-wrap items-center gap-2">
+            <label className="mr-1 flex items-center gap-2 rounded-xl bg-ink-400/[0.06] px-3 py-2 text-sm font-semibold">
+              <input type="checkbox" className="h-4 w-4 accent-hive-700" checked={storeBuild} onChange={(e) => setStoreBuild(e.target.checked)} disabled={!canEdit} />
+              Store build
+            </label>
             {(form.platforms || ["android"]).map((p: string) => (
-              <Btn key={p} type="button" variant={p === "android" ? "primary" : "secondary"} loading={busy === p} disabled={!canEdit || !d.setup?.ok || !!running || (p === "ios" && !d.ios)} onClick={() => build(p)}>
+              <Btn key={p} type="button" variant={p === "android" ? "primary" : "secondary"} loading={busy === p} disabled={!canEdit || !d.setup?.ok || !!running || (p === "ios" && !d.ios)} onClick={() => build(p, storeBuild ? "store" : "test")}>
                 {p === "ios" ? <Apple className="h-4 w-4" /> : <Hammer className="h-4 w-4" />} Build {platformLabel(p)}
               </Btn>
             ))}
@@ -301,10 +307,14 @@ export function MobileAppTab({ id, canEdit }: { id: string; canEdit: boolean }) 
                       v{b.version}
                       <span className="mono ml-2 text-[11px] text-ink-400">{b.bundleId}</span>
                     </td>
-                    <td className="td">{platformLabel(b.platform)}</td>
+                    <td className="td">
+                      {platformLabel(b.platform)}
+                      {b.target === "store" && <span className="ml-2"><Badge color="honey">Store</Badge></span>}
+                    </td>
                     <td className="td">
                       <Badge color={TONE[b.status as BuildStatus]}>{BUILD_LABEL[b.status as BuildStatus]}</Badge>
                       {b.error && <p className="mt-1 max-w-[280px] text-xs text-red-600">{b.error}</p>}
+                      {b.store?.message && <p className={`mt-1 max-w-[280px] text-xs ${b.store.uploaded ? "text-emerald-700" : "text-ink-500"}`}>{b.store.message}</p>}
                     </td>
                     <td className="td whitespace-nowrap text-sm text-ink-600">{size(b.fileSize)}</td>
                     <td className="td whitespace-nowrap text-xs text-ink-500">
@@ -355,10 +365,22 @@ export function MobileAppTab({ id, canEdit }: { id: string; canEdit: boolean }) 
           <div className="grid gap-x-8 gap-y-1.5 sm:grid-cols-2">
             {d.setup.requirements.map((r: any) => (
               <div key={r.key} className="flex items-start gap-2 text-sm">
-                {r.set === true ? <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-hive-700" /> : r.set === false ? <XCircle className={`mt-0.5 h-4 w-4 shrink-0 ${r.required ? "text-red-600" : "text-ink-300"}`} /> : <Clock className="mt-0.5 h-4 w-4 shrink-0 text-ink-300" />}
+                {r.problem ? (
+                  <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-honey-600" />
+                ) : r.set === true ? (
+                  <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-hive-700" />
+                ) : r.set === false ? (
+                  <XCircle className={`mt-0.5 h-4 w-4 shrink-0 ${r.required ? "text-red-600" : "text-ink-300"}`} />
+                ) : (
+                  <Clock className="mt-0.5 h-4 w-4 shrink-0 text-ink-300" />
+                )}
                 <span className="min-w-0">
                   <span className="mono text-[12px]">{r.key}</span>
-                  <span className="block text-xs text-ink-500">{r.where === "github" ? "in the build repository's secrets — checked by the build itself" : r.description}</span>
+                  {r.problem ? (
+                    <span className="block text-xs font-semibold text-honey-800">{r.problem}</span>
+                  ) : (
+                    <span className="block text-xs text-ink-500">{r.where === "github" ? "in the build repository's secrets — checked by the build itself" : r.description}</span>
+                  )}
                 </span>
               </div>
             ))}

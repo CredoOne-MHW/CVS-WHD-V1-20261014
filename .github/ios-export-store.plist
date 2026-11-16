@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Export options for a build going to App Store Connect.
+
+  The difference from ios-export.plist is the method: "app-store" produces an .ipa Apple will accept for
+  review and TestFlight, and it will NOT install on a phone by hand. "ad-hoc", in the other file, is the
+  opposite — installable on registered devices, and rejected by App Store Connect.
+
+  Both need a matching provisioning profile in IOS_PROFILE_BASE64: an App Store profile for this one.
+-->
+<plist version="1.0">
+<dict>
+  <key>method</key><string>app-store</string>
+  <key>signingStyle</key><string>manual</string>
+  <key>compileBitcode</key><false/>
+  <key>stripSwiftSymbols</key><true/>
+  <key>uploadSymbols</key><true/>
+  <key>destination</key><string>export</string>
+</dict>
+</plist>
