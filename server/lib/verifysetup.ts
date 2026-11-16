@@ -8,7 +8,7 @@
  *
  * So this asks. Four questions, four plain answers, each with what to do about it.
  */
-import { buildRepo, buildWorkflow, buildRef } from "./mobilebuild";
+import { buildRepo, buildWorkflow, buildRef, WORKFLOW_REVISION } from "./mobilebuild";
 import { signingRoute, SIGNING_HELP } from "./signing";
 
 const env = (k: string) => (process.env[k] || "").trim();
@@ -85,7 +85,27 @@ export async function verifySetup(): Promise<{ ok: boolean; findings: Finding[] 
   const path = `.github/workflows/${workflow}`;
   try {
     const res = await gh(`/repos/${repo}/contents/${encodeURIComponent(path)}?ref=${encodeURIComponent(branch)}`);
-    if (res.ok) findings.push({ key: "workflow", label: "Workflow file", ok: true, detail: `${path} is on ${branch}.` });
+    if (res.ok) {
+      /**
+       * Being there is not enough — it has to be the current one. The platform and the workflow ship
+       * together and deploy separately (the platform to Vercel, the workflow by pushing it), so the pair
+       * drift apart whenever only one half is done, and the build then fails on something already fixed.
+       */
+      const body: any = await res.json();
+      const text = body?.content ? Buffer.from(body.content, "base64").toString("utf8") : "";
+      const found = /#\s*lms-workflow:\s*([\w.\-]+)/.exec(text)?.[1];
+      if (found === WORKFLOW_REVISION) {
+        findings.push({ key: "workflow", label: "Workflow file", ok: true, detail: `${path} is on ${branch}, revision ${found} — current.` });
+      } else {
+        findings.push({
+          key: "workflow", label: "Workflow file", ok: false,
+          detail: found
+            ? `${path} on ${branch} is revision ${found}; this platform ships ${WORKFLOW_REVISION}.`
+            : `${path} is on ${branch}, but it is an older copy from before the revisions were marked.`,
+          fix: `Push the .github folder from the current release to ${branch}. The platform and the workflow are deployed separately — deploying the platform does not update this file, so a build keeps failing on something already fixed.`,
+        });
+      }
+    }
     else
       findings.push({
         key: "workflow", label: "Workflow file", ok: false,
