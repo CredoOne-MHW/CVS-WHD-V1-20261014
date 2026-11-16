@@ -136,6 +136,11 @@ r.post("/mobile-releases/build", write, h(async (req, res) => {
 
   const withApp = new Set((await MobileBuild.distinct("companyId", { status: "ready", platform })).map(String));
   const companies = (await Company.find({ deletedAt: null, status: "active" }).lean<any[]>()).filter((c) => withApp.has(String(c._id)));
+  // answering "0 builds started" to a request that could never start one says what happened and not why
+  if (!companies.length)
+    throw badRequest(
+      `No company has a finished ${platform === "ios" ? "iOS" : "Android"} app yet, so there is nothing to rebuild. Pick a company and build its first one — a first build fixes that company's application id and signing key, so it is never started in bulk.`
+    );
   let started = 0;
   const problems: string[] = [];
   for (const c of companies) {
@@ -148,7 +153,12 @@ r.post("/mobile-releases/build", write, h(async (req, res) => {
   }
   res.locals.action = "Start mobile build (every company)";
   res.locals.item = `${platform} · ${started}`;
-  res.status(201).json({ started, skipped: problems.length, problems: problems.slice(0, 20) });
+  res.status(201).json({
+    started,
+    skipped: problems.length,
+    problems: problems.slice(0, 20),
+    message: started ? undefined : `None of the ${companies.length} eligible companies could be built. ${problems[0] || ""}`.trim(),
+  });
 }));
 
 /** The automatic-rebuild switch, the branch, and a fresh secret when one is wanted. */

@@ -100,14 +100,20 @@ export async function callbackValid(raw: string, header?: string) {
 
 /** Starts a build and dispatches the workflow. Throws with a plain reason when something is not set up. */
 export async function startBuild(company: any, platform: Platform, by: string, opts: { notes?: string; trigger?: "manual" | "push" | "auto"; target?: BuildTarget } = {}) {
-  const gate = readyToBuild();
+  /**
+   * The shared secret is made before the gate is checked, not after — it is one of the things the gate looks
+   * for. Checking first meant the panel said "ready" (because it knew the platform keeps the secret) while
+   * this refused the build for a variable that is deliberately empty. The gate must be given the same
+   * knowledge the panel has, or the two disagree and only one of them is on screen.
+   */
+  const { value: secret } = await ensureBuildSecret(by);
+  const gate = readyToBuild({ MOBILE_BUILD_SECRET: !!secret });
   if (!gate.ok) throw new Error(`Not set up yet — missing ${gate.missing.join(", ")}. See Knowledge Base › GitHub build.`);
   if (company.s3Enabled === false) throw new Error("Switch on S3 storage for this company — the finished app is kept in its folder");
   if (platform === "ios" && !iosEnabled()) throw new Error("iOS signing is not switched on yet (MOBILE_IOS_SIGNING=1 once the certificates are in the repository's secrets)");
   if (await MobileBuild.exists({ companyId: company._id, platform, status: { $in: ["queued", "building"] } })) throw new Error(`An ${platformLabel(platform)} build is already running for this company`);
 
   const cfg = appConfig(company);
-  await ensureBuildSecret(by); // so a first build needs nothing set up by hand
   // Android needs one permanent key for the life of the app, so it is made (once) before anything is queued
   let signing: any = null;
   if (platform === "android" && signingEnabled()) signing = await ensureKey(company, by);
