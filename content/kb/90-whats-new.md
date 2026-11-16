@@ -4,6 +4,19 @@ slug: whats-new
 order: 90
 summary: Changes in recent deploys.
 ---
+## November 2026 — v1.3.0 — the company workspace (Super Admin)
+
+- A company now **opens as its own page** — click its name in Super Admin → Company. The header carries Force login, Login page, Suspend and Save changes; everything about the company sits behind its tabs.
+- **Overview** shows the company at a glance: leads, conversions, clients, outstanding, users, live channels, deliveries needing attention, its addresses and its latest leads.
+- **Company details**, **Subscription** (plan, frequency, amount, due date, discount in ₹ or %, gross) and **Login credentials** (with Show and Generate for the password).
+- **Branding & domain** adds login page colours and per-app themes; **White label** holds the platform-branding switch, support link, e-mail sender, app names, look & feel and custom CSS.
+- **Role access** lets Super Admin set the company's own roles, within the plan and the Modules tab.
+- **Mobile Modules** picks what the company's mobile apps may show.
+- **Notifications** sets each alert per device with its sound, including your own uploaded sounds.
+- **Cron Jobs** shows every background job with its schedule, last and next run, an on/off switch and Run now.
+- **Retention Policy** sets how long each log is kept, with a nightly housekeeping job and an Apply button.
+- Fixed: after a new deployment, clicking one menu then another could leave the screen where it was until a manual refresh. A click that does not land now takes you there directly.
+
 ## November 2026 — v1.2.0 — deleting a client
 
 - **Client → Clients** has a **Delete** action next to View journey, verified by a one-time code on WhatsApp — the same gate used for leads.

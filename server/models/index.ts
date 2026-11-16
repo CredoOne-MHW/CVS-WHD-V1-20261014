@@ -81,6 +81,13 @@ const CompanySchema = new Schema(
     plan: { type: String, default: "Trial", index: true }, // name of a Plan document
     gstin: String,
     address: String,
+    /* Company details tab */
+    legalName: String, // "M/S. …" — the name on invoices
+    businessType: String, // from BUSINESS_TYPES
+    city: String,
+    state: String,
+    pin: String,
+    contactEmail: String, // where the platform writes to, when different from `email`
     status: { type: String, enum: ["active", "inactive"], default: "active", index: true },
     trialEndsAt: Date,
     deletedAt: Date,
@@ -94,6 +101,18 @@ const CompanySchema = new Schema(
     // Super Admin › Company › Modules: per-company override of the plan, per module or sub-module ("clients:invoice").
     // { [key]: { mode: "custom", perm: {create,read,update,delete} } | { mode: "paused" } } — absent = follow the plan
     moduleAccess: { type: Mixed, default: {} },
+    /* Super Admin › Company › Mobile Modules: which modules (and sub-modules) the company's apps may use.
+       Absent = every module the company has. Who may open one still follows the plan, moduleAccess and roles. */
+    mobileModules: { type: [String], default: undefined },
+    /* Super Admin › Company › White label — see shared/platform.ts WhiteLabel */
+    whiteLabel: { type: Mixed, default: {} },
+    /* Super Admin › Company › Cron Jobs: { [job key]: { on, unit, every, at } } — absent = the platform default */
+    cron: { type: Mixed, default: {} },
+    /* Super Admin › Company › Retention Policy: { [log kind]: days } — 0 = keep for ever, absent = the default */
+    retention: { type: Mixed, default: {} },
+    /* Super Admin › Company › Notifications: { [notification key]: { mobile, desktop, sound } } */
+    notify: { type: Mixed, default: {} },
+    notifySound: String, // one sound for all, overriding each row
     s3CreatedAt: Date, // when the S3 folder tree was created
     dbName: String, // the company's own MongoDB database (= company code at creation; never changes)
     dbReadyAt: Date, // set once the database exists and the company's data lives there
@@ -112,6 +131,12 @@ const CompanySchema = new Schema(
       loginTemplate: { type: String, enum: [...LOGIN_TEMPLATE_KEYS] }, // one of 10 designs; unset = derived from loginLayout
       supportEmail: String,
       supportPhone: String,
+      /* Login page colours — each part may override the design's own colour ("" / absent = Auto) */
+      loginColors: { type: Mixed, default: undefined },
+      /* Per-app look: { web: {...}, mobile: { theme, useThemeColors, posterKey, iconKey } } */
+      appTheme: { type: Mixed, default: undefined },
+      /** Custom notification sounds uploaded for this company: { key, name, format, size } */
+      sounds: { type: [Mixed], default: undefined },
       updatedAt: Date,
     },
     domain: {
@@ -130,6 +155,28 @@ const CompanySchema = new Schema(
   ts
 );
 export const Company = m<any>("Company", CompanySchema);
+
+/**
+ * One run of a background job — for the Cron Jobs tab (last run, how long it took, what it did) and so a
+ * per-company schedule can be honoured: a job only works for a company when its own interval has elapsed.
+ * `companyId` is absent for platform-wide jobs.
+ */
+const CronRunSchema = new Schema(
+  {
+    job: { type: String, required: true }, // CRON_JOBS key
+    companyId: { type: ObjectId, default: null },
+    startedAt: { type: Date, required: true },
+    ms: Number,
+    ok: { type: Boolean, default: true },
+    result: Mixed, // whatever the job returned (counts)
+    error: String,
+    by: String, // "cron" or the Super Admin who pressed Run now
+  },
+  ts
+);
+CronRunSchema.index({ job: 1, companyId: 1, startedAt: -1 });
+CronRunSchema.index({ startedAt: 1 });
+export const CronRun = m<any>("CronRun", CronRunSchema);
 
 /** One document per plan tier: which company modules + CRUD scope are allowed. */
 const PlanSchema = new Schema(
