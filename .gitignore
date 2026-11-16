@@ -5,3 +5,7 @@ node_modules
 .vercel
 *.tsbuildinfo
 next-env.d.ts
+
+# stray bytecode from running the build scripts locally
+__pycache__/
+*.pyc

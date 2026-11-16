@@ -37,13 +37,17 @@ export function setupState(platformHeld: Record<string, boolean> = {}) {
     const held = !value && !!platformHeld[r.key]; // kept by the platform rather than set here
     // a value that is present but unusable used to pass silently and then fail the build with a 404
     const problem = r.where === "platform" && value && r.check ? r.check(value) : null;
+    // a warning is shown but never blocks — see BuildRequirement.warn
+    const warning = !problem && r.where === "platform" && value && r.warn ? r.warn(value) : null;
     return {
       ...r,
       check: undefined, // a function cannot be sent to the browser
+      warn: undefined,
       // only the platform's own settings can be checked from here; the repository's secrets are checked by the build itself
       set: r.where === "platform" ? !!value || held : null,
       heldByPlatform: held,
-      problem,
+      problem: problem || warning,
+      blocking: !!problem,
       value: r.where === "platform" && !r.secret ? value || null : null,
     };
   });
