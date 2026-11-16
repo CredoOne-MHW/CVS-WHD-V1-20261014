@@ -801,3 +801,68 @@ Editing a company moved from a pop-up to a page of its own at `/sa/companies/[id
 
 ### 20.4 The stuck-menu fix
 A tab left open across a deployment can no longer load the code chunks the new build serves, so Next cancels the route change without a word. `Shell` now watches every menu click and, if the address has not changed 2.5 s later, calls `location.assign(href)` — the new build is fetched and the clicked page opens. The event is reported as a screen error so it shows in Activity Logs.
+
+### 20.5 v1.3.1 — the shared cache finds its own settings
+`server/lib/cache.ts` resolved Redis from `UPSTASH_REDIS_REST_URL` + `UPSTASH_REDIS_REST_TOKEN` only. A store added from the Vercel marketplace is injected under other names (`KV_REST_API_URL`, or a store-prefixed `<STORE>_KV_REST_API_URL`), so Redis was silently off and every instance cached on its own. `redisCreds()` now walks the candidates once — hand-set, Vercel KV, then any `*_KV_REST_API_URL` with its matching `*_KV_REST_API_TOKEN` — ignoring read-only tokens. `redisSource()` reports which one won; `GET /sa/system/health` returns `{ cache: { on, source, reachable, ms } }` and the System Health screen shows it, with a banner when no store is set.
+
+## 21. v1.4.0 — DPDP consent and the company website (Nov 2026)
+
+### 21.1 DPDP
+| Piece | Where | Notes |
+| --- | --- | --- |
+| Registry | `shared/dpdp.ts` | Purposes, cookie groups, placeholders, the read rule (`hasRead`), and the platform's default notice |
+| Engine | `server/lib/dpdp.ts` | Markdown → HTML, PDF/Word → text → HTML (pdf-parse / mammoth), placeholder filling, publish, accept, withdraw |
+| API | `server/routes/dpdp.ts` | `dpdpRoutes(scope)` mounted for both sides: `/co/dpdp…` and `/sa/companies/:id/dpdp…`, plus `/sa/dpdp` for the platform default |
+| Public | `server/routes/public.ts` | `GET /public/consent`, `POST /public/consent`, `POST /public/cookies`, and the consent file |
+| Screen | `src/app/consent/page.tsx` | Tracks scroll and time; Accept enables only on `hasRead`, and the server checks it again |
+| Admin UI | `src/components/Dpdp.tsx` | Notice / Acceptance status / Cookie consent, used by both sides |
+
+Models: `DpdpDocument` (main; one row per published version), `DpdpConsent` and `CookieConsent` (per company). A consent row holds `readSeconds`, `scrollPct`, `reachedEndAt`, `documentVersion`, `purposes`, `ip` and `userAgent` — the evidence an audit asks for. Withdrawal sets `withdrawnAt`; the row is never deleted.
+
+### 21.2 The website
+`shared/site.ts` describes every section — group, label, description, `always`, and its fields with types. The builder (`src/components/sa/CompanyWebsite.tsx`) and the public page (`src/app/site/page.tsx`) both render from it, so a new section is one entry in the registry. The config lives on `Company.site`; `GET/PUT /sa/companies/:id/site` read and write it, `GET /public/site` serves it, and `POST /public/site/enquiry` creates the lead through `upsertLead()` — same de-duplication and routing as any channel — and records the consent ticked on the form against the live notice version.
+
+## 22. v1.5.0 — the company apps (Nov 2026)
+
+One React Native (Expo) source in `mobile/`, built once per company and per platform by GitHub Actions.
+
+| Piece | Where |
+| --- | --- |
+| App source | `mobile/` — `src/App.tsx` (drawer + stages), `src/screens/*`, `src/lib/api.ts` (the address is baked in), `scripts/brand.mjs` |
+| Workflow | `.github/workflows/build-mobile.yml`, `.github/scripts/report.mjs`, `.github/ios-export.plist` |
+| Registry | `shared/mobile.ts` — platforms, statuses, `nextVersion`, `bundleIdFor`, `BUILD_REQUIREMENTS` |
+| Engine | `server/lib/mobilebuild.ts` — `startBuild()` dispatches the workflow, `callbackValid()` checks the HMAC, `sweepStuckBuilds()` |
+| API | `server/routes/mobile.ts` (`mobileRoutes(scope)`) and `POST /public/mobile/build` for the workflow's own report |
+| UI | `src/components/sa/CompanyMobile.tsx`, `src/app/app/settings/mobile-app/page.tsx` |
+| Guide | `content/kb/60-github-build.md` |
+
+**The flow.** Build → `MobileBuild` row (queued) → `workflow_dispatch` with the company's code, name, colours, application id, version, address, S3 prefix and callback → the workflow brands, prebuilds, signs, uploads to `<CODE>/app/<platform>/<version>/` and posts back `building` / `ready` / `failed`, signed with `MOBILE_BUILD_SECRET`. Nothing in the callback body is trusted beyond the build it names.
+
+**Why the Android build refuses to run without the keystore secrets:** Android installs an update only when it is signed with the same key as the installed app. A throw-away key would force every user to uninstall — and lose what the app holds — so the build stops with that message instead.
+
+**What needs a rebuild:** the name, icon, colours, application id or the company's address. What does not: Mobile Modules and roles, which `/auth/me` answers at start-up.
+
+## 23. v1.6.0 — chat, push notifications and the scrolling notice (Nov 2026)
+
+| Piece | Where |
+| --- | --- |
+| Registry | `shared/chat.ts` — thread/message kinds, `LIMITS`, `publicMember()`, channel names, `EVENTS`, `NOTICE_TONES` |
+| Models | `server/models/index.ts` — `ChatThread`, `ChatMessage`, `PushDevice`, `Announcement` (all per-company) |
+| Real-time | `server/lib/realtime.ts` — `provider()`, `publish()`, `authorize()`, `clientConfig()` |
+| Push | `server/lib/push.ts` — `registerDevice()`, `pushToUsers()`, dead-token cleanup |
+| API | `server/routes/co/chat.ts` — threads, messages, groups, notices, devices, `POST /chat/realtime/auth` |
+| Web UI | `src/app/app/chats/page.tsx`, `src/components/NoticeBar.tsx`, `src/lib/realtime.ts` |
+| App | `mobile/src/screens/Chats.tsx`, `mobile/src/components/NoticeBanner.tsx`, `mobile/src/lib/live.ts` |
+| Guide | `content/kb/70-chats-notices.md` |
+
+**Why a managed service.** This server runs on Vercel, which cannot hold a WebSocket open. So the socket lives with a managed service and the platform only publishes to it. `realtime.ts` is the whole of that choice: Pusher (default, cluster `ap2` = Mumbai) or Ably in one environment variable, and with neither configured every screen falls back to polling. Nothing else in the platform knows which is in use.
+
+**Store first, deliver second.** `POST /chat/threads/:id/messages` saves the message, then publishes, then pushes — in that order, and neither publish nor push can throw. A message is therefore never lost because a service or a phone was unreachable; at worst it arrives on the next poll.
+
+**Channel authorisation.** A client cannot listen to a channel it asks for. `POST /chat/realtime/auth` signs only the caller's own user channel, their company channel, and a thread channel whose id they are actually a member of — checked against the database, not the token. Every channel name carries the company id, so chat cannot cross companies.
+
+**Privacy is in the code, not a setting.** `publicMember()` is the only shape a member is ever sent in: user id, name, role, initials, admin flag, active flag. Phone and e-mail are never selected into it.
+
+**One conversation per pair.** A direct thread stores `pairKey` (the two user ids, sorted, joined with `:`) under a unique sparse index, so a race between two people pressing "New chat" at the same moment cannot split a history in two.
+
+**Retention.** `chat_messages` defaults to keep-for-ever; `push_devices` ages from `lastSeenAt` via the new optional `LogKindDef.dateField`, so an active phone is never unregistered. Every existing log kind keeps the behaviour it had.

@@ -88,6 +88,13 @@ const CompanySchema = new Schema(
     state: String,
     pin: String,
     contactEmail: String, // where the platform writes to, when different from `email`
+    /* DPDP: who answers a data-protection request, named in the notice */
+    dpdpOfficer: String,
+    dpdpOfficerEmail: String,
+    /* Website builder (Super Admin › Company › Website) — see shared/site.ts */
+    site: { type: Mixed, default: {} },
+    /* The company's Android / iOS apps (Super Admin › Company › Mobile App) — see shared/mobile.ts */
+    mobile: { type: Mixed, default: {} },
     status: { type: String, enum: ["active", "inactive"], default: "active", index: true },
     trialEndsAt: Date,
     deletedAt: Date,
@@ -177,6 +184,40 @@ const CronRunSchema = new Schema(
 CronRunSchema.index({ job: 1, companyId: 1, startedAt: -1 });
 CronRunSchema.index({ startedAt: 1 });
 export const CronRun = m<any>("CronRun", CronRunSchema);
+
+/**
+ * One build of a company's app. Created when Build is pressed, updated by the GitHub workflow as it runs,
+ * and finished with the key of the signed file in the company's own S3 folder. Rows are kept, so a company
+ * can always go back to an earlier build — and Android needs every build signed with the same key.
+ */
+const MobileBuildSchema = new Schema(
+  {
+    companyId: { type: ObjectId, required: true, index: true },
+    companyCode: String,
+    platform: { type: String, enum: ["android", "ios"], required: true },
+    version: { type: String, required: true }, // <base>.<n>
+    buildNumber: Number, // n
+    bundleId: String,
+    appName: String,
+    status: { type: String, enum: ["queued", "building", "ready", "failed", "cancelled"], default: "queued", index: true },
+    runId: String, // the GitHub Actions run
+    runUrl: String,
+    fileKey: String, // <CODE>/app/<platform>/<version>/<file>
+    fileName: String,
+    fileSize: Number,
+    sha256: String,
+    notes: String,
+    error: String,
+    startedBy: String,
+    startedAt: Date,
+    finishedAt: Date,
+    downloads: { type: Number, default: 0 },
+  },
+  ts
+);
+MobileBuildSchema.index({ companyId: 1, platform: 1, createdAt: -1 });
+MobileBuildSchema.index({ companyId: 1, status: 1 });
+export const MobileBuild = m<any>("MobileBuild", MobileBuildSchema);
 
 /** One document per plan tier: which company modules + CRUD scope are allowed. */
 const PlanSchema = new Schema(
@@ -457,6 +498,167 @@ ClientPaymentSchema.index({ companyId: 1, clientId: 1, dueDate: -1 });
 ClientPaymentSchema.index({ companyId: 1, status: 1, dueDate: 1 }); // Outstanding (due till today) vs Upcoming
 ClientPaymentSchema.index({ planId: 1, dueDate: 1 }, { unique: true, partialFilterExpression: { planId: { $type: "objectId" } } });
 export const ClientPayment = tm<any>("ClientPayment", ClientPaymentSchema);
+
+/* ───────────────────────── Chat and notices ─────────────────────────
+ * Everything here lives in the company's own database. A member's phone number and e-mail address are never
+ * copied into a thread: the name is denormalised so a list can be drawn in one read, and nothing else is.
+ */
+
+const ChatThreadSchema = new Schema(
+  {
+    companyId: { type: ObjectId, required: true, index: true },
+    kind: { type: String, enum: ["direct", "group"], required: true },
+    name: String, // groups only
+    iconKey: String, // groups only
+    about: String,
+    /** direct threads: the two user ids, sorted, joined with ":" — makes a second thread impossible */
+    pairKey: { type: String, index: true, sparse: true },
+    members: { type: [{ userId: ObjectId, name: String, role: String, isAdmin: Boolean, joinedAt: Date, mutedUntil: Date }], default: [] },
+    memberIds: { type: [ObjectId], default: [], index: true }, // for "my threads" in one query
+    createdBy: String,
+    lastMessage: { text: String, by: String, at: Date, kind: String },
+    archivedAt: Date,
+  },
+  ts
+);
+ChatThreadSchema.index({ companyId: 1, memberIds: 1, "lastMessage.at": -1 });
+ChatThreadSchema.index({ companyId: 1, pairKey: 1 }, { unique: true, sparse: true });
+export const ChatThread = tm<any>("ChatThread", ChatThreadSchema);
+
+const ChatMessageSchema = new Schema(
+  {
+    companyId: { type: ObjectId, required: true, index: true },
+    threadId: { type: ObjectId, required: true, index: true },
+    kind: { type: String, enum: ["text", "system"], default: "text" },
+    text: { type: String, required: true },
+    byId: ObjectId,
+    byName: String,
+    /** who has read it — ids only, so a read receipt costs nothing to send */
+    readBy: { type: [ObjectId], default: [] },
+    editedAt: Date,
+    deletedAt: Date,
+  },
+  ts
+);
+ChatMessageSchema.index({ companyId: 1, threadId: 1, createdAt: -1 });
+export const ChatMessage = tm<any>("ChatMessage", ChatMessageSchema);
+
+/** A phone that may be sent a push. One row per device per user; the token is replaced when it changes. */
+const PushDeviceSchema = new Schema(
+  {
+    companyId: { type: ObjectId, required: true, index: true },
+    userId: { type: ObjectId, required: true, index: true },
+    token: { type: String, required: true, unique: true },
+    platform: { type: String, enum: ["android", "ios", "web"], default: "android" },
+    appVersion: String,
+    lastSeenAt: Date,
+    failures: { type: Number, default: 0 },
+  },
+  ts
+);
+export const PushDevice = tm<any>("PushDevice", PushDeviceSchema);
+
+/** The scrolling notice an administrator puts across the top of every screen in the apps. */
+const AnnouncementSchema = new Schema(
+  {
+    companyId: { type: ObjectId, required: true, index: true },
+    text: { type: String, required: true },
+    tone: { type: String, enum: ["info", "warning", "success"], default: "info" },
+    active: { type: Boolean, default: true, index: true },
+    push: { type: Boolean, default: false }, // also send it as a push notification
+    startsAt: Date,
+    endsAt: Date,
+    createdBy: String,
+    seenBy: { type: Number, default: 0 },
+  },
+  ts
+);
+AnnouncementSchema.index({ companyId: 1, active: 1, endsAt: 1 });
+export const Announcement = tm<any>("Announcement", AnnouncementSchema);
+
+/* ───────────────────────── DPDP consent ───────────────────────── */
+
+/**
+ * The notice a company shows before collecting personal data. One row per published version, so an older
+ * acceptance always points at the exact text that was accepted. `companyId: null` is the platform's default,
+ * which a company starts from. Lives in the main database, beside the Company it belongs to.
+ */
+const DpdpDocumentSchema = new Schema(
+  {
+    companyId: { type: ObjectId, default: null, index: true },
+    title: { type: String, required: true },
+    version: { type: Number, default: 1 },
+    source: { type: String, enum: ["builtin", "upload"], default: "builtin" },
+    markdown: String, // the written document (source: builtin)
+    html: String, // what the consent screen shows — rendered from markdown, or extracted from the upload
+    fileKey: String, // the original PDF / Word file in S3 (source: upload), offered as a download
+    fileName: String,
+    fileType: String,
+    words: Number,
+    active: { type: Boolean, default: false, index: true },
+    publishedAt: Date,
+    publishedBy: String,
+    notes: String,
+  },
+  ts
+);
+DpdpDocumentSchema.index({ companyId: 1, active: 1 });
+DpdpDocumentSchema.index({ companyId: 1, version: -1 });
+export const DpdpDocument = m<any>("DpdpDocument", DpdpDocumentSchema);
+
+/**
+ * One person's acceptance, with the evidence that they read it: how far they scrolled, how long they had the
+ * notice open, when they reached the end and when they pressed Accept. Kept in the company's own database.
+ */
+const DpdpConsentSchema = new Schema(
+  {
+    companyId: { type: ObjectId, required: true, index: true },
+    documentId: { type: ObjectId, required: true },
+    documentVersion: Number,
+    subjectKind: { type: String, enum: ["visitor", "lead", "client", "user"], default: "visitor" },
+    subjectId: String, // lead / client / user id when known
+    visitorId: { type: String, index: true }, // browser id for someone not signed in
+    name: String,
+    email: String,
+    phone: String,
+    purposes: { type: [String], default: [] },
+    source: { type: String, enum: ["website", "app", "crm", "form", "import"], default: "website" },
+    page: String, // where the notice was opened from
+    openedAt: Date,
+    readSeconds: Number,
+    scrollPct: Number,
+    reachedEndAt: Date,
+    acceptedAt: Date,
+    withdrawnAt: Date,
+    withdrawnBy: String,
+    ip: String,
+    userAgent: String,
+  },
+  ts
+);
+DpdpConsentSchema.index({ companyId: 1, acceptedAt: -1 });
+DpdpConsentSchema.index({ companyId: 1, email: 1 });
+DpdpConsentSchema.index({ companyId: 1, phone: 1 });
+export const DpdpConsent = tm<any>("DpdpConsent", DpdpConsentSchema);
+
+/** What a visitor chose in the cookie banner. One current row per browser, with its history kept by version. */
+const CookieConsentSchema = new Schema(
+  {
+    companyId: { type: ObjectId, required: true, index: true },
+    visitorId: { type: String, required: true },
+    categories: { type: Mixed, default: {} }, // { necessary: true, preferences, analytics, marketing }
+    policyVersion: Number,
+    choice: { type: String, enum: ["all", "necessary", "custom"], default: "custom" },
+    page: String,
+    ip: String,
+    userAgent: String,
+    decidedAt: Date,
+  },
+  ts
+);
+CookieConsentSchema.index({ companyId: 1, decidedAt: -1 });
+CookieConsentSchema.index({ companyId: 1, visitorId: 1 });
+export const CookieConsent = tm<any>("CookieConsent", CookieConsentSchema);
 
 /**
  * A deleted client, kept whole. Deleting a client (Client › Clients › Delete, WhatsApp-OTP verified) takes a full

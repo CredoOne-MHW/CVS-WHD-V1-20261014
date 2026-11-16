@@ -9,7 +9,7 @@
 import { Router } from "express";
 import { z } from "zod";
 import multer from "multer";
-import { Company, User, Role, Lead, SupportTicket, ClientPayment, Connector, IntakeEvent, Subscription, SubscriptionCycle, AiAllocation } from "../../models";
+import { Company, User, Role, Lead, SupportTicket, ClientPayment, Connector, IntakeEvent, Subscription, SubscriptionCycle, AiAllocation, ServiceType } from "../../models";
 import { can } from "../../middleware/auth";
 import { h, parse, notFound, badRequest, HttpError } from "../../lib/http";
 import { inCompanyDb } from "../../lib/tenantdb";
@@ -19,6 +19,7 @@ import { clampToPlan } from "../shared";
 import { companyCaps } from "../../middleware/auth";
 import { COMPANY_MODULES, ACTIONS, permRows, type PermMap } from "../../../shared/constants";
 import { CRON_JOBS, LOG_KINDS, NOTIFY_KINDS, NOTIFY_SOUNDS, cronJob, s3Area } from "../../../shared/platform";
+import { SITE_SECTIONS, startingSite } from "../../../shared/site";
 import { putAt, deleteObject, companyFolder, listPrefix } from "../../lib/s3";
 import { tenantUrls } from "../../lib/tenant";
 import { endOfToday } from "../../lib/clients";
@@ -245,6 +246,31 @@ r.delete("/companies/:id/sound", can("companies", "update"), h(async (req, res) 
   await Company.updateOne({ _id: c._id }, { $set: { "branding.sounds": sounds } });
   res.locals.action = "Delete sound";
   res.json({ sounds });
+}));
+
+/* ───────────────────────── Website ─────────────────────────
+ * The company's own small site. Stored on the Company as `site`; the public page reads the same shape.
+ */
+
+r.get("/companies/:id/site", can("companies", "read"), h(async (req, res) => {
+  const c = await load(req);
+  const site = c.site && Object.keys(c.site).length ? c.site : startingSite(c);
+  const services = await inCompanyDb(String(c._id), () => ServiceType.find({ companyId: c._id }).select("name").sort({ name: 1 }).limit(50).lean<any[]>()).catch(() => []);
+  const urls = tenantUrls(c);
+  res.json({ site, sections: SITE_SECTIONS, services: services.map((s: any) => s.name), url: `${urls.customUrl || urls.platformUrl}/site`, branding: { themeColor: c.branding?.themeColor, accentColor: c.branding?.accentColor } });
+}));
+
+r.put("/companies/:id/site", can("companies", "update"), h(async (req, res) => {
+  const c = await load(req);
+  const b = parse(z.object({ published: z.boolean().optional(), sections: z.record(z.string().max(40), z.any()) }), req.body);
+  const keys = new Set(SITE_SECTIONS.map((s) => s.key));
+  const sections: Record<string, any> = {};
+  for (const [k, v] of Object.entries(b.sections || {})) if (keys.has(k) && v && typeof v === "object") sections[k] = v;
+  const site = { ...(c.site || {}), published: b.published ?? c.site?.published ?? false, sections, updatedAt: new Date(), updatedBy: req.auth!.email };
+  await Company.updateOne({ _id: c._id }, { $set: { site } });
+  res.locals.action = "Update website";
+  res.locals.item = c.name;
+  res.json({ site });
 }));
 
 /* ───────────────────────── Registries the tabs render from ───────────────────────── */

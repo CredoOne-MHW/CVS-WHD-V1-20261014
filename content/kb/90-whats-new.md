@@ -4,6 +4,40 @@ slug: whats-new
 order: 90
 summary: Changes in recent deploys.
 ---
+## November 2026 — v1.6.0 — chat, notices and notifications
+
+- **Chats** is new, on the web and in your app: message anyone in your company one-to-one, or talk in a group your administrator sets up. A message appears for everyone the moment it is sent.
+- Members are shown by **name and role only** — nobody's phone number or e-mail address is visible in chat, ever.
+- A **group** has a name and the people added to it. You can see who is in it, and leave one you no longer need.
+- **Notices**: if your role allows it, post a line that scrolls across the top of everyone's screen — on the web and on their phones — until you stop it. Tap it on the phone to stop it moving while you read.
+- **Notifications on your phone** for a new message, a group you are added to, and a notice sent as a push. Your phone registers itself when you sign in, and is forgotten when you sign out, so a shared phone never keeps your messages.
+- Unread counts, read receipts and "typing…" everywhere.
+- If your administrator has not yet connected the messaging service, everything still works — messages refresh every few seconds instead of instantly, and the Chats screen tells you which it is doing.
+- Already have the app installed? Ask your administrator to build it again, so the new Chats screen is in it.
+
+## November 2026 — v1.5.0 — your own mobile app
+
+- Your company now has its **own Android app** (iOS once your administrator sets up Apple signing) — same name, icon and colours as your platform, and it signs in to your company only.
+- Download it from **Settings → Mobile App**. On an Android phone, allow "Install unknown apps" for your browser the first time; later versions install over it.
+- Sign in with the same e-mail and password you use here. You see exactly what your role allows.
+- At the first sign-in the app shows your **data-protection notice**. It has to be read to the end before it can be accepted, and the acceptance appears under DPDP → Acceptance status marked as coming from the app.
+- The menu has **Dashboard**, **Chats** and **Profile**, where you sign out and can see the version and build number.
+
+## November 2026 — v1.4.0 — DPDP consent and your own website
+
+**DPDP consent** (Settings → DPDP, and under Logs → DPDP)
+
+- Your **consent notice**: write it here, or upload your own PDF or Word file. You start from the platform's notice with your company's name, address and grievance officer already filled in — edit it and it becomes yours.
+- Share the **consent link** (`your-address/consent`) from your website, your apps and your CRM. The person must scroll the notice to the end before **Accept** turns on, and there is no way past it other than accepting or closing the window.
+- Every acceptance is kept as evidence: who, when, which version, how long they had it open, how far they scrolled, which purposes they ticked, and from where. **Acceptance status** lists them and downloads as Excel.
+- **Cookie consent** records what each visitor chose in the banner on your website.
+- Someone can ask you to withdraw their consent: use the ✕ on their row. The record stays and is marked withdrawn, as the Act requires.
+
+**Your own website** (set up by your administrator)
+
+- A small site with a hero, your story, what you do, featured items, offers, testimonials, gallery, FAQ, contact details and an enquiry form — switch on only the sections you want.
+- **Every enquiry on it becomes a lead**, tagged with the campaign set on the Enquiry section, and the person's consent is recorded with it.
+
 ## November 2026 — v1.3.0 — the company workspace (Super Admin)
 
 - A company now **opens as its own page** — click its name in Super Admin → Company. The header carries Force login, Login page, Suspend and Save changes; everything about the company sits behind its tabs.

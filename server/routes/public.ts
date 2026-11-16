@@ -3,7 +3,7 @@ import { Router } from "express";
 import { createHmac, timingSafeEqual } from "crypto";
 import { createTicket } from "./co/clients";
 import { refreshBilling } from "../lib/clients";
-import { Connector, IntakeEvent, Company, Lead, Webhook, ConnectorKey, EndpointKey, AiEndpoint, SupportTicket } from "../models";
+import { Connector, IntakeEvent, Company, Lead, Webhook, ConnectorKey, EndpointKey, AiEndpoint, SupportTicket, DpdpDocument, ServiceType } from "../models";
 import { endpointChat } from "../lib/agentic";
 import { h, HttpError } from "../lib/http";
 import { decrypt, hmacValid, hmacB64Valid, sha256 } from "../lib/crypto";
@@ -205,6 +205,213 @@ async function supportCompany(req: any) {
   if (!company || company.status !== "active") throw new HttpError(404, "No support page is set up at this address");
   return company;
 }
+
+const requestIp = (req: any) => String(req.headers["x-forwarded-for"] || req.socket?.remoteAddress || "").split(",")[0].trim();
+
+/* ───────────────────────── DPDP consent (public) ─────────────────────────
+ * The notice the website, the apps and the CRM open. The screen tracks how far it was scrolled and how long
+ * it was open, and the accept call checks the same thing again on the server — a screen is only a screen.
+ */
+
+/** The company the consent link belongs to: its own address, or ?c=<short name> on the platform address. */
+async function consentCompany(req: any) {
+  const t = await resolveHost(requestHost(req));
+  let company: any = t.kind === "company" ? t.company : null;
+  if (!company && req.query.c) company = await Company.findOne({ slug: String(req.query.c).toLowerCase(), deletedAt: null }).lean();
+  if (!company || company.status !== "active") throw new HttpError(404, "No consent notice is published at this address");
+  return company;
+}
+
+r.get("/public/consent", h(async (req, res) => {
+  const c = await consentCompany(req);
+  const { noticeFor } = await import("../lib/dpdp");
+  const { DPDP_PURPOSES, COOKIE_CATEGORIES, READ_RULES } = await import("../../shared/dpdp");
+  const b = publicBranding(c);
+  const notice = await noticeFor(c);
+  res.setHeader("Cache-Control", "public, max-age=60, stale-while-revalidate=300");
+  res.json({
+    company: { name: b.name, shortName: b.shortName, logoUrl: b.logoUrl, faviconUrl: b.faviconUrl, themeColor: b.themeColor, accentColor: b.accentColor, slug: c.slug },
+    notice: { id: String(notice._id), version: notice.version, title: notice.title, html: notice.html, fileName: notice.fileName, hasFile: notice.hasFile, updatedAt: notice.updatedAt },
+    purposes: DPDP_PURPOSES,
+    cookies: COOKIE_CATEGORIES,
+    rules: READ_RULES,
+  });
+}));
+
+/** The original uploaded notice, for someone who would rather read the PDF. */
+r.get("/public/consent/file", h(async (req, res) => {
+  const c = await consentCompany(req);
+  const doc = await DpdpDocument.findOne({ companyId: c._id, active: true }).sort({ version: -1 }).lean<any>();
+  if (!doc?.fileKey) throw new HttpError(404, "This notice has no file");
+  const { getObject } = await import("../lib/s3");
+  const f = await getObject(doc.fileKey);
+  res.setHeader("Content-Type", f.contentType);
+  res.setHeader("Content-Disposition", `inline; filename="${(doc.fileName || "notice.pdf").replace(/"/g, "")}"`);
+  res.send(f.body);
+}));
+
+r.post("/public/consent", h(async (req, res) => {
+  const c = await consentCompany(req);
+  if (!(await rateLimit(`consent:${requestIp(req)}`, 30, 600))) throw new HttpError(429, "Too many attempts — wait a few minutes");
+  const { accept } = await import("../lib/dpdp");
+  const b = req.body || {};
+  const row = await inCompanyDb(String(c._id), () =>
+    accept({
+      companyId: c._id,
+      documentId: b.documentId,
+      documentVersion: Number(b.documentVersion) || undefined,
+      subjectKind: ["visitor", "lead", "client", "user"].includes(b.subjectKind) ? b.subjectKind : "visitor",
+      visitorId: String(b.visitorId || "").slice(0, 60),
+      name: String(b.name || "").slice(0, 120) || undefined,
+      email: String(b.email || "").toLowerCase().slice(0, 160) || undefined,
+      phone: String(b.phone || "").replace(/\D/g, "").slice(0, 15) || undefined,
+      purposes: Array.isArray(b.purposes) ? b.purposes.map((x: any) => String(x).slice(0, 30)) : [],
+      source: ["website", "app", "crm", "form"].includes(b.source) ? b.source : "website",
+      page: String(b.page || "").slice(0, 300),
+      openedAt: b.openedAt ? new Date(b.openedAt) : undefined,
+      readSeconds: Math.min(7200, Math.max(0, Number(b.readSeconds) || 0)),
+      scrollPct: Math.min(100, Math.max(0, Number(b.scrollPct) || 0)),
+      reachedEndAt: b.reachedEndAt ? new Date(b.reachedEndAt) : undefined,
+      ip: requestIp(req),
+      userAgent: String(req.headers["user-agent"] || "").slice(0, 250),
+    })
+  ).catch((e: any) => {
+    throw new HttpError(400, e.message);
+  });
+  res.status(201).json({ ok: true, id: String(row._id), acceptedAt: row.acceptedAt });
+}));
+
+/** What the visitor chose in the cookie banner. */
+r.post("/public/cookies", h(async (req, res) => {
+  const c = await consentCompany(req);
+  const { cookieChoice } = await import("../lib/dpdp");
+  const b = req.body || {};
+  const cats = b.categories && typeof b.categories === "object" ? b.categories : {};
+  await inCompanyDb(String(c._id), () =>
+    cookieChoice(c._id, {
+      visitorId: String(b.visitorId || "").slice(0, 60),
+      categories: { preferences: !!cats.preferences, analytics: !!cats.analytics, marketing: !!cats.marketing },
+      choice: ["all", "necessary", "custom"].includes(b.choice) ? b.choice : "custom",
+      page: String(b.page || "").slice(0, 300),
+      ip: requestIp(req),
+      userAgent: String(req.headers["user-agent"] || "").slice(0, 250),
+    })
+  );
+  res.status(201).json({ ok: true });
+}));
+
+/* ───────────────────────── Mobile builds (reported by GitHub Actions) ─────────────────────────
+ * The workflow is the only thing that posts here, and it signs every message with MOBILE_BUILD_SECRET.
+ * Nothing in the body is trusted beyond the build it names: the company, version and S3 key were decided
+ * when the build was started.
+ */
+r.post("/public/mobile/build", h(async (req: any, res) => {
+  const { callbackValid, updateBuild } = await import("../lib/mobilebuild");
+  const raw = typeof req.rawBody === "string" ? req.rawBody : JSON.stringify(req.body || {});
+  if (!callbackValid(raw, req.headers["x-build-signature"] as string)) throw new HttpError(401, "Bad signature");
+  const b = req.body || {};
+  if (!b.build_id) throw new HttpError(400, "build_id is required");
+  const status = ["building", "ready", "failed"].includes(b.status) ? b.status : undefined;
+  const build = await updateBuild(String(b.build_id), {
+    status,
+    runId: b.run_id ? String(b.run_id) : undefined,
+    runUrl: b.run_url ? String(b.run_url).slice(0, 300) : undefined,
+    fileKey: b.file_key ? String(b.file_key).slice(0, 300) : undefined,
+    fileName: b.file_name ? String(b.file_name).slice(0, 160) : undefined,
+    fileSize: b.file_size ? Number(b.file_size) : undefined,
+    sha256: b.sha256 ? String(b.sha256).slice(0, 80) : undefined,
+    error: b.error ? String(b.error).slice(0, 600) : undefined,
+  });
+  if (!build) throw new HttpError(404, "Unknown build");
+  res.json({ ok: true, status: build.status });
+}));
+
+/* ───────────────────────── The company website (public) ───────────────────────── */
+
+r.get("/public/site", h(async (req, res) => {
+  const c = await consentCompany(req);
+  const { startingSite, SITE_SECTIONS } = await import("../../shared/site");
+  const site = c.site && Object.keys(c.site?.sections || {}).length ? c.site : startingSite(c);
+  if (!site.published && req.query.preview !== "1") throw new HttpError(404, "This website is not published yet");
+  const b = publicBranding(c);
+  // the enquiry form may offer the company's own service list
+  let services: string[] = [];
+  if (site.sections?.enquiry?.askService || site.sections?.featured?.fromServices) {
+    services = await inCompanyDb(String(c._id), async () => (await ServiceType.find({ companyId: c._id }).select("name").sort({ name: 1 }).limit(50).lean<any[]>()).map((x: any) => x.name)).catch(() => []);
+  }
+  const { noticeFor } = await import("../lib/dpdp");
+  const notice = site.sections?.policies?.showConsentLink !== false ? await noticeFor(c).catch(() => null) : null;
+  res.setHeader("Cache-Control", "public, max-age=60, stale-while-revalidate=600");
+  res.json({
+    company: { name: b.name, shortName: b.shortName, tagline: b.tagline, logoUrl: b.logoUrl, faviconUrl: b.faviconUrl, themeColor: b.themeColor, accentColor: b.accentColor, slug: c.slug },
+    site: { published: site.published, sections: site.sections },
+    sections: SITE_SECTIONS,
+    services,
+    consent: notice ? { version: notice.version, title: notice.title } : null,
+  });
+}));
+
+/** The website's enquiry form. Creates a lead through the same path every other channel uses. */
+r.post("/public/site/enquiry", h(async (req, res) => {
+  const c = await consentCompany(req);
+  const ip = requestIp(req);
+  if (!(await rateLimit(`site-enquiry:${ip}`, 10, 600))) throw new HttpError(429, "Too many enquiries from here — please try again in a few minutes");
+  const b = req.body || {};
+  const name = String(b.name || "").trim().slice(0, 120);
+  const phone = String(b.phone || "").replace(/\D/g, "").slice(0, 15);
+  const email = String(b.email || "").trim().toLowerCase().slice(0, 160);
+  if (!name) throw new HttpError(400, "Please give your name");
+  if (!phone && !email) throw new HttpError(400, "Please give a phone number or an e-mail address");
+  if (String(b.website || "")) return res.status(201).json({ ok: true }); // honeypot: a bot filled the hidden field
+  const site = c.site || {};
+  const campaign = String(site.sections?.enquiry?.campaign || "website").slice(0, 60);
+
+  const { upsertLead } = await import("../lib/intake");
+  const lead = await inCompanyDb(String(c._id), () =>
+    upsertLead(String(c._id), {
+      name,
+      phone: phone || undefined,
+      whatsapp: phone || undefined,
+      email: email || undefined,
+      companyName: String(b.companyName || "").slice(0, 150) || undefined,
+      source: "website_form",
+      campaign,
+      medium: "website",
+      serviceLines: b.service ? [{ serviceType: String(b.service).slice(0, 80), licenses: 1 }] : undefined,
+      comments: String(b.message || "").slice(0, 2000) || undefined,
+      consentWhatsapp: !!b.consent,
+    } as any, { by: "website" })
+  );
+
+  // the consent ticked on the form is recorded as its own DPDP record, with the notice version it referred to
+  if (b.consent) {
+    const { noticeFor, accept } = await import("../lib/dpdp");
+    const notice = await noticeFor(c).catch(() => null);
+    if (notice)
+      await inCompanyDb(String(c._id), () =>
+        accept({
+          companyId: c._id,
+          documentId: notice._id,
+          documentVersion: notice.version,
+          subjectKind: "lead",
+          subjectId: String((lead as any)?.lead?._id || ""),
+          visitorId: String(b.visitorId || "").slice(0, 60),
+          name,
+          email: email || undefined,
+          phone: phone || undefined,
+          purposes: Array.isArray(b.purposes) && b.purposes.length ? b.purposes.map((x: any) => String(x)) : ["contact", "service", "records"],
+          source: "form",
+          page: String(b.page || "").slice(0, 300),
+          readSeconds: Number(b.readSeconds) || 6,
+          scrollPct: Number(b.scrollPct) || 100,
+          reachedEndAt: new Date(),
+          ip,
+          userAgent: String(req.headers["user-agent"] || "").slice(0, 250),
+        })
+      ).catch(() => undefined); // the lead is saved whatever happens to the consent row
+  }
+  res.status(201).json({ ok: true, thanks: site.sections?.enquiry?.thanks || "Thank you — we will be in touch shortly." });
+}));
 
 r.get("/public/support/info", h(async (req, res) => {
   const c = await supportCompany(req);
