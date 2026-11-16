@@ -54,14 +54,24 @@ jobs:
           RUN_ID: ${{ github.run_id }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
 
+      # Caching is an optimisation, so it must never be the thing that fails a build. setup-node errors
+      # outright when cache-dependency-path matches nothing ("Some specified paths were not resolved"), so
+      # the cache is switched on only when the lockfile is actually there.
       - uses: actions/setup-node@v4
         with:
           node-version: 20
-          cache: npm
+          cache: ${{ hashFiles('mobile/package-lock.json') != '' && 'npm' || '' }}
           cache-dependency-path: mobile/package-lock.json
 
+      # npm ci is reproducible and needs the lockfile; npm install is the fallback when there isn't one.
       - name: Install
-        run: npm ci || npm install
+        run: |
+          if [ -f package-lock.json ]; then
+            npm ci || npm install
+          else
+            echo "::warning::mobile/package-lock.json is missing — installing without it, so this build may not match the last one."
+            npm install
+          fi
 
       - name: The company's icon, if it has one
         continue-on-error: true
