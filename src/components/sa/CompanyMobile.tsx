@@ -17,19 +17,27 @@ const TONE: Record<BuildStatus, "green" | "honey" | "red" | "gray"> = { ready: "
 
 export function MobileAppTab({ id, canEdit }: { id: string; canEdit: boolean }) {
   const [d, setD] = useState<any>(null);
+  const [failed, setFailed] = useState<{ status?: number; message: string } | null>(null);
   const [form, setForm] = useState<any>({});
   const [dirty, setDirty] = useState(false);
   const [busy, setBusy] = useState("");
   const [kill, setKill] = useState<any>(null);
   const toast = useToast();
 
+  /**
+   * A failure here used to leave the panel spinning for ever with nothing on screen, because nothing caught
+   * it. Now the reason is shown, with a way to try again.
+   */
   const load = useCallback(
     () =>
-      api(`/sa/companies/${id}/mobile`).then((r) => {
-        setD(r);
-        setForm({ ...r.config, ...r.saved });
-        setDirty(false);
-      }),
+      api(`/sa/companies/${id}/mobile`, { fresh: true })
+        .then((r) => {
+          setD(r);
+          setFailed(null);
+          setForm({ ...r.config, ...r.saved });
+          setDirty(false);
+        })
+        .catch((e: any) => setFailed({ status: e?.status, message: e?.message || "The platform did not answer." })),
     [id]
   );
   useEffect(() => {
@@ -42,6 +50,32 @@ export function MobileAppTab({ id, canEdit }: { id: string; canEdit: boolean }) 
     const t = setInterval(() => load(), 20_000);
     return () => clearInterval(t);
   }, [d, load]);
+
+  if (failed)
+    return (
+      <div className="rounded-2xl border border-red-200 bg-red-50/60 p-6">
+        <div className="flex items-start gap-3">
+          <AlertTriangle className="mt-0.5 h-5 w-5 shrink-0 text-red-600" />
+          <div className="min-w-0 flex-1">
+            <p className="font-bold text-ink-900">This tab could not be loaded.</p>
+            <p className="mt-1 text-sm text-ink-700">
+              {failed.status === 403
+                ? "Your role does not have Company › read, which this tab needs."
+                : failed.status === 404
+                  ? "This company was not found — it may have been deleted in another tab."
+                  : "The platform did not answer. Everything else on this page is unaffected."}
+            </p>
+            <p className="mono mt-2 text-xs text-ink-500">
+              {failed.status ? `${failed.status} · ` : ""}
+              {failed.message}
+            </p>
+            <Btn type="button" variant="secondary" className="mt-4" onClick={() => { setFailed(null); load(); }}>
+              <RotateCcw className="h-4 w-4" /> Try again
+            </Btn>
+          </div>
+        </div>
+      </div>
+    );
 
   if (!d)
     return (
@@ -178,7 +212,7 @@ export function MobileAppTab({ id, canEdit }: { id: string; canEdit: boolean }) 
           <div>
             <h3 className="font-bold">Build</h3>
             <p className="text-sm text-ink-500">
-              Takes 10–20 minutes. {running ? `A ${platformLabel(running.platform)} build is running now.` : "The finished file appears below and on the company's own Mobile App page."}
+              Takes 10–20 minutes. {running ? `${running.platform === "ios" ? "An iOS" : "An Android"} build is running now.` : "The finished file appears below and on the company's own Mobile App page."}
             </p>
           </div>
           <div className="flex flex-wrap gap-2">
@@ -189,6 +223,64 @@ export function MobileAppTab({ id, canEdit }: { id: string; canEdit: boolean }) 
             ))}
           </div>
         </div>
+
+        {/* what is live right now, per platform — the flat list below does not say which one that is */}
+        <div className="mt-4 grid gap-3 sm:grid-cols-2">
+          {(form.platforms?.length ? form.platforms : ["android"]).map((p: string) => {
+            const b = d.latest?.[p];
+            return (
+              <div key={p} className="rounded-xl border border-ink-400/15 p-4">
+                <div className="flex items-center justify-between gap-3">
+                  <p className="font-bold">{platformLabel(p)}</p>
+                  {b ? <Badge color="green">v{b.version}</Badge> : <span className="text-xs text-ink-500">No build yet</span>}
+                </div>
+                {b ? (
+                  <>
+                    <p className="mt-1 text-xs text-ink-500">
+                      build {b.buildNumber} · {size(b.fileSize)} · {fmtDate(b.finishedAt || b.startedAt, false)}
+                    </p>
+                    <p className="mono mt-2 break-all text-[11px] text-ink-500">{d.prefix}/{p}/{b.version}/{b.fileName}</p>
+                    <a className="btn-secondary mt-3 inline-flex items-center gap-2" href={`/api/sa/companies/${id}/mobile/download/${b._id}`}>
+                      <Download className="h-4 w-4" /> Download
+                    </a>
+                  </>
+                ) : (
+                  <p className="mt-1 text-xs text-ink-500">Press Build {platformLabel(p)} to make the first one.</p>
+                )}
+              </div>
+            );
+          })}
+        </div>
+
+        {/* the key the app is signed with — Android refuses an update signed with a different one */}
+        {d.signing && (
+          <div className="mt-4 rounded-xl border border-ink-400/15 bg-ink-400/[0.03] p-4 text-sm">
+            <p className="font-bold">Android signing</p>
+            {!d.signing.enabled ? (
+              <p className="mt-1 text-ink-600">
+                <span className="mono">MOBILE_SIGNING_SECRET</span> is not set, so the platform cannot keep a key for this company. Until it is, the build falls back to the repository's own <span className="mono">ANDROID_*</span> secrets.
+              </p>
+            ) : d.signing.key ? (
+              <>
+                <p className="mt-1 text-ink-600">
+                  Every update of this app must be signed with the same key, or Android refuses it (“package conflicts with an existing package”). The platform made one permanent key for this company and signs every build with it.
+                </p>
+                <p className="mono mt-2 break-all text-[12px]">
+                  {d.signing.key.bundleId || form.bundleId} · alias {d.signing.key.alias}
+                  {d.signing.key.since ? ` · since v${d.signing.key.since}` : ""}
+                </p>
+                <p className="mono break-all text-[11px] text-ink-500">{d.signing.key.fingerprint}</p>
+                {d.signing.key.needsReinstall && (
+                  <p className="mt-2 text-[12px] font-semibold text-honey-800">
+                    Phones with an app built before this key need ONE reinstall (uninstall, then install the new version). After that every update installs over it.
+                  </p>
+                )}
+              </>
+            ) : (
+              <p className="mt-1 text-ink-600">The key is made automatically with this company's first Android build, and then never changes.</p>
+            )}
+          </div>
+        )}
 
         {d.builds?.length ? (
           <div className="mt-4 overflow-x-auto rounded-xl border border-ink-400/15">

@@ -4,6 +4,15 @@ slug: whats-new
 order: 90
 summary: Changes in recent deploys.
 ---
+## November 2026 — v1.7.0 — one place for every app
+
+- **Mobile App Release** is a new Super Admin screen: every company's app in one place, with what is building now, what finished, what failed, and how many phones are on the newest version.
+- **Build for one company, or for all of them at once.** A company that has no app yet is left out of the bulk build on purpose — its first one is always started by hand.
+- **A push rebuilds everybody.** Switch on *Automatic rebuilds*, and new app code rebuilds the app of every company that wants it, each with its own name, icon and colours. Phones get it as an ordinary update.
+- **Updates now install over the old app.** The platform keeps one permanent signing key per company, so Android stops refusing updates. A phone holding an older app needs one uninstall-and-reinstall; the screen tells you when that applies, and only while it does.
+- The **Mobile App tab** on a company used to spin for ever if anything went wrong. It now says what went wrong, and has a Try again button.
+- The **Build screen** shows what is actually live — one card per platform with the version, size, file and a download — before the list of every build.
+
 ## November 2026 — v1.6.0 — chat, notices and notifications
 
 - **Chats** is new, on the web and in your app: message anyone in your company one-to-one, or talk in a group your administrator sets up. A message appears for everyone the moment it is sent.

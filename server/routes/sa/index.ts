@@ -14,6 +14,7 @@ import { nextRenewal, FREQ_KEYS } from "../../../shared/billing";
 import { renewAllocations } from "../../lib/billing";
 import { dbNameFromCode, validateDbName, provisionDb, inCompanyDb, forEachCompanyDb, migrateAll, dbOf } from "../../lib/tenantdb";
 import subscriptionRoutes from "./subscriptions";
+import releaseRoutes from "./releases";
 import { putObject, deleteObject, folderFor, companyFolder, relayoutCompany, relayoutAll, ensureCompanyFolder } from "../../lib/s3";
 import { baseDomain, baseSource, configuredBases, tenantUrls, clearTenantCache, publicBranding, platformBranding, loadPlatformBranding, setPlatformBranding } from "../../lib/tenant";
 import { vercelSync, vercelVerify, vercelRemove, vercelConfigured, splitDomain, recordsFor, checkRecords, platformRecords, newVerifyToken, cnameTargetFor, VERIFY_LABEL, FALLBACK_A, FALLBACK_CNAME } from "../../lib/domains";
@@ -897,6 +898,7 @@ r.use(dpdpRoutes("super")); // /dpdp (platform default) and /companies/:id/dpdpâ
 r.use("/companies/:id", dpdpRoutes("super"));
 r.use("/companies/:id", mobileRoutes("super"));
 r.use("/subscriptions", subscriptionRoutes);
+r.use(releaseRoutes); // Mobile App Release â€” builds across every company
 r.use("/reports", reportRoutes("super"));
 r.use("/roles", roleRoutes("super"));
 r.use("/activity-logs", activityRoutes("super"));

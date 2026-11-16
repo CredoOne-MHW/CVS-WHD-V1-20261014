@@ -129,6 +129,7 @@ export const SA_MODULES: ModuleDef[] = [
   { key: "wa_webhooks", label: "WhatsApp Webhook", group: "Settings", path: "/sa/settings/whatsapp", icon: "Webhook" },
   { key: "wa_logs", label: "WhatsApp Logs", group: "Settings", path: "/sa/settings/whatsapp-logs", icon: "MessagesSquare" },
   { key: "subscriptions", label: "Subscription Management", group: "Settings", path: "/sa/settings/subscriptions", icon: "CreditCard" },
+  { key: "mobile_release", label: "Mobile App Release", group: "Settings", path: "/sa/mobile-releases", icon: "Smartphone" },
   { key: "platform_apps", label: "Platform Apps", group: "Settings", path: "/sa/settings/platform-apps", icon: "KeyRound" },
   { key: "branding", label: "Platform Branding", group: "Settings", path: "/sa/settings/branding", icon: "Palette" },
   { key: "system", label: "System Health", group: "Settings", path: "/sa/settings/system", icon: "Activity" },

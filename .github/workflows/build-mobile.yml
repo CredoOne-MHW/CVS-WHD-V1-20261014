@@ -24,6 +24,7 @@ on:
       api_base: { description: "The company's own address", required: true }
       s3_prefix: { description: "Where the finished file goes", required: true }
       callback_url: { description: "Where to report back", required: true }
+      signing_url: { description: "Where to collect the platform's signing key (empty = use the repository secrets)", required: false, default: "" }
 
 concurrency:
   group: mobile-${{ inputs.company_code }}-${{ inputs.platform }}
@@ -94,16 +95,40 @@ jobs:
       - name: Signing key
         if: inputs.platform == 'android'
         run: |
-          if [ -z "${{ secrets.ANDROID_KEYSTORE_BASE64 }}" ]; then
-            echo "::error::ANDROID_KEYSTORE_BASE64 is not set. Add the four ANDROID_* secrets before the first build — a build signed with a throw-away key cannot be updated over."
+          # The platform keeps one permanent key per company, so an update installs over the old app. It is
+          # collected here rather than passed in as an input, because inputs are printed in this run's log.
+          # Everything written below is masked, and the keystore is deleted when the build finishes.
+          if [ -n "${{ inputs.signing_url }}" ]; then
+            SIG=$(printf '%s' "${{ inputs.build_id }}" \
+              | openssl dgst -sha256 -hmac "${{ secrets.MOBILE_BUILD_SECRET }}" -r | cut -d' ' -f1)
+            if ! curl -fsS --retry 3 --retry-delay 2 \
+                 -H "x-build-signature: sha256=$SIG" \
+                 "${{ inputs.signing_url }}" -o /tmp/signing.json; then
+              echo "::error::The platform did not hand over the signing key. Check MOBILE_BUILD_SECRET here and MOBILE_SIGNING_SECRET on the platform."
+              exit 1
+            fi
+            ALIAS=$(jq -r .alias /tmp/signing.json)
+            STORE_PW=$(jq -r .store_password /tmp/signing.json)
+            KEY_PW=$(jq -r .key_password /tmp/signing.json)
+            echo "::add-mask::$STORE_PW"; echo "::add-mask::$KEY_PW"
+            jq -r .keystore_base64 /tmp/signing.json | base64 -d > android/app/release.jks
+            rm -f /tmp/signing.json
+            echo "Signed with the platform's key for this company (alias $ALIAS)."
+          elif [ -n "${{ secrets.ANDROID_KEYSTORE_BASE64 }}" ]; then
+            echo "${{ secrets.ANDROID_KEYSTORE_BASE64 }}" | base64 -d > android/app/release.jks
+            ALIAS="${{ secrets.ANDROID_KEY_ALIAS }}"
+            STORE_PW="${{ secrets.ANDROID_KEYSTORE_PASSWORD }}"
+            KEY_PW="${{ secrets.ANDROID_KEY_PASSWORD }}"
+            echo "Signed with this repository's own key."
+          else
+            echo "::error::No signing key. Set MOBILE_SIGNING_SECRET on the platform (it then makes and keeps one key per company), or add the four ANDROID_* secrets here. A build signed with a throw-away key cannot be updated over."
             exit 1
           fi
-          echo "${{ secrets.ANDROID_KEYSTORE_BASE64 }}" | base64 -d > android/app/release.jks
           {
             echo "MYAPP_UPLOAD_STORE_FILE=release.jks"
-            echo "MYAPP_UPLOAD_KEY_ALIAS=${{ secrets.ANDROID_KEY_ALIAS }}"
-            echo "MYAPP_UPLOAD_STORE_PASSWORD=${{ secrets.ANDROID_KEYSTORE_PASSWORD }}"
-            echo "MYAPP_UPLOAD_KEY_PASSWORD=${{ secrets.ANDROID_KEY_PASSWORD }}"
+            echo "MYAPP_UPLOAD_KEY_ALIAS=$ALIAS"
+            echo "MYAPP_UPLOAD_STORE_PASSWORD=$STORE_PW"
+            echo "MYAPP_UPLOAD_KEY_PASSWORD=$KEY_PW"
           } >> android/gradle.properties
           python3 - <<'PY'
           import re, pathlib
@@ -189,6 +214,11 @@ jobs:
           FILE_NAME: ${{ steps.upload.outputs.file_name }}
           FILE_SIZE: ${{ steps.upload.outputs.file_size }}
           SHA256: ${{ steps.upload.outputs.sha256 }}
+
+      # the runner is thrown away, but a key is worth deleting the moment it is no longer needed
+      - name: Shred the signing key
+        if: always()
+        run: rm -f android/app/release.jks /tmp/signing.json || true
 
       - name: Tell the platform it failed
         if: failure()

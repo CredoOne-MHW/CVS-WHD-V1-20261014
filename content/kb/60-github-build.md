@@ -123,3 +123,30 @@ At the first sign-in the app shows the company's **DPDP notice**, which must be 
 | **App not installed** on the phone | The build was signed with a different key than the installed app. Use the same keystore. |
 | **Build stuck on Building** | The run failed without reporting back. Open the run on GitHub; the nightly housekeeping job marks builds older than 90 minutes as failed. |
 | Nothing arrives in S3 | The repository's AWS secrets cannot write to the bucket, or `S3_BUCKET` differs from the platform's. |
+
+## The signing key (from v1.7.0)
+
+Android refuses an update signed with a different key than the installed app — it says *"package conflicts with an existing package"*. So an app needs **one key for its whole life**.
+
+Set **`MOBILE_SIGNING_SECRET`** on the platform and it takes care of this for you: at a company's first Android build it makes one permanent key for that company and signs every later build with it. You never handle a keystore.
+
+How it is kept safe:
+
+- the keystore and both passwords are **encrypted (AES-256-GCM)** before they are stored, under `MOBILE_SIGNING_SECRET`. The database on its own cannot sign anything.
+- the key is **never a workflow input** — inputs are printed in the run's own log. The build collects it over the same signed channel it reports its result on, only while it is still running, and deletes the file when it finishes.
+- nothing in the key ever reaches a browser. **Super Admin → Company → Mobile App → Android signing** shows the alias, the version it applies from and the certificate fingerprint, and nothing else.
+
+**If you keep your own keys instead**, leave `MOBILE_SIGNING_SECRET` empty and add the four `ANDROID_*` secrets to the repository as before — the build uses the platform's key when there is one, yours when there is not, and fails with a clear message only when there is neither.
+
+**One reinstall, once.** A phone holding an app built before the platform's key needs a single uninstall-and-reinstall. Every update after that installs over it. The Build screen says so, per company, and only while it is still true.
+
+## Rebuilding every app when the code changes (from v1.7.0)
+
+**Super Admin → Mobile App Release → Automatic rebuilds on new code.** Switch it on, and a push to the branch you name rebuilds the app of every company with *Auto build* on — each with its own name, icon, colours and address.
+
+Connect it in either of two ways; the panel shows both, with the values filled in:
+
+1. **A step in the repository's workflow** — add `PLATFORM_URL` and `BUILD_TRIGGER_SECRET` as repository secrets.
+2. **A repository webhook** — Payload URL `<your platform>/api/public/webhooks/github/push`, content type **JSON**, the same secret, **"Just the push event"**.
+
+Either way the body is signed, so nothing else can start a build. A push to any other branch is accepted and ignored. A company with no app yet is skipped — a first build fixes the application id and the signing key, so it is always started by hand.

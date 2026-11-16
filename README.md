@@ -866,3 +866,22 @@ One React Native (Expo) source in `mobile/`, built once per company and per plat
 **One conversation per pair.** A direct thread stores `pairKey` (the two user ids, sorted, joined with `:`) under a unique sparse index, so a race between two people pressing "New chat" at the same moment cannot split a history in two.
 
 **Retention.** `chat_messages` defaults to keep-for-ever; `push_devices` ages from `lastSeenAt` via the new optional `LogKindDef.dateField`, so an active phone is never unregistered. Every existing log kind keeps the behaviour it had.
+
+## 24. v1.7.0 — Mobile App Release, automatic rebuilds and lasting signing keys (Nov 2026)
+
+| Piece | Where |
+| --- | --- |
+| Signing keys | `server/lib/signing.ts` — `ensureKey()`, `signingSummary()`, `keyForBuild()`, AES-256-GCM at rest |
+| Auto rebuild | `server/lib/autobuild.ts` — `state()`, `pushSignatureValid()`, `rebuildAll()` |
+| API | `server/routes/sa/releases.ts`; the push webhook and the signing hand-over in `server/routes/public.ts` |
+| Model | `MobileSigningKey` (unique per company); `MobileBuild` gained `signedBy`, `signingFingerprint`, `trigger` |
+| UI | `src/app/sa/mobile-releases/page.tsx`; the Build section of `src/components/sa/CompanyMobile.tsx` |
+| Workflow | `.github/workflows/build-mobile.yml` — the rewritten signing step and the shred step |
+
+**The bug behind the endless spinner.** `MobileAppTab` called its endpoint with `.then()` and no `.catch()`. `api()` throws on any failure, so a 403, a 500 or a slow query left `d` null for ever: a spinner with nothing on screen and nothing to diagnose it with. It now catches, shows the status and the server's message, and offers a retry. The route also wraps every optional part (`tenantUrls`, `appConfig`, `setupState`, `latestReady`, `s3Area`) so one of them failing leaves that part out rather than taking the panel down.
+
+**Why the key never travels as a workflow input.** `workflow_dispatch` inputs are written into the run's own log, which anyone with read access to the repository can open. The dispatch therefore carries only a `signing_url`; the build signs its own build id with `MOBILE_BUILD_SECRET` and collects the keystore from the platform, which hands it over only while that build is still `queued` or `building`. The passwords are masked with `::add-mask::` and the keystore is shredded in an `if: always()` step.
+
+**One key per company, enforced in the database.** `MobileSigningKey.companyId` is unique, so two builds starting at the same moment cannot produce two keys — the second finds the first. `ensureKey()` runs before the build row is created, so a failure to make a key never leaves a dead build behind.
+
+**What the bulk build refuses to do.** "Every company" only rebuilds companies that already have a ready build of that platform. A first build fixes the application id and the signing key for the life of the app, so it is never a side effect of a bulk action or of a push.

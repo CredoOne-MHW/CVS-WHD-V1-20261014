@@ -17,6 +17,7 @@ import { Company, MobileBuild } from "../models";
 import { tenantUrls } from "./tenant";
 import { s3Area } from "../../shared/platform";
 import { bundleIdFor, nextVersion, platformLabel, artifactExt, BUILD_REQUIREMENTS, type Platform, type MobileConfig } from "../../shared/mobile";
+import { ensureKey, signingEnabled } from "./signing";
 
 const env = (k: string) => (process.env[k] || "").trim();
 export const buildRepo = () => env("GITHUB_BUILD_REPO");
@@ -64,7 +65,7 @@ export function callbackValid(raw: string, header?: string) {
 }
 
 /** Starts a build and dispatches the workflow. Throws with a plain reason when something is not set up. */
-export async function startBuild(company: any, platform: Platform, by: string, opts: { notes?: string } = {}) {
+export async function startBuild(company: any, platform: Platform, by: string, opts: { notes?: string; trigger?: "manual" | "push" | "auto" } = {}) {
   const gate = readyToBuild();
   if (!gate.ok) throw new Error(`Not set up yet — missing ${gate.missing.join(", ")}. See Knowledge Base › GitHub build.`);
   if (company.s3Enabled === false) throw new Error("Switch on S3 storage for this company — the finished app is kept in its folder");
@@ -72,6 +73,10 @@ export async function startBuild(company: any, platform: Platform, by: string, o
   if (await MobileBuild.exists({ companyId: company._id, platform, status: { $in: ["queued", "building"] } })) throw new Error(`An ${platformLabel(platform)} build is already running for this company`);
 
   const cfg = appConfig(company);
+  // Android needs one permanent key for the life of the app, so it is made (once) before anything is queued
+  let signing: any = null;
+  if (platform === "android" && signingEnabled()) signing = await ensureKey(company, by);
+
   const n = (await MobileBuild.countDocuments({ companyId: company._id, platform })) + 1;
   const version = nextVersion(env("MOBILE_BASE_VERSION") || "1.0.0", n);
   const build = await MobileBuild.create({
@@ -84,6 +89,9 @@ export async function startBuild(company: any, platform: Platform, by: string, o
     appName: cfg.appName,
     status: "queued",
     notes: opts.notes,
+    trigger: opts.trigger || "manual",
+    signedBy: platform === "android" ? (signing ? "platform" : "github") : "github",
+    signingFingerprint: signing?.fingerprint,
     startedBy: by,
     startedAt: new Date(),
   });
@@ -101,6 +109,8 @@ export async function startBuild(company: any, platform: Platform, by: string, o
     api_base: (cfg as any).apiBase || "",
     s3_prefix: s3Area(company.code, "app", platform, version),
     callback_url: `${(cfg as any).apiBase || env("APP_BASE_URL")}/api/public/mobile/build`,
+    // where the build collects the signing key — never the key itself, which a workflow input would print
+    signing_url: signing ? `${(cfg as any).apiBase || env("APP_BASE_URL")}/api/public/mobile/signing/${build._id}` : "",
   };
 
   try {
