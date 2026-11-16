@@ -1,0 +1,124 @@
+/**
+ * Asks GitHub whether a build would actually work, before anyone presses Build.
+ *
+ * Everything the set-up panel showed until now was read from this platform's own settings: it could tell you
+ * a value was present and well-formed, and nothing at all about whether it was *true*. A repository that does
+ * not exist, a branch that was renamed, a workflow file that was never pushed, Actions never switched on —
+ * every one of those looked perfect here and then came back as a 404 a minute later.
+ *
+ * So this asks. Four questions, four plain answers, each with what to do about it.
+ */
+import { buildRepo, buildWorkflow, buildRef } from "./mobilebuild";
+
+const env = (k: string) => (process.env[k] || "").trim();
+const API = "https://api.github.com";
+
+export interface Finding {
+  key: string;
+  label: string;
+  ok: boolean;
+  detail: string;
+  fix?: string;
+}
+
+async function gh(path: string) {
+  const token = env("GITHUB_BUILD_TOKEN");
+  return fetch(`${API}${path}`, {
+    headers: { Authorization: `Bearer ${token}`, Accept: "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28" },
+    signal: AbortSignal.timeout(10_000),
+  });
+}
+
+export async function verifySetup(): Promise<{ ok: boolean; findings: Finding[] }> {
+  const repo = buildRepo();
+  const workflow = buildWorkflow();
+  const findings: Finding[] = [];
+
+  if (!repo || !env("GITHUB_BUILD_TOKEN")) {
+    return {
+      ok: false,
+      findings: [{ key: "repo", label: "Repository", ok: false, detail: "GITHUB_BUILD_REPO or GITHUB_BUILD_TOKEN is not set.", fix: "Set both in the platform's environment." }],
+    };
+  }
+
+  /* 1 — can the token see the repository at all? */
+  let defaultBranch = "main";
+  try {
+    const res = await gh(`/repos/${repo}`);
+    if (res.status === 404) {
+      findings.push({
+        key: "repo", label: "Repository", ok: false,
+        detail: `GitHub does not recognise ${repo}, or the token cannot see it.`,
+        fix: "GITHUB_BUILD_REPO must be owner/repo — no https://, no github.com/, no .git. A private repository also needs the token to have access to it.",
+      });
+      return { ok: false, findings };
+    }
+    if (res.status === 401) {
+      findings.push({ key: "repo", label: "Repository", ok: false, detail: "GitHub rejected the token.", fix: "GITHUB_BUILD_TOKEN has expired or was revoked. Make a new fine-grained token with Actions: read and write." });
+      return { ok: false, findings };
+    }
+    const json: any = await res.json();
+    defaultBranch = json?.default_branch || "main";
+    findings.push({ key: "repo", label: "Repository", ok: true, detail: `${repo} — reachable, default branch ${defaultBranch}.` });
+  } catch (e: any) {
+    findings.push({ key: "repo", label: "Repository", ok: false, detail: `Could not reach GitHub: ${e?.message || e}` });
+    return { ok: false, findings };
+  }
+
+  /* 2 — does the branch the platform builds from exist? */
+  const branch = buildRef() || defaultBranch;
+  try {
+    const res = await gh(`/repos/${repo}/branches/${encodeURIComponent(branch)}`);
+    if (res.ok) findings.push({ key: "branch", label: "Branch", ok: true, detail: `${branch} exists.` });
+    else
+      findings.push({
+        key: "branch", label: "Branch", ok: false,
+        detail: `There is no branch called ${branch} in ${repo}.`,
+        fix: `Set GITHUB_BUILD_REF to a branch that exists (the default is ${defaultBranch}), or leave it empty to use the default.`,
+      });
+  } catch {
+    findings.push({ key: "branch", label: "Branch", ok: false, detail: "Could not check the branch." });
+  }
+
+  /* 3 — is the workflow file actually on that branch? This is the one that bites. */
+  const path = `.github/workflows/${workflow}`;
+  try {
+    const res = await gh(`/repos/${repo}/contents/${encodeURIComponent(path)}?ref=${encodeURIComponent(branch)}`);
+    if (res.ok) findings.push({ key: "workflow", label: "Workflow file", ok: true, detail: `${path} is on ${branch}.` });
+    else
+      findings.push({
+        key: "workflow", label: "Workflow file", ok: false,
+        detail: `${path} is not on branch ${branch}.`,
+        fix:
+          workflow === "build-mobile.yml"
+            ? "Commit and push .github/workflows/build-mobile.yml (it is in the release zip, inside the hidden .github folder) to that branch."
+            : `This platform ships .github/workflows/build-mobile.yml, not ${workflow}. Set GITHUB_BUILD_WORKFLOW to build-mobile.yml, or remove it to use the default — ${workflow} looks like another project's workflow.`,
+      });
+  } catch {
+    findings.push({ key: "workflow", label: "Workflow file", ok: false, detail: "Could not look for the workflow file." });
+  }
+
+  /* 4 — has Actions ever been switched on? A workflow GitHub has not registered cannot be dispatched. */
+  try {
+    const res = await gh(`/repos/${repo}/actions/workflows/${encodeURIComponent(workflow)}`);
+    if (res.ok) {
+      const json: any = await res.json();
+      const disabled = json?.state && json.state !== "active";
+      findings.push({
+        key: "actions", label: "Actions", ok: !disabled,
+        detail: disabled ? `GitHub knows ${workflow} but it is ${json.state}.` : `${workflow} is registered and active — a build can be dispatched.`,
+        fix: disabled ? "Enable the workflow on the repository's Actions tab." : undefined,
+      });
+    } else {
+      findings.push({
+        key: "actions", label: "Actions", ok: false,
+        detail: `GitHub has not registered ${workflow} for this repository.`,
+        fix: "Push the workflow to the default branch and open the repository's Actions tab once — GitHub does not register a workflow until Actions has been opened.",
+      });
+    }
+  } catch {
+    findings.push({ key: "actions", label: "Actions", ok: false, detail: "Could not check Actions." });
+  }
+
+  return { ok: findings.every((f) => f.ok), findings };
+}
