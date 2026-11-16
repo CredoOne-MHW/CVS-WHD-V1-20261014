@@ -43,6 +43,15 @@ export const BUILD_WORKFLOW_FILE = "build-mobile.yml";
  * or one of its scripts actually changes, or the panel cries wolf on every release.
  */
 export const WORKFLOW_REVISION = "1.8.11";
+
+/**
+ * The revision of the app source the platform expects in the build repository, read from mobile/package.json.
+ *
+ * The same drift as the workflow, in the other half: pushing `.github/` without `mobile/` leaves the app's
+ * dependencies behind, and the build then fails inside Metro on a module that was added releases ago. Bump
+ * this only when something in mobile/ changes that a build depends on.
+ */
+export const MOBILE_REVISION = "1.8.12";
 export const buildWorkflow = () => BUILD_WORKFLOW_FILE;
 /** A leftover value, so the panel can say it is being ignored and can be deleted. */
 export const ignoredWorkflowSetting = () => {
