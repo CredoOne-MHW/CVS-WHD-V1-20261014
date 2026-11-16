@@ -22,7 +22,23 @@ import { buildSecret, ensureBuildSecret } from "./buildsecret";
 
 const env = (k: string) => (process.env[k] || "").trim();
 export const buildRepo = () => env("GITHUB_BUILD_REPO");
-export const buildWorkflow = () => env("GITHUB_BUILD_WORKFLOW") || "build-mobile.yml";
+/**
+ * The workflow this platform builds apps with. It is a constant, not a setting.
+ *
+ * It used to read GITHUB_BUILD_WORKFLOW, which exists in the sibling restaurant platform where it names a
+ * DESKTOP installer workflow. Environment files get copied between projects, so that value arrived here and
+ * pointed a mobile platform at a workflow that does not exist in this repository — every build answered 404.
+ *
+ * This platform ships exactly one workflow and builds mobile apps. There is nothing to choose, so it no
+ * longer offers a choice. A value left in the environment is reported as ignored rather than obeyed.
+ */
+export const BUILD_WORKFLOW_FILE = "build-mobile.yml";
+export const buildWorkflow = () => BUILD_WORKFLOW_FILE;
+/** A leftover value, so the panel can say it is being ignored and can be deleted. */
+export const ignoredWorkflowSetting = () => {
+  const v = env("GITHUB_BUILD_WORKFLOW");
+  return v && v !== BUILD_WORKFLOW_FILE ? v : null;
+};
 export const buildRef = () => env("GITHUB_BUILD_REF");
 export const iosEnabled = () => env("MOBILE_IOS_SIGNING") === "1";
 

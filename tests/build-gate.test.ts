@@ -46,11 +46,13 @@ check("a git URL is still refused", readyToBuild({ MOBILE_BUILD_SECRET: true }).
 check("and names the short form", /CredoOne-MHW\/CVS-WHD-V1-20261014/.test(SHAPE.repo(env.GITHUB_BUILD_REPO) || ""), true);
 env.GITHUB_BUILD_REPO = "CredoOne-MHW/CVS-WHD-V1-20261014";
 
+// from v1.8.4 the workflow is a constant, so a value copied from the restaurant platform cannot
+// point this one at a desktop installer workflow that does not exist here
 env.GITHUB_BUILD_WORKFLOW = "build-desktop.yml";
-check("another project's workflow still passes the name check", readyToBuild({ MOBILE_BUILD_SECRET: true }).ok, true);
-env.GITHUB_BUILD_WORKFLOW = "build-desktop";
-check("a workflow with no .yml is refused", readyToBuild({ MOBILE_BUILD_SECRET: true }).missing, ["GITHUB_BUILD_WORKFLOW"]);
-env.GITHUB_BUILD_WORKFLOW = "build-mobile.yml";
+check("another project's workflow cannot break the gate", readyToBuild({ MOBILE_BUILD_SECRET: true }).ok, true);
+check("the workflow is not a requirement any more", BUILD_REQUIREMENTS.some((r) => r.key === "GITHUB_BUILD_WORKFLOW"), false);
+delete env.GITHUB_BUILD_WORKFLOW;
+check("and the gate is happy without it", readyToBuild({ MOBILE_BUILD_SECRET: true }).ok, true);
 
 // an environment-set secret must still win
 env.MOBILE_BUILD_SECRET = "0123456789abcdef0123456789abcdef";

@@ -304,6 +304,11 @@ function AutoBuild({ sum, onChanged, toast }: { sum: any; onChanged: () => void;
               Repository <span className="mono">{sum.setup.repo || "— not set —"}</span> · workflow <span className="mono">{sum.setup.workflow}</span> · signing key{" "}
               {sum.setup.signingEnabled ? "kept by the platform" : "from the repository's secrets"} · iOS {sum.setup.ios ? "on" : "off"}
             </p>
+            {sum.setup.ignoredWorkflow && (
+              <p className="mt-1 text-xs text-honey-800">
+                <span className="mono">GITHUB_BUILD_WORKFLOW={sum.setup.ignoredWorkflow}</span> is ignored — this platform builds mobile apps with <span className="mono">build-mobile.yml</span>. You can delete that variable.
+              </p>
+            )}
           </div>
         </div>
         <Btn
