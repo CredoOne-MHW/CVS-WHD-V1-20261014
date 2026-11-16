@@ -9,7 +9,7 @@
  * changes that, it only builds.
  */
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Smartphone, Hammer, GitBranch, Copy, Eye, RefreshCw, ShieldCheck, CheckCircle2, XCircle, Clock, ExternalLink, AlertTriangle, Loader2 } from "lucide-react";
+import { Smartphone, Hammer, GitBranch, Copy, Eye, RefreshCw, ShieldCheck, CheckCircle2, XCircle, Clock, ExternalLink, AlertTriangle, Loader2, UploadCloud } from "lucide-react";
 import { api, fmtDate } from "@/lib/api";
 import { PageHeader, Btn, Badge, Spinner, Empty, Field, useToast } from "@/components/ui";
 import { BUILD_LABEL, platformLabel, targetHint, type BuildStatus } from "@shared/mobile";
@@ -132,6 +132,8 @@ function AutoBuild({ sum, onChanged, toast }: { sum: any; onChanged: () => void;
   const [open, setOpen] = useState(false);
   const [branch, setBranch] = useState(sum.auto.branch || "main");
   const [secret, setSecret] = useState<string | null>(null);
+  const [callbackSecret, setCallbackSecret] = useState<string | null>(null);
+  const [pushed, setPushed] = useState<any>(null);
   const [busy, setBusy] = useState("");
   const webhook = `${sum.platformUrl || ""}${sum.webhookPath}`;
 
@@ -192,7 +194,7 @@ function AutoBuild({ sum, onChanged, toast }: { sum: any; onChanged: () => void;
       {open && (
         <div className="mt-3 space-y-3 rounded-xl border border-ink-400/15 p-4">
           <p className="text-sm text-ink-700">
-            The repository already has <span className="mono">.github/workflows/build-mobile.yml</span>. Add two secrets in GitHub → Settings → Secrets and variables → Actions:
+            The repository already has <span className="mono">.github/workflows/build-mobile.yml</span>. It needs these three values as repository secrets — press <b>Set up secrets in GitHub</b> below to have them written for you, or copy each one into GitHub → Settings → Secrets and variables → Actions:
           </p>
 
           <Row label="PLATFORM_URL" value={sum.platformUrl || "— APP_BASE_URL is not set —"} onCopy={() => copy(sum.platformUrl, "Address")} />
@@ -208,6 +210,7 @@ function AutoBuild({ sum, onChanged, toast }: { sum: any; onChanged: () => void;
                 try {
                   const r = await api<any>("/sa/mobile-releases/auto/secret", { fresh: true });
                   setSecret(r.secret || "— not made yet —");
+                  setCallbackSecret(r.buildSecret || "— not made yet —");
                 } finally {
                   setBusy("");
                 }
@@ -221,6 +224,21 @@ function AutoBuild({ sum, onChanged, toast }: { sum: any; onChanged: () => void;
           </div>
 
           <div className="flex flex-wrap items-center gap-2">
+            <span className="mono w-44 shrink-0 text-[13px]">MOBILE_BUILD_SECRET</span>
+            <span className="mono min-w-0 flex-1 truncate rounded-lg bg-ink-400/[0.06] px-3 py-2 text-[13px]">
+              {callbackSecret ?? (sum.setup.buildSecret?.present ? "••••••••••••••••••••••" : "— not made yet —")}
+            </span>
+            <Btn variant="secondary" onClick={() => copy(callbackSecret || "", "Secret")} disabled={!callbackSecret}>
+              <Copy className="h-4 w-4" /> Copy
+            </Btn>
+          </div>
+          <p className="text-xs text-ink-500">
+            {sum.setup.buildSecret?.source === "env"
+              ? "This one comes from MOBILE_BUILD_SECRET in the platform's environment. Change it there."
+              : "The platform makes and keeps this one — there is nothing to set in the environment. It signs what a finished build reports back, and proves a build may collect a signing key, so the same value must also be a secret in the repository."}
+          </p>
+
+          <div className="flex flex-wrap items-center gap-2">
             <span className="w-44 shrink-0 text-sm font-semibold">Branch</span>
             <input className="input mono max-w-[14rem]" value={branch} onChange={(e) => setBranch(e.target.value)} />
             <Btn variant="secondary" loading={busy === "branch"} disabled={branch === sum.auto.branch} onClick={() => save({ branch }, "branch")}>
@@ -231,6 +249,44 @@ function AutoBuild({ sum, onChanged, toast }: { sum: any; onChanged: () => void;
             </Btn>
           </div>
           <p className="text-xs text-ink-500">A new secret stops the old one working the moment it is saved — paste it into GitHub straight away.</p>
+
+          <div className="rounded-xl bg-hive-50/70 p-3">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <p className="min-w-0 text-sm text-ink-700">
+                Or let the platform write both of them into <span className="mono">{sum.setup.repo || "the repository"}</span> for you — nothing to paste.
+              </p>
+              <Btn
+                variant="secondary"
+                loading={busy === "push"}
+                onClick={async () => {
+                  setBusy("push");
+                  setPushed(null);
+                  try {
+                    setPushed(await api<any>("/sa/mobile-releases/github-secrets", { method: "POST" }));
+                  } catch (e: any) {
+                    setPushed({ results: [{ name: "all", ok: false, message: e?.message }] });
+                  } finally {
+                    setBusy("");
+                  }
+                }}
+              >
+                <UploadCloud className="h-4 w-4" /> Set up secrets in GitHub
+              </Btn>
+            </div>
+            {pushed && (
+              <ul className="mt-2 space-y-1">
+                {(pushed.results || []).map((r2: any) => (
+                  <li key={r2.name} className={`flex items-start gap-2 text-xs ${r2.ok ? "text-hive-800" : "text-honey-800"}`}>
+                    {r2.ok ? <CheckCircle2 className="mt-0.5 h-3.5 w-3.5 shrink-0" /> : <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />}
+                    <span>
+                      <span className="mono">{r2.name}</span> — {r2.message}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            )}
+            <p className="mt-2 text-xs text-ink-500">This needs the build token to carry <b>Secrets: read and write</b>. Where it does not, the values above still work by hand.</p>
+          </div>
 
           <p className="text-sm text-ink-700">
             Or use a repository webhook instead: Payload URL <span className="mono">{webhook}</span>, content type <span className="mono">JSON</span>, the same secret, “Just the push event”.
@@ -271,7 +327,13 @@ function AutoBuild({ sum, onChanged, toast }: { sum: any; onChanged: () => void;
               {r.problem ? (
                 <span className="block text-xs font-semibold text-honey-800">{r.problem}</span>
               ) : (
-                <span className="block text-xs text-ink-500">{r.where === "github" ? "in the build repository's secrets — checked by the build itself" : r.description}</span>
+                <span className="block text-xs text-ink-500">
+                {r.heldByPlatform
+                  ? "Kept by the platform — nothing to set here. Use “Set up secrets in GitHub”, or copy it from the panel above, so the repository has the same value."
+                  : r.where === "github"
+                    ? "in the build repository's secrets — checked by the build itself"
+                    : r.description}
+              </span>
               )}
             </span>
           </div>

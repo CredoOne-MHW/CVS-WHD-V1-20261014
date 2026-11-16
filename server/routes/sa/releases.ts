@@ -13,6 +13,8 @@ import { h, parse, notFound, badRequest, paging } from "../../lib/http";
 import { startBuild, buildRepo, buildWorkflow, readyToBuild, setupState, iosEnabled } from "../../lib/mobilebuild";
 import { signingEnabled } from "../../lib/signing";
 import { state as autoState, saveState, newSecret, rebuildAll } from "../../lib/autobuild";
+import { buildSecret, ensureBuildSecret, rotateBuildSecret } from "../../lib/buildsecret";
+import { pushSecrets, listSecretNames } from "../../lib/githubsecrets";
 import { PLATFORMS } from "../../../shared/mobile";
 
 const r = Router();
@@ -43,15 +45,18 @@ r.get("/mobile-releases/summary", read, h(async (req, res) => {
   }
   const current = seen.filter((d) => d.appVersion && newest.get(String(d.companyId)) && String(d.appVersion).startsWith(newest.get(String(d.companyId))!)).length;
 
-  const gate = readyToBuild();
+  const { value: secret, source: secretSource } = await buildSecret();
+  const held = { MOBILE_BUILD_SECRET: !!secret && secretSource === "platform" };
+  const gate = readyToBuild(held);
   res.json({
     stats: { building, ready, failed, devices: { current, total: seen.length } },
     setup: {
       ...gate,
       repo: buildRepo(),
       workflow: buildWorkflow(),
-      requirements: setupState(),
+      requirements: setupState(held),
       signingEnabled: signingEnabled(),
+      buildSecret: { source: secretSource, present: !!secret },
       ios: iosEnabled(),
     },
     auto: { on: auto.on, branch: auto.branch, hasSecret: !!auto.secret, lastPush: auto.lastPush },
@@ -160,11 +165,45 @@ r.put("/mobile-releases/auto", write, h(async (req, res) => {
   res.json({ on: next.on, branch: next.branch, hasSecret: !!next.secret });
 }));
 
+/**
+ * Writes the two shared secrets into the build repository, so nobody has to paste them.
+ *
+ * It needs the build token to carry Secrets: write. Where it does not, the refusal is reported per secret
+ * and the panel still shows the values to copy — the manual route never stops working.
+ */
+r.post("/mobile-releases/github-secrets", write, h(async (req, res) => {
+  const [{ value: callback }, auto] = await Promise.all([ensureBuildSecret(req.auth!.email), autoState()]);
+  let trigger = auto.secret;
+  if (!trigger) trigger = (await saveState({ secret: newSecret() }, req.auth!.email)).secret;
+
+  const out = await pushSecrets({ MOBILE_BUILD_SECRET: callback, BUILD_TRIGGER_SECRET: trigger }).catch((e: any) => ({
+    repo: "",
+    results: [{ name: "all", ok: false, message: e?.message || String(e) }],
+  }));
+  res.locals.action = "Write build secrets to GitHub";
+  res.locals.item = out.results.filter((r2: any) => r2.ok).length + " of " + out.results.length;
+  res.json(out);
+}));
+
+/** Which of them the repository already holds. GitHub never gives back a value, only the names. */
+r.get("/mobile-releases/github-secrets", read, h(async (req, res) => {
+  res.json({ names: await listSecretNames() });
+}));
+
+/** A new callback secret. Everything building right now will fail to report back — the screen says so. */
+r.post("/mobile-releases/build-secret/rotate", write, h(async (req, res) => {
+  const value = await rotateBuildSecret(req.auth!.email).catch((e: any) => {
+    throw badRequest(e.message);
+  });
+  res.locals.action = "New build callback secret";
+  res.json({ ok: true, secret: value });
+}));
+
 /** The secret itself, only when someone asks to see it. */
 r.get("/mobile-releases/auto/secret", write, h(async (req, res) => {
-  const s = await autoState();
-  res.locals.action = "Reveal build-trigger secret";
-  res.json({ secret: s.secret || "" });
+  const [s, cb] = await Promise.all([autoState(), buildSecret()]);
+  res.locals.action = "Reveal build secrets";
+  res.json({ secret: s.secret || "", buildSecret: cb.value, buildSecretSource: cb.source });
 }));
 
 /** "Rebuild everybody now", without waiting for a push. */

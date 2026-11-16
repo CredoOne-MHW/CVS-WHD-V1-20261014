@@ -906,3 +906,13 @@ One React Native (Expo) source in `mobile/`, built once per company and per plat
 **Why the uploads cannot fail a build.** Both run *after* the artefact is on S3 and *before* the ready callback, with `continue-on-error: true`. The outcome travels back as `store_note` and is recorded on the build, so a refusal is a sentence in the table rather than a red build nobody can explain. Both land on a testing track only — Internal testing and TestFlight — so nothing here can put an app in front of the public.
 
 **`latestReady(companyId, onlyInstallable)`.** A store build must never reach a company's download page: an `.aab` is not installable, and a user given one has no way to understand why it does not work. The company route passes `scope !== "super"`.
+
+## 26. v1.8.1 — the platform keeps its own build secret (Nov 2026)
+
+**An unset secret used to fail open.** `sign()` was `createHmac("sha256", env("MOBILE_BUILD_SECRET") || "dev")`. That `|| "dev"` meant a platform with nothing configured accepted any build result signed with a string printed in this repository — on an endpoint that decides which file a company installs as its app, and (since v1.7.0) on the endpoint that hands over a company's Android keystore. `callbackValid()` is now async, reads the stored secret, and returns false when there is none.
+
+**Asking for a secret was the wrong design.** `server/lib/buildsecret.ts` makes and keeps one in `PlatformSetting`, like the auto-rebuild trigger secret already did. `startBuild()` calls `ensureBuildSecret()` before it dispatches, so a first build needs nothing set up by hand. The environment variable still wins where it is set — this is additive for anyone already configured, and the panel says which of the two is in use.
+
+**`setupState(platformHeld)` and `readyToBuild(platformHeld)`** take a map of what the platform keeps, so a deliberately absent variable is a tick with its own line rather than a red cross. Called with no argument both behave exactly as in v1.7.1, which is what keeps every existing caller correct.
+
+**Writing secrets into GitHub** (`server/lib/githubsecrets.ts`): GitHub will not take a secret in the clear even over TLS — it publishes a per-repository public key and expects a libsodium sealed box. Hence `libsodium-wrappers`; Node's `crypto` has X25519 but not `crypto_box_seal`, which also needs blake2b and xsalsa20poly1305, and hand-rolling that to save a dependency would be a poor trade. The token needs **Secrets: write**, which many fine-grained tokens lack, so every secret reports its own outcome and the panel always keeps the copy-by-hand route.

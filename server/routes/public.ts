@@ -308,7 +308,7 @@ r.post("/public/cookies", h(async (req, res) => {
 r.post("/public/mobile/build", h(async (req: any, res) => {
   const { callbackValid, updateBuild } = await import("../lib/mobilebuild");
   const raw = typeof req.rawBody === "string" ? req.rawBody : JSON.stringify(req.body || {});
-  if (!callbackValid(raw, req.headers["x-build-signature"] as string)) throw new HttpError(401, "Bad signature");
+  if (!(await callbackValid(raw, req.headers["x-build-signature"] as string))) throw new HttpError(401, "Bad signature");
   const b = req.body || {};
   if (!b.build_id) throw new HttpError(400, "build_id is required");
   const status = ["building", "ready", "failed"].includes(b.status) ? b.status : undefined;
@@ -347,7 +347,7 @@ r.get("/public/mobile/signing/:buildId", h(async (req, res) => {
   const { keyForBuild } = await import("../lib/signing");
   const { MobileBuild } = await import("../models");
   const id = String(req.params.buildId);
-  if (!callbackValid(id, req.headers["x-build-signature"] as string)) throw new HttpError(401, "Bad signature");
+  if (!(await callbackValid(id, req.headers["x-build-signature"] as string))) throw new HttpError(401, "Bad signature");
 
   const build = await MobileBuild.findById(id).lean<any>();
   if (!build) throw new HttpError(404, "Unknown build");
