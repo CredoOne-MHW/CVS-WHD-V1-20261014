@@ -128,7 +128,7 @@ export const BUILD_REQUIREMENTS: BuildRequirement[] = [
     key: "MOBILE_SIGNING_SECRET",
     where: "platform",
     label: "Platform-kept signing key",
-    description: "Optional. Set it and the platform makes and keeps one permanent Android key per company. Leave it empty and the build uses the repository's own ANDROID_* secrets, which is a complete set-up on its own.",
+    description: "One of these two is required for Android. Set this and the platform makes and keeps a permanent key for every company by itself — one value, nothing else to do. Leave it empty and the repository must hold the four ANDROID_* secrets instead. With neither, an Android build fails at the signing step.",
     required: false,
     secret: true,
     check: (v) => SHAPE.longSecret(v),

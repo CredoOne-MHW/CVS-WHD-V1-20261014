@@ -934,3 +934,13 @@ It is now `BUILD_WORKFLOW_FILE = "build-mobile.yml"`, a constant, and the requir
 **This is the third time the same shape of bug has been fixed** — the Mobile App tab spinning on an uncaught rejection (v1.7.0), builds reporting `ref …` instead of GitHub's own 404 (v1.8.3), and now uploads. The pattern: an error carrying a perfectly good explanation, thrown somewhere that discards it. Worth checking for directly whenever a route can fail outside our own code.
 
 `tests/error-messages.test.ts` covers twelve cases, including that a real crash still does not leak its message. `npm test` runs it with the build-gate test; neither needs a database.
+
+## 29. v1.8.9 — no JDK on the platform (Nov 2026)
+
+`ensureKey()` shelled out to `keytool`. The platform runs on a Node runtime with no JDK, so every first Android build died with `spawn keytool ENOENT` — a design error, not a configuration one: I reached for the tool I would use at a terminal without asking whether the server had it. **The rule this earns: nothing on the request path may assume a binary that is not in `package.json`.**
+
+The keystore is now built with `node-forge` — RSA-2048, a self-signed certificate valid 10,000 days, PKCS#12 — the same artefact as `keytool -storetype PKCS12`, which is what Gradle reads. Two more bugs fell out of the rewrite: the old code generated **separate store and key passwords** (PKCS#12 keeps one, and Java refuses a keystore where they differ, so it would have failed again even with a JDK), and its fingerprint fallback hashed the **keystore file** rather than the certificate, a number that matches nothing Play Console shows.
+
+Key generation now uses forge's callback form; the synchronous one held the event loop for several seconds per key.
+
+**Verified against a real JDK once:** `keytool -list -v` reports `PrivateKeyEntry`, the right alias, `SHA256withRSA`, and the same SHA-256 the platform recorded; `jarsigner` signs and `-verify` answers "jar verified". `tests/signing-key.test.ts` keeps the rest honest without needing a JDK.

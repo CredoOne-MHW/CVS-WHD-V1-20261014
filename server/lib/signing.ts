@@ -13,15 +13,10 @@
  *     asks for them over the authenticated callback channel instead, uses them, and deletes the file;
  *   • nothing here is ever returned to a browser. The screens only ever see the fingerprint.
  */
-import { createCipheriv, createDecipheriv, randomBytes, createHash, scryptSync } from "crypto";
-import { execFile } from "child_process";
-import { promises as fs } from "fs";
-import { tmpdir } from "os";
-import { join } from "path";
-import { promisify } from "util";
+import { createCipheriv, createDecipheriv, randomBytes, scryptSync } from "crypto";
+import forge from "node-forge";
 import { MobileSigningKey, MobileBuild } from "../models";
 
-const run = promisify(execFile);
 const env = (k: string) => (process.env[k] || "").trim();
 
 /** The key everything here is encrypted with. Derived once, so the setting can be a passphrase. */
@@ -58,27 +53,41 @@ export async function ensureKey(company: any, by = "system") {
   if (existing) return existing;
   if (!signingEnabled()) throw new Error("MOBILE_SIGNING_SECRET is not set — add it before building a signed app");
 
-  const storePass = password();
-  const keyPass = password();
+  /**
+   * The keystore is built here, in JavaScript, rather than by shelling out to `keytool`.
+   *
+   * keytool belongs to the JDK, and the platform runs on a Node runtime that has no JDK — the call failed
+   * with `spawn keytool ENOENT`, which is not something a setting can fix. node-forge makes the same
+   * artefact: an RSA key, a self-signed certificate, and a PKCS#12 keystore, which is exactly what
+   * `keytool -storetype PKCS12` used to produce and what Gradle reads.
+   */
   const alias = `${String(company.code || "app").toLowerCase().replace(/[^a-z0-9]/g, "")}key`;
-  const file = join(await fs.mkdtemp(join(tmpdir(), "ks-")), "release.jks");
+  // PKCS#12 keeps one password for the store and the key; Java refuses a keystore where they differ
+  const pass = randomBytes(24).toString("base64url");
 
-  // 10,000 days is what Google asks for: a key that expires takes the app with it
-  const dn = `CN=${String(company.name || company.code).replace(/[,=]/g, " ").slice(0, 60)}, OU=Mobile, O=CredoOne, C=IN`;
-  try {
-    await run("keytool", [
-      "-genkeypair", "-noprompt",
-      "-keystore", file, "-storetype", "PKCS12",
-      "-storepass", storePass, "-keypass", keyPass,
-      "-alias", alias, "-keyalg", "RSA", "-keysize", "2048", "-validity", "10000",
-      "-dname", dn,
-    ]);
-  } catch (e: any) {
-    throw new Error(`Could not make the signing key: ${e?.stderr || e?.message || e}`);
-  }
+  // the callback form yields between rounds; the synchronous one holds the event loop for seconds, which on
+  // a shared server means every other request waits for one company's first build
+  const keys = await new Promise<forge.pki.rsa.KeyPair>((resolve, reject) =>
+    forge.pki.rsa.generateKeyPair({ bits: 2048, e: 0x10001 }, (err, kp) => (err ? reject(err) : resolve(kp)))
+  );
+  const cert = forge.pki.createCertificate();
+  cert.publicKey = keys.publicKey;
+  cert.serialNumber = `00${randomBytes(8).toString("hex")}`;
+  cert.validity.notBefore = new Date();
+  // Google asks for a certificate that outlives the app: one that expires takes the app with it
+  cert.validity.notAfter = new Date(Date.now() + 10000 * 86_400_000);
+  const dn = [
+    { name: "commonName", value: String(company.name || company.code).replace(/[,=]/g, " ").slice(0, 60) },
+    { name: "organizationalUnitName", value: "Mobile" },
+    { name: "organizationName", value: "CredoOne" },
+    { name: "countryName", value: "IN" },
+  ];
+  cert.setSubject(dn);
+  cert.setIssuer(dn); // self-signed, as every Android app signing certificate is
+  cert.sign(keys.privateKey, forge.md.sha256.create());
 
-  const bytes = await fs.readFile(file);
-  await fs.rm(join(file, ".."), { recursive: true, force: true });
+  const p12 = forge.pkcs12.toPkcs12Asn1(keys.privateKey, [cert], pass, { friendlyName: alias, algorithm: "3des" });
+  const bytes = Buffer.from(forge.asn1.toDer(p12).getBytes(), "binary");
 
   const doc = await MobileSigningKey.create({
     companyId: company._id,
@@ -86,27 +95,19 @@ export async function ensureKey(company: any, by = "system") {
     platform: "android",
     alias,
     keystore: encrypt(bytes),
-    storePass: encrypt(storePass),
-    keyPass: encrypt(keyPass),
-    fingerprint: await fingerprintOf(bytes, storePass, alias).catch(() => sha256(bytes)),
+    storePass: encrypt(pass),
+    keyPass: encrypt(pass),
+    fingerprint: fingerprintOf(cert),
     createdBy: by,
   });
   return doc.toObject();
 }
 
-const sha256 = (b: Buffer) => createHash("sha256").update(b).digest("hex").toUpperCase().match(/.{2}/g)!.join(":");
-
-/** The SHA-256 of the certificate — what Google Play and an installed phone compare. */
-async function fingerprintOf(bytes: Buffer, storePass: string, alias: string) {
-  const file = join(await fs.mkdtemp(join(tmpdir(), "fp-")), "k.jks");
-  await fs.writeFile(file, bytes);
-  try {
-    const { stdout } = await run("keytool", ["-list", "-v", "-keystore", file, "-storepass", storePass, "-alias", alias]);
-    const hit = /SHA256:\s*([0-9A-F:]+)/i.exec(stdout);
-    return hit ? hit[1].toUpperCase() : sha256(bytes);
-  } finally {
-    await fs.rm(join(file, ".."), { recursive: true, force: true });
-  }
+/** The SHA-256 of the certificate — the same value `keytool -list -v` prints, and what Google Play compares. */
+function fingerprintOf(cert: forge.pki.Certificate) {
+  const md = forge.md.sha256.create();
+  md.update(forge.asn1.toDer(forge.pki.certificateToAsn1(cert)).getBytes());
+  return md.digest().toHex().toUpperCase().match(/.{2}/g)!.join(":");
 }
 
 /**
@@ -149,3 +150,43 @@ export async function keyForBuild(companyId: any) {
     keyPass: decrypt(key.keyPass).toString("utf8"),
   };
 }
+
+/**
+ * Which of the two signing routes is actually available, asked before a build rather than discovered ten
+ * minutes into one.
+ *
+ *   platform — MOBILE_SIGNING_SECRET is set, so the platform makes and keeps a key per company.
+ *   github   — the build repository holds ANDROID_KEYSTORE_BASE64 and its three companions.
+ *   none     — neither, and an Android build will fail at the signing step.
+ *
+ * The GitHub half needs a call, so the answer is held for ten minutes. When GitHub cannot be reached the
+ * answer is "unknown", never "none": refusing a build because we could not check would be worse than letting
+ * the build itself report the truth.
+ */
+export type SigningRoute = "platform" | "github" | "none" | "unknown";
+
+const ANDROID_SECRETS = ["ANDROID_KEYSTORE_BASE64", "ANDROID_KEYSTORE_PASSWORD", "ANDROID_KEY_ALIAS", "ANDROID_KEY_PASSWORD"];
+let routeCache: { at: number; route: SigningRoute; missing: string[] } | null = null;
+
+export async function signingRoute(fresh = false): Promise<{ route: SigningRoute; missing: string[] }> {
+  if (signingEnabled()) return { route: "platform", missing: [] };
+  if (!fresh && routeCache && Date.now() - routeCache.at < 600_000) return { route: routeCache.route, missing: routeCache.missing };
+
+  const { listSecretNames } = await import("./githubsecrets");
+  const names = await listSecretNames();
+  // an empty list means either "no secrets" or "could not look"; both are reported as unknown rather than
+  // standing in the way of a build
+  if (!names.length) {
+    const out = { route: "unknown" as SigningRoute, missing: [] as string[] };
+    routeCache = { at: Date.now(), ...out };
+    return out;
+  }
+  const missing = ANDROID_SECRETS.filter((k) => !names.includes(k));
+  const out = { route: (missing.length ? "none" : "github") as SigningRoute, missing };
+  routeCache = { at: Date.now(), ...out };
+  return out;
+}
+
+/** The sentence a person needs when neither route is set up. One decision, two ways to make it. */
+export const SIGNING_HELP =
+  "An Android app has to be signed, and nothing here can sign it yet. Either set MOBILE_SIGNING_SECRET on the platform — one value, and it then makes and keeps a permanent key for every company by itself — or add the four ANDROID_* secrets to the build repository and manage the keystore yourself. The platform route is far less work; Knowledge Base › GitHub build has both.";
