@@ -12,7 +12,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { Smartphone, Hammer, GitBranch, Copy, Eye, RefreshCw, ShieldCheck, CheckCircle2, XCircle, Clock, ExternalLink, AlertTriangle, Loader2 } from "lucide-react";
 import { api, fmtDate } from "@/lib/api";
 import { PageHeader, Btn, Badge, Spinner, Empty, Field, useToast } from "@/components/ui";
-import { BUILD_LABEL, platformLabel, type BuildStatus } from "@shared/mobile";
+import { BUILD_LABEL, platformLabel, targetHint, type BuildStatus } from "@shared/mobile";
 
 const TONE: Record<BuildStatus, "green" | "honey" | "red" | "gray"> = { ready: "green", building: "honey", queued: "gray", failed: "red", cancelled: "gray" };
 const PAGE = 25;
@@ -257,10 +257,22 @@ function AutoBuild({ sum, onChanged, toast }: { sum: any; onChanged: () => void;
       <div className="mt-3 grid gap-x-8 gap-y-1.5 sm:grid-cols-2">
         {(sum.setup.requirements || []).map((r: any) => (
           <div key={r.key} className="flex items-start gap-2 text-sm">
-            {r.set === true ? <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-hive-700" /> : r.set === false ? <XCircle className={`mt-0.5 h-4 w-4 shrink-0 ${r.required ? "text-red-600" : "text-ink-300"}`} /> : <Clock className="mt-0.5 h-4 w-4 shrink-0 text-ink-300" />}
+            {r.problem ? (
+              <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-honey-600" />
+            ) : r.set === true ? (
+              <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-hive-700" />
+            ) : r.set === false ? (
+              <XCircle className={`mt-0.5 h-4 w-4 shrink-0 ${r.required ? "text-red-600" : "text-ink-300"}`} />
+            ) : (
+              <Clock className="mt-0.5 h-4 w-4 shrink-0 text-ink-300" />
+            )}
             <span className="min-w-0">
               <span className="mono text-[12px]">{r.key}</span>
-              <span className="block text-xs text-ink-500">{r.where === "github" ? "in the build repository's secrets — checked by the build itself" : r.description}</span>
+              {r.problem ? (
+                <span className="block text-xs font-semibold text-honey-800">{r.problem}</span>
+              ) : (
+                <span className="block text-xs text-ink-500">{r.where === "github" ? "in the build repository's secrets — checked by the build itself" : r.description}</span>
+              )}
             </span>
           </div>
         ))}
@@ -286,13 +298,14 @@ function Row({ label, value, onCopy }: { label: string; value: string; onCopy: (
 function StartBuild({ sum, companies, onStarted, toast, busy, setBusy }: any) {
   const [companyId, setCompanyId] = useState("");
   const [platform, setPlatform] = useState("android");
+  const [target, setTarget] = useState<"test" | "store">("test");
   const [all, setAll] = useState(false);
   const withApp = useMemo(() => companies.filter((c: any) => c.hasApp).length, [companies]);
 
   const go = async () => {
     setBusy("build");
     try {
-      const r = await api<any>("/sa/mobile-releases/build", { body: { companyId: companyId || undefined, platform, all } });
+      const r = await api<any>("/sa/mobile-releases/build", { body: { companyId: companyId || undefined, platform, target, all } });
       toast("ok", all ? `${r.started} build${r.started === 1 ? "" : "s"} started${r.skipped ? `, ${r.skipped} skipped` : ""}` : "Build started — it takes 10–20 minutes");
       onStarted();
     } catch (e: any) {
@@ -334,6 +347,20 @@ function StartBuild({ sum, companies, onStarted, toast, busy, setBusy }: any) {
             ))}
           </div>
         </Field>
+        <Field label="What it is for">
+          <div className="flex gap-2 pt-1">
+            {(["test", "store"] as const).map((t) => (
+              <button
+                key={t}
+                type="button"
+                onClick={() => setTarget(t)}
+                className={`rounded-xl px-4 py-2 text-sm font-bold ${target === t ? "bg-hive-600 text-white" : "bg-ink-400/[0.07] text-ink-700"}`}
+              >
+                {t === "test" ? "Direct install" : "Store upload"}
+              </button>
+            ))}
+          </div>
+        </Field>
         <Field label="Scope">
           <label className="flex items-center gap-2 pt-3 text-sm">
             <input type="checkbox" className="h-4 w-4 accent-hive-700" checked={all} onChange={(e) => setAll(e.target.checked)} />
@@ -343,7 +370,7 @@ function StartBuild({ sum, companies, onStarted, toast, busy, setBusy }: any) {
       </div>
       <div className="mt-4 flex flex-wrap items-center justify-between gap-3">
         <p className="max-w-xl text-xs text-ink-500">
-          One build per company. Every build carries the platform's version; building again gives the next build number. A company with no app yet is skipped by “every company” — its first build decides the application id and the signing key, so it is always started by hand.
+          <span className="font-semibold text-ink-700">{targetHint(platform, target)}</span> One build per company. Every build carries the platform's version; building again gives the next build number. A company with no app yet is skipped by “every company” — its first build decides the application id and the signing key, so it is always started by hand.
         </p>
         <Btn onClick={go} loading={busy === "build"} disabled={!sum.setup.ok || (!all && !companyId)}>
           <Hammer className="h-4 w-4" /> Start build
@@ -446,6 +473,7 @@ function Builds({ companies }: { companies: any[] }) {
                     </td>
                     <td className="td text-sm">
                       {platformLabel(b.platform)}
+                      {b.target === "store" && <span className="ml-2"><Badge color="honey">Store</Badge></span>}
                       <span className="mono block text-[11px] text-ink-400">{b.bundleId}</span>
                     </td>
                     <td className="td whitespace-nowrap font-semibold">
@@ -455,6 +483,7 @@ function Builds({ companies }: { companies: any[] }) {
                     <td className="td">
                       <Badge color={TONE[b.status as BuildStatus]}>{BUILD_LABEL[b.status as BuildStatus]}</Badge>
                       {b.error && <p className="mt-1 max-w-[260px] text-xs text-red-600">{b.error}</p>}
+                      {b.store?.message && <p className={`mt-1 max-w-[260px] text-xs ${b.store.uploaded ? "text-emerald-700" : "text-ink-500"}`}>{b.store.message}</p>}
                     </td>
                     <td className="td whitespace-nowrap text-xs text-ink-500">{fmtDate(b.startedAt, false)}</td>
                     <td className="td text-xs text-ink-500">

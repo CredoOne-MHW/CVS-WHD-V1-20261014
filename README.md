@@ -885,3 +885,24 @@ One React Native (Expo) source in `mobile/`, built once per company and per plat
 **One key per company, enforced in the database.** `MobileSigningKey.companyId` is unique, so two builds starting at the same moment cannot produce two keys — the second finds the first. `ensureKey()` runs before the build row is created, so a failure to make a key never leaves a dead build behind.
 
 **What the bulk build refuses to do.** "Every company" only rebuilds companies that already have a ready build of that platform. A first build fixes the application id and the signing key for the life of the app, so it is never a side effect of a bulk action or of a push.
+
+## 25. v1.7.1 / v1.8.0 — a checker that checks, and publishing to the stores (Nov 2026)
+
+**The workflow was not valid YAML.** `.github/workflows/build-mobile.yml` carried an inline Python heredoc whose lines de-indented below the block scalar they sat in, which ends the block early — GitHub answers that with *"Invalid workflow file"* and nothing runs. Broken since v1.5.0, and never noticed because the set-up had not got far enough to dispatch one. The Python is now `.github/scripts/android-signing-config.py`. **Rule for this file: no heredocs.** Anything longer than a few lines goes in `.github/scripts/` and is called, which also makes it readable and testable on its own. A `yaml.safe_load` of the workflow is the cheapest possible check that it is still parseable.
+
+**Presence is not validity.** `setupState()` only ever asked whether a value existed, so `GITHUB_BUILD_REPO=https://github.com/owner/repo.git` showed a green tick and then produced a 404 from `https://api.github.com/repos/https://github.com/owner/repo.git/...`. `BuildRequirement.check?: (value) => string | null` returns the correction, not the complaint, and `readyToBuild()` now counts a malformed value as missing so the build is never started at all.
+
+**Signing is a choice between two complete set-ups.** `MOBILE_SIGNING_SECRET` gives you a platform-kept key per company; the repository's `ANDROID_*` secrets give you one key you manage yourself. The second is how the FnB platform has always worked and is not a fallback — the checklist and both panels say so in those words.
+
+| Piece | Where |
+| --- | --- |
+| Targets | `shared/mobile.ts` — `BUILD_TARGETS`, `artifactExt(platform, target)`, `targetHint()` |
+| Play upload | `.github/scripts/play-upload.py` — Google's Publishing API directly, no third-party action |
+| Apple upload | the *Send to App Store Connect* step — `xcrun altool` with an App Store Connect API key |
+| Export options | `.github/ios-export.plist` (ad-hoc, unchanged) and `.github/ios-export-store.plist` (app-store) |
+| Model | `MobileBuild.target` and `MobileBuild.store` |
+| Guide | `content/kb/75-publishing-to-the-stores.md` |
+
+**Why the uploads cannot fail a build.** Both run *after* the artefact is on S3 and *before* the ready callback, with `continue-on-error: true`. The outcome travels back as `store_note` and is recorded on the build, so a refusal is a sentence in the table rather than a red build nobody can explain. Both land on a testing track only — Internal testing and TestFlight — so nothing here can put an app in front of the public.
+
+**`latestReady(companyId, onlyInstallable)`.** A store build must never reach a company's download page: an `.aab` is not installable, and a user given one has no way to understand why it does not work. The company route passes `scope !== "super"`.

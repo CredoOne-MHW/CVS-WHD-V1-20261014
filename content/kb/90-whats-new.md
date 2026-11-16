@@ -4,6 +4,14 @@ slug: whats-new
 order: 90
 summary: Changes in recent deploys.
 ---
+## November 2026 — v1.8.0 — publishing to Google Play and the App Store
+
+- **Store build** is a new choice when building an app. A normal build still gives you the file you install directly; a store build gives you the file Google Play and the App Store accept, which is a different thing entirely.
+- **It can upload itself.** Once your administrator has added the store credentials, a store build goes straight to Google Play's Internal testing track and to TestFlight. Without them the file is simply kept for you to upload by hand — both ways work.
+- Nothing reaches the public on its own: promoting a release, or submitting it for review, is always a decision somebody makes in the Play Console or App Store Connect.
+- Store builds are kept off your download page, because those files do not install on a phone.
+- New guide: **Publishing to Google Play and the App Store**.
+
 ## November 2026 — v1.7.0 — one place for every app
 
 - **Mobile App Release** is a new Super Admin screen: every company's app in one place, with what is building now, what finished, what failed, and how many phones are on the newest version.
