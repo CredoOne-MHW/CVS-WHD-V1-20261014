@@ -129,6 +129,7 @@ function Stats({ s }: { s: any }) {
 /* ───────────────────────── Automatic rebuilds (the GitHub set-up) ───────────────────────── */
 
 function AutoBuild({ sum, onChanged, toast }: { sum: any; onChanged: () => void; toast: ReturnType<typeof useToast> }) {
+  const [verify, setVerify] = useState<any>(null);
   const [open, setOpen] = useState(false);
   const [branch, setBranch] = useState(sum.auto.branch || "main");
   const [secret, setSecret] = useState<string | null>(null);
@@ -305,10 +306,43 @@ function AutoBuild({ sum, onChanged, toast }: { sum: any; onChanged: () => void;
             </p>
           </div>
         </div>
-        <Btn variant="secondary" onClick={onChanged}>
+        <Btn
+          variant="secondary"
+          loading={busy === "verify"}
+          onClick={async () => {
+            setBusy("verify");
+            setVerify(null);
+            try {
+              setVerify(await api<any>("/sa/mobile-releases/verify", { fresh: true }));
+            } catch (e: any) {
+              setVerify({ ok: false, findings: [{ key: "err", label: "Check", ok: false, detail: e?.message || "Could not run the check." }] });
+            } finally {
+              setBusy("");
+            }
+            onChanged();
+          }}
+        >
           <ShieldCheck className="h-4 w-4" /> Check GitHub setup
         </Btn>
       </div>
+
+      {/* what GitHub itself says, which is the only thing that settles it */}
+      {verify && (
+        <div className={`mt-3 rounded-xl border p-4 ${verify.ok ? "border-hive-600/30 bg-hive-50/70" : "border-honey-500/40 bg-honey-500/10"}`}>
+          <p className="mb-2 text-sm font-bold">{verify.ok ? "GitHub is ready — a build can be dispatched." : "GitHub says a build would not work yet:"}</p>
+          <ul className="space-y-2">
+            {(verify.findings || []).map((f: any) => (
+              <li key={f.key} className="flex items-start gap-2 text-sm">
+                {f.ok ? <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-hive-700" /> : <XCircle className="mt-0.5 h-4 w-4 shrink-0 text-red-600" />}
+                <span className="min-w-0">
+                  <b>{f.label}:</b> {f.detail}
+                  {f.fix && <span className="block text-xs text-ink-600">{f.fix}</span>}
+                </span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
 
       <div className="mt-3 grid gap-x-8 gap-y-1.5 sm:grid-cols-2">
         {(sum.setup.requirements || []).map((r: any) => (

@@ -15,6 +15,7 @@ import { signingEnabled } from "../../lib/signing";
 import { state as autoState, saveState, newSecret, rebuildAll } from "../../lib/autobuild";
 import { buildSecret, ensureBuildSecret, rotateBuildSecret } from "../../lib/buildsecret";
 import { pushSecrets, listSecretNames } from "../../lib/githubsecrets";
+import { verifySetup } from "../../lib/verifysetup";
 import { PLATFORMS } from "../../../shared/mobile";
 
 const r = Router();
@@ -128,7 +129,11 @@ r.post("/mobile-releases/build", write, h(async (req, res) => {
     if (!b.companyId) throw badRequest("Pick a company, or tick every company with an app");
     const c = await Company.findOne({ _id: b.companyId, deletedAt: null }).lean<any>();
     if (!c) throw notFound("Company not found");
-    const build = await startBuild(c, platform, by, { target: b.target || "test" });
+    // startBuild explains itself — "GitHub refused the build (404)…", "Switch on S3 storage…". Letting it
+    // escape turned every one of those into "Internal server error (ref …)", which helps nobody.
+    const build = await startBuild(c, platform, by, { target: b.target || "test" }).catch((e: any) => {
+      throw badRequest(e?.message || "The build could not be started.");
+    });
     res.locals.action = "Start mobile build";
     res.locals.item = `${c.code} ${platform} ${b.target || "test"}`;
     return res.status(201).json({ started: 1, builds: [build] });
@@ -193,6 +198,11 @@ r.post("/mobile-releases/github-secrets", write, h(async (req, res) => {
   res.locals.action = "Write build secrets to GitHub";
   res.locals.item = out.results.filter((r2: any) => r2.ok).length + " of " + out.results.length;
   res.json(out);
+}));
+
+/** Asks GitHub whether a build would actually work — repository, branch, workflow file, Actions. */
+r.get("/mobile-releases/verify", read, h(async (req, res) => {
+  res.json(await verifySetup());
 }));
 
 /** Which of them the repository already holds. GitHub never gives back a value, only the names. */
