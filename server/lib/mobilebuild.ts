@@ -33,6 +33,16 @@ export const buildRepo = () => env("GITHUB_BUILD_REPO");
  * longer offers a choice. A value left in the environment is reported as ignored rather than obeyed.
  */
 export const BUILD_WORKFLOW_FILE = "build-mobile.yml";
+
+/**
+ * The revision of the workflow this platform expects to find in the build repository.
+ *
+ * The platform and the workflow are shipped together but deployed separately — the platform to Vercel, the
+ * workflow by pushing it to GitHub — so they drift apart whenever only one half is done. The workflow carries
+ * a matching `# lms-workflow:` line, and "Check GitHub setup" compares them. Bump this only when the workflow
+ * or one of its scripts actually changes, or the panel cries wolf on every release.
+ */
+export const WORKFLOW_REVISION = "1.8.11";
 export const buildWorkflow = () => BUILD_WORKFLOW_FILE;
 /** A leftover value, so the panel can say it is being ignored and can be deleted. */
 export const ignoredWorkflowSetting = () => {

@@ -944,3 +944,17 @@ The keystore is now built with `node-forge` — RSA-2048, a self-signed certific
 Key generation now uses forge's callback form; the synchronous one held the event loop for several seconds per key.
 
 **Verified against a real JDK once:** `keytool -list -v` reports `PrivateKeyEntry`, the right alias, `SHA256withRSA`, and the same SHA-256 the platform recorded; `jarsigner` signs and `-verify` answers "jar verified". `tests/signing-key.test.ts` keeps the rest honest without needing a JDK.
+
+## 30. Stack — Node only (from v1.8.10)
+
+**Next.js and Node on the platform, React Native on the phone. No Python, anywhere, including build scripts.**
+
+Two workflow helpers were written in Python and are now `.mjs`. `play-upload.mjs` talks to Google's Publishing API directly — a service-account JWT signed with `crypto.createSign("RSA-SHA256")`, exchanged for an access token, then four REST calls — so it needs no SDK and no `pip install` step.
+
+**The path bug worth remembering:** the build job sets `defaults.run.working-directory: mobile`, so a step that does not override it runs from the app folder, and `.github/scripts/x` means `mobile/.github/scripts/x`. Steps reaching the repository root must use `../.github/…` or set `working-directory: .`. `tests/workflow-scripts.test.ts` now resolves every script path in the workflow against the directory its step runs in, and fails if a file is not there.
+
+## 31. v1.8.11 — two halves, deployed separately
+
+A release is **platform code** (deployed to Vercel) and **`.github/` + `mobile/`** (pushed to the build repository). Only the first is a deploy; the second is a git push, and when it is skipped GitHub keeps running an old workflow while the platform reports on its own current settings. A build then fails on something fixed releases ago and nothing on screen explains it — that happened three times before this was addressed.
+
+`build-mobile.yml` now carries `# lms-workflow: <rev>` and the platform holds `WORKFLOW_REVISION`. `verifySetup()` reads the repository's copy, decodes it, and compares. Bump the constant **only** when the workflow or one of its scripts changes, or the panel cries wolf on every release — and `tests/workflow-scripts.test.ts` fails if the marker and the constant ever disagree, because a check that lies is worse than no check.
