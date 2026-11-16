@@ -119,7 +119,7 @@ export const BUILD_REQUIREMENTS: BuildRequirement[] = [
   { key: "GITHUB_BUILD_TOKEN", where: "platform", label: "GitHub token", description: "Fine-grained token with Actions: read and write on that repository", required: true, secret: true },
   { key: "GITHUB_BUILD_REF", where: "platform", label: "Branch", description: "Branch to build from; empty uses the default branch", required: false },
   { key: "GITHUB_BUILD_WORKFLOW", where: "platform", label: "Workflow file", description: "Defaults to build-mobile.yml. The desktop workflow of another project will not build an app.", required: false, check: (v) => SHAPE.workflow(v) },
-  { key: "MOBILE_BUILD_SECRET", where: "platform", label: "Build callback secret", description: "Signs the message the finished build sends back. The SAME value must also be a repository secret of this name, or builds run but never turn Ready.", required: true, secret: true, check: (v) => SHAPE.longSecret(v) },
+  { key: "MOBILE_BUILD_SECRET", where: "platform", label: "Build callback secret", description: "The platform makes and keeps this one, so there is nothing to set here. It signs what a finished build reports back and proves a build may collect a signing key — the SAME value must also be a repository secret of this name, or builds run but never turn Ready.", required: true, secret: true, check: (v) => SHAPE.longSecret(v) },
   {
     key: "MOBILE_SIGNING_SECRET",
     where: "platform",

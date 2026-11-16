@@ -15,6 +15,7 @@ import { putAt, getObject, deleteObject } from "../lib/s3";
 import { s3Area } from "../../shared/platform";
 import { appConfig, startBuild, setupState, readyToBuild, latestReady, buildRepo, buildWorkflow, buildRef, iosEnabled } from "../lib/mobilebuild";
 import { signingSummary } from "../lib/signing";
+import { buildSecret } from "../lib/buildsecret";
 import { PLATFORMS, APP_SCREENS, platformLabel, type Platform } from "../../shared/mobile";
 import { tenantUrls } from "../lib/tenant";
 
@@ -41,7 +42,9 @@ export function mobileRoutes(scope: Scope) {
       MobileBuild.find({ companyId: c._id }).sort({ createdAt: -1 }).skip(skip).limit(limit).lean<any[]>(),
       MobileBuild.countDocuments({ companyId: c._id }),
     ]);
-    const gate = readyToBuild();
+    const { value: secret, source: secretSource } = await buildSecret();
+    const held = { MOBILE_BUILD_SECRET: !!secret && secretSource === "platform" };
+    const gate = readyToBuild(held);
     /**
      * Every part below is a convenience, not the page. One of them failing used to 500 the whole tab, and
      * the browser showed a spinner for ever; now a part that cannot be worked out is simply left out.
@@ -66,7 +69,7 @@ export function mobileRoutes(scope: Scope) {
       limit,
       latest: await latestReady(c._id, scope !== "super").catch(() => ({})),
       signing: scope === "super" ? await signingSummary(c).catch(() => null) : null,
-      setup: scope === "super" ? { ...gate, repo: buildRepo(), workflow: buildWorkflow(), ref: buildRef() || "default branch", requirements: safe(() => setupState(), []) } : { ok: gate.ok },
+      setup: scope === "super" ? { ...gate, repo: buildRepo(), workflow: buildWorkflow(), ref: buildRef() || "default branch", requirements: safe(() => setupState(held), []) } : { ok: gate.ok },
       prefix: safe(() => s3Area(c.code, "app"), ""),
     });
   }));

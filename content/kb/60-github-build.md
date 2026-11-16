@@ -150,3 +150,23 @@ Connect it in either of two ways; the panel shows both, with the values filled i
 2. **A repository webhook** — Payload URL `<your platform>/api/public/webhooks/github/push`, content type **JSON**, the same secret, **"Just the push event"**.
 
 Either way the body is signed, so nothing else can start a build. A push to any other branch is accepted and ignored. A company with no app yet is skipped — a first build fixes the application id and the signing key, so it is always started by hand.
+
+## The two shared secrets (from v1.8.1)
+
+The platform and the build share two values. **Neither goes in the platform's environment any more** — the platform makes and keeps both, and shows them on **Super Admin → Mobile App Release → Set up in GitHub**:
+
+| Secret | What it does |
+| --- | --- |
+| `MOBILE_BUILD_SECRET` | Signs what a finished build reports back, and proves a build may collect a signing key. Without a matching value in the repository, builds run but never turn **Ready**. |
+| `BUILD_TRIGGER_SECRET` | Signs the push that rebuilds every company's app. |
+
+Both must also exist as **repository secrets** in the build repository, with the same values. Two ways:
+
+1. **Press "Set up secrets in GitHub".** The platform writes both for you. Each value is sealed to the repository's own public key before it is sent, so nothing travels in the clear. This needs the build token to carry **Secrets: read and write** as well as Actions.
+2. **Press "Show", copy each one**, and add them in GitHub → Settings → Secrets and variables → Actions.
+
+Both routes are equally correct; the second always works, whatever the token can do.
+
+**If you had `MOBILE_BUILD_SECRET` in the environment already**, it still wins and nothing changes — the panel says which of the two is in use. Remove it if you would rather the platform kept one.
+
+**Making a new one** is on the same panel. Everything building at that moment will fail to report back, so do it when nothing is running.
