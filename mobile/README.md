@@ -35,3 +35,12 @@ npm install
 API_BASE=https://<company>.mhw.credovation.tech COMPANY_CODE=WHD APP_NAME="Wellness Hive" node scripts/brand.mjs
 npx expo start
 ```
+
+## The lockfile
+
+`package-lock.json` is committed on purpose and belongs in the repository.
+
+- The build runs `npm ci`, which installs exactly the versions in it. Two builds of the same company's app a month apart then produce the same thing; without it, `npm install` is free to pick up a newer patch release of any dependency halfway through.
+- GitHub's npm cache is keyed on it. When it is missing the cache is skipped (it does not fail the build — that was fixed in v1.8.5), and every build re-downloads the whole dependency tree.
+
+After changing `package.json`, run `npm install` here and **commit the updated lockfile with it**.
