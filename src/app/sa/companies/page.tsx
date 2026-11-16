@@ -85,8 +85,18 @@ export default function Companies() {
       return n;
     });
   const setB = (k: string, v: any) => setForm((p: any) => ({ ...p, branding: { ...p.branding, [k]: v } }));
+  /** Says no to an image the upload would refuse, now, rather than after it has been sent. */
   const pick = (kind: Kind, file?: File | null) => {
     if (!file) return;
+    const MAX_MB = 8;
+    if (file.size > MAX_MB * 1024 * 1024) {
+      toast("err", `${file.name} is ${(file.size / 1024 / 1024).toFixed(1)} MB. The most an image can be is ${MAX_MB} MB — save it smaller and pick it again.`);
+      return;
+    }
+    if (!/^image\/(png|jpe?g|webp|svg\+xml|x-icon|vnd\.microsoft\.icon)$/.test(file.type)) {
+      toast("err", `${file.name} is not an image this accepts. Use PNG, JPG, WebP, SVG or ICO.`);
+      return;
+    }
     setFiles((x) => ({ ...x, [kind]: file }));
     setPreviews((x) => ({ ...x, [kind]: URL.createObjectURL(file) }));
   };
@@ -102,12 +112,19 @@ export default function Companies() {
       for (const k of ["logoKey", "bannerKey", "faviconKey", "updatedAt"]) delete body.branding[k];
       const saved = form._id ? await api(`/sa/companies/${form._id}`, { method: "PUT", body }) : await api("/sa/companies", { body });
       const id = form._id || saved._id;
+      // the company itself is saved by now, so an image that fails must not look like the whole save failed
+      const failedImages: string[] = [];
       for (const kind of Object.keys(files) as Kind[]) {
         if (form.s3Enabled === false) break; // images need S3
         const fd = new FormData();
         fd.append("file", files[kind]!);
-        await api(`/sa/companies/${id}/brand-asset/${kind}`, { form: fd });
+        try {
+          await api(`/sa/companies/${id}/brand-asset/${kind}`, { form: fd });
+        } catch (e: any) {
+          failedImages.push(`${kind}: ${e?.message || "upload failed"}`);
+        }
       }
+      if (failedImages.length) toast("err", `Company saved. ${failedImages.join(" · ")}`);
       const s3 = saved?.s3;
       toast(s3?.error ? "err" : "ok", `${form._id ? "Company updated" : "Company created"}${s3?.created ? ` · S3 folder ${s3.folder} created${s3.moved ? ` (${s3.moved} file(s) moved in)` : ""}` : s3?.error ? ` · S3 folder not created: ${s3.error}` : ""}`);
       const created = !form._id;

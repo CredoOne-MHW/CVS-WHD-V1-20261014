@@ -97,8 +97,18 @@ export default function CompanyWorkspace() {
     setDirty(true);
     setForm((p: any) => ({ ...p, branding: { ...p.branding, [k]: v } }));
   }, []);
+  /** Says no to an image the upload would refuse, now, rather than after it has been sent. */
   const pick = (kind: Kind, file?: File | null) => {
     if (!file) return;
+    const MAX_MB = 8;
+    if (file.size > MAX_MB * 1024 * 1024) {
+      toast("err", `${file.name} is ${(file.size / 1024 / 1024).toFixed(1)} MB. The most an image can be is ${MAX_MB} MB — save it smaller and pick it again.`);
+      return;
+    }
+    if (!/^image\/(png|jpe?g|webp|svg\+xml|x-icon|vnd\.microsoft\.icon)$/.test(file.type)) {
+      toast("err", `${file.name} is not an image this accepts. Use PNG, JPG, WebP, SVG or ICO.`);
+      return;
+    }
     setDirty(true);
     setFiles((x) => ({ ...x, [kind]: file }));
     setPreviews((x) => ({ ...x, [kind]: URL.createObjectURL(file) }));
@@ -136,13 +146,21 @@ export default function CompanyWorkspace() {
       if (!body.slug) delete body.slug;
       for (const k of ["logoKey", "bannerKey", "faviconKey", "updatedAt", "sounds"]) delete body.branding[k];
       await api(`/sa/companies/${id}`, { method: "PUT", body });
+      // the details save first and are already kept; an image that fails must say WHICH one, or the person
+      // is left guessing between three uploads
+      const failed: string[] = [];
       for (const kind of Object.keys(files) as Kind[]) {
         if (!files[kind] || form.s3Enabled === false) continue;
         const fd = new FormData();
         fd.append("file", files[kind]!);
-        await api(`/sa/companies/${id}/brand-asset/${kind}`, { form: fd });
+        try {
+          await api(`/sa/companies/${id}/brand-asset/${kind}`, { form: fd });
+        } catch (e: any) {
+          failed.push(`${kind}: ${e?.message || "upload failed"}`);
+        }
       }
-      toast("ok", "Saved");
+      if (failed.length) toast("err", `Details saved. ${failed.join(" · ")}`);
+      else toast("ok", "Saved");
       await load();
     } catch (e: any) {
       toast("err", e.message);
