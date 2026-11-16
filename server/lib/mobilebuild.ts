@@ -18,6 +18,7 @@ import { tenantUrls } from "./tenant";
 import { s3Area } from "../../shared/platform";
 import { bundleIdFor, nextVersion, platformLabel, artifactExt, BUILD_REQUIREMENTS, type Platform, type MobileConfig, type BuildTarget } from "../../shared/mobile";
 import { ensureKey, signingEnabled } from "./signing";
+import { buildSecret, ensureBuildSecret } from "./buildsecret";
 
 const env = (k: string) => (process.env[k] || "").trim();
 export const buildRepo = () => env("GITHUB_BUILD_REPO");
@@ -26,16 +27,22 @@ export const buildRef = () => env("GITHUB_BUILD_REF");
 export const iosEnabled = () => env("MOBILE_IOS_SIGNING") === "1";
 
 /** Which requirements are met — the Knowledge Base article and the Mobile App tab both show this. */
-export function setupState() {
+/**
+ * `platformHeld` are the settings the platform keeps for you when the environment does not set them, so the
+ * checklist must not call them missing. `setupState` takes the ones it has been told about.
+ */
+export function setupState(platformHeld: Record<string, boolean> = {}) {
   return BUILD_REQUIREMENTS.map((r) => {
     const value = r.where === "platform" ? env(r.key) : "";
+    const held = !value && !!platformHeld[r.key]; // kept by the platform rather than set here
     // a value that is present but unusable used to pass silently and then fail the build with a 404
     const problem = r.where === "platform" && value && r.check ? r.check(value) : null;
     return {
       ...r,
       check: undefined, // a function cannot be sent to the browser
       // only the platform's own settings can be checked from here; the repository's secrets are checked by the build itself
-      set: r.where === "platform" ? !!value : null,
+      set: r.where === "platform" ? !!value || held : null,
+      heldByPlatform: held,
       problem,
       value: r.where === "platform" && !r.secret ? value || null : null,
     };
@@ -46,11 +53,11 @@ export function setupState() {
  * Whether a build can be started at all. A setting that is present but malformed counts as missing, because
  * a build started with it fails on GitHub a minute later with nothing useful to show for it.
  */
-export function readyToBuild() {
+export function readyToBuild(platformHeld: Record<string, boolean> = {}) {
   const bad = BUILD_REQUIREMENTS.filter((r) => {
     if (r.where !== "platform") return false;
     const v = env(r.key);
-    if (r.required && !v) return true;
+    if (r.required && !v && !platformHeld[r.key]) return true;
     return !!(v && r.check && r.check(v));
   }).map((r) => r.key);
   return { ok: !bad.length, missing: bad };
@@ -72,11 +79,21 @@ export function appConfig(company: any): Required<Pick<MobileConfig, "appName" |
   } as any;
 }
 
-const sign = (body: string) => `sha256=${createHmac("sha256", env("MOBILE_BUILD_SECRET") || "dev").update(body).digest("hex")}`;
-/** Checks the signature the workflow sends with its result. */
-export function callbackValid(raw: string, header?: string) {
+const sign = (body: string, secret: string) => `sha256=${createHmac("sha256", secret).update(body).digest("hex")}`;
+
+/**
+ * Checks the signature the workflow sends with its result.
+ *
+ * With no secret anywhere this refuses, and deliberately so. It used to fall back to the literal string
+ * "dev" — a value printed in this file — which meant an unconfigured platform accepted anything that knew
+ * to sign with it. A missing secret must fail closed; the platform makes one on its own now, so there is no
+ * reason for it to be missing.
+ */
+export async function callbackValid(raw: string, header?: string) {
   if (!header) return false;
-  const mine = Buffer.from(sign(raw));
+  const { value } = await buildSecret();
+  if (!value) return false;
+  const mine = Buffer.from(sign(raw, value));
   const theirs = Buffer.from(String(header));
   return mine.length === theirs.length && timingSafeEqual(mine, theirs);
 }
@@ -90,6 +107,7 @@ export async function startBuild(company: any, platform: Platform, by: string, o
   if (await MobileBuild.exists({ companyId: company._id, platform, status: { $in: ["queued", "building"] } })) throw new Error(`An ${platformLabel(platform)} build is already running for this company`);
 
   const cfg = appConfig(company);
+  await ensureBuildSecret(by); // so a first build needs nothing set up by hand
   // Android needs one permanent key for the life of the app, so it is made (once) before anything is queued
   let signing: any = null;
   if (platform === "android" && signingEnabled()) signing = await ensureKey(company, by);

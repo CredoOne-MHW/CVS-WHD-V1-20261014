@@ -379,7 +379,13 @@ export function MobileAppTab({ id, canEdit }: { id: string; canEdit: boolean }) 
                   {r.problem ? (
                     <span className="block text-xs font-semibold text-honey-800">{r.problem}</span>
                   ) : (
-                    <span className="block text-xs text-ink-500">{r.where === "github" ? "in the build repository's secrets — checked by the build itself" : r.description}</span>
+                    <span className="block text-xs text-ink-500">
+                      {r.heldByPlatform
+                        ? "Kept by the platform — nothing to set here. Use “Set up secrets in GitHub”, or copy it from the panel above, so the repository has the same value."
+                        : r.where === "github"
+                          ? "in the build repository's secrets — checked by the build itself"
+                          : r.description}
+                    </span>
                   )}
                 </span>
               </div>
