@@ -8,7 +8,7 @@
  *
  * So this asks. Four questions, four plain answers, each with what to do about it.
  */
-import { buildRepo, buildWorkflow, buildRef, WORKFLOW_REVISION } from "./mobilebuild";
+import { buildRepo, buildWorkflow, buildRef, WORKFLOW_REVISION, MOBILE_REVISION } from "./mobilebuild";
 import { signingRoute, SIGNING_HELP } from "./signing";
 
 const env = (k: string) => (process.env[k] || "").trim();
@@ -141,7 +141,32 @@ export async function verifySetup(): Promise<{ ok: boolean; findings: Finding[] 
     findings.push({ key: "actions", label: "Actions", ok: false, detail: "Could not check Actions." });
   }
 
-  /* 5 — can an Android app actually be signed? Neither route set up means a build that gets all the way to
+  /* 5 — is the app source in the repository the one this platform ships? Pushing .github without mobile
+         leaves the app's dependencies behind, and the build then dies inside Metro. */
+  try {
+    const res = await gh(`/repos/${repo}/contents/${encodeURIComponent("mobile/package.json")}?ref=${encodeURIComponent(branch)}`);
+    if (!res.ok) {
+      findings.push({
+        key: "app", label: "App source", ok: false,
+        detail: `mobile/package.json is not on branch ${branch}.`,
+        fix: "Push the mobile folder from the current release to that branch — it is the app the build compiles.",
+      });
+    } else {
+      const body: any = await res.json();
+      const found = JSON.parse(Buffer.from(body.content || "", "base64").toString("utf8") || "{}").version;
+      if (found === MOBILE_REVISION) findings.push({ key: "app", label: "App source", ok: true, detail: `mobile/ is revision ${found} — current.` });
+      else
+        findings.push({
+          key: "app", label: "App source", ok: false,
+          detail: `mobile/ on ${branch} is revision ${found || "unmarked"}; this platform ships ${MOBILE_REVISION}.`,
+          fix: "Push the mobile folder from the current release. Its dependencies and the platform are shipped together, so an older copy fails inside Metro on a module the platform expects.",
+        });
+    }
+  } catch {
+    findings.push({ key: "app", label: "App source", ok: true, detail: "Not checked." });
+  }
+
+  /* 6 — can an Android app actually be signed? Neither route set up means a build that gets all the way to
          the signing step and dies there, which costs ten minutes to discover. */
   try {
     const { route, missing } = await signingRoute(true);

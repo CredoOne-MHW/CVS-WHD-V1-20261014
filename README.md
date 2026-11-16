@@ -958,3 +958,11 @@ Two workflow helpers were written in Python and are now `.mjs`. `play-upload.mjs
 A release is **platform code** (deployed to Vercel) and **`.github/` + `mobile/`** (pushed to the build repository). Only the first is a deploy; the second is a git push, and when it is skipped GitHub keeps running an old workflow while the platform reports on its own current settings. A build then fails on something fixed releases ago and nothing on screen explains it — that happened three times before this was addressed.
 
 `build-mobile.yml` now carries `# lms-workflow: <rev>` and the platform holds `WORKFLOW_REVISION`. `verifySetup()` reads the repository's copy, decodes it, and compares. Bump the constant **only** when the workflow or one of its scripts changes, or the panel cries wolf on every release — and `tests/workflow-scripts.test.ts` fails if the marker and the constant ever disagree, because a check that lies is worse than no check.
+
+## 32. v1.8.12 — only bundling finds a missing module
+
+`pusher-js/react-native` requires `@react-native-community/netinfo` internally and declares it nowhere, so npm never warned and a sweep of our own imports could not see it — nothing in our code imports it. Gradle found it four and a half minutes into a build.
+
+**`npm run verify:bundle`** installs the app's dependencies and runs Metro exactly as Gradle's bundle step does, in about forty seconds. Run it before shipping anything that touches `mobile/`. An import sweep and an unmet-peer check are both worth doing, and neither would have caught this one.
+
+`MOBILE_REVISION` joins `WORKFLOW_REVISION`: the platform now notices a stale `mobile/` in the repository as well as a stale `.github/`, since pushing one half without the other was costing a build each time.
