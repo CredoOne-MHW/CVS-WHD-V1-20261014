@@ -49,6 +49,12 @@ const expected = /WORKFLOW_REVISION = "([\w.\-]+)"/.exec(readFileSync("server/li
 check("the workflow carries a revision marker", !!marker, true);
 check("and the platform expects that same revision", marker, expected);
 
+/* the same for the app source — pushing one half without the other is what this guards */
+const mobileVersion = JSON.parse(readFileSync("mobile/package.json", "utf8")).version;
+const mobileExpected = /MOBILE_REVISION = "([\w.\-]+)"/.exec(readFileSync("server/lib/mobilebuild.ts", "utf8"))?.[1];
+check("mobile/package.json carries a revision", !!mobileVersion, true);
+check("and the platform expects that same one", mobileVersion, mobileExpected);
+
 /* the signing config rewrite is the one with real logic in it, so it is exercised properly */
 const dir = mkdtempSync(join(tmpdir(), "gradle-"));
 mkdirSync(join(dir, "android/app"), { recursive: true });
