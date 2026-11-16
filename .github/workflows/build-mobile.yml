@@ -1,5 +1,12 @@
 name: Build mobile app
 
+# lms-workflow: 1.8.11
+#
+# That line is read by Super Admin › Mobile App Release › Check GitHub setup. The platform knows which
+# revision it expects, so if this file in the repository is older than the platform, the panel says so by
+# name instead of a build failing on something that was fixed releases ago. It only changes when this
+# workflow or its scripts change.
+#
 # One company's app, one platform, one build.
 #
 # Super Admin › Company › Mobile App › Build dispatches this with everything the build needs. The finished,
@@ -141,7 +148,7 @@ jobs:
             echo "MYAPP_UPLOAD_STORE_PASSWORD=$STORE_PW"
             echo "MYAPP_UPLOAD_KEY_PASSWORD=$KEY_PW"
           } >> android/gradle.properties
-          python3 .github/scripts/android-signing-config.py
+          node ../.github/scripts/android-signing-config.mjs .
 
       # Google Play takes an Android App Bundle and makes the phone-ready files itself; an .apk is what you
       # hand to a phone directly. They are different artefacts, so the target decides which one is built.
@@ -228,9 +235,8 @@ jobs:
             exit 0
           fi
           printf '%s' "$SA_JSON" > /tmp/play.json
-          python3 -m pip install --quiet google-api-python-client google-auth
           PLAY_AAB="$(ls android/app/build/outputs/bundle/release/*.aab | head -1)" \
-            python3 .github/scripts/play-upload.py
+            node ../.github/scripts/play-upload.mjs
           rm -f /tmp/play.json
 
       - name: Send to App Store Connect
