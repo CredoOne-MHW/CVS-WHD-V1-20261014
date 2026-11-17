@@ -136,8 +136,16 @@ export const BUILD_REQUIREMENTS: BuildRequirement[] = [
   { key: "MOBILE_BASE_VERSION", where: "platform", label: "Base version", description: "Builds are numbered <base>.<n> per company", required: false },
   { key: "MOBILE_PACKAGE_PREFIX", where: "platform", label: "Application id prefix", description: "e.g. in.credoone.lms → in.credoone.lms.<company>", required: false },
   { key: "MOBILE_IOS_SIGNING", where: "platform", label: "iOS signing on", description: "Set to 1 once the iOS certificates are in the repository's secrets", required: false },
-  { key: "S3_BUCKET", where: "platform", label: "S3 bucket", description: "Finished apps are uploaded to each company's folder", required: true },
+  { key: "S3_BUCKET", where: "platform", label: "S3 bucket", description: "Finished apps go to each company's folder. The platform sends this name with every build, so it is not set twice.", required: true },
   { key: "AWS_ACCESS_KEY_ID", where: "platform", label: "AWS key", description: "Must be able to write to that bucket", required: true, secret: true },
+  {
+    key: "AWS_ACCESS_KEY_ID (repository)",
+    where: "github",
+    label: "AWS key, in the build repository",
+    description: "The upload runs on the GitHub runner, not on the platform, so AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY must also be repository secrets. Without them a finished app has nowhere to go.",
+    required: true,
+    secret: true,
+  },
   {
     key: "GOOGLE_PLAY_SERVICE_ACCOUNT_JSON",
     where: "github",
