@@ -1,8 +1,8 @@
 {
   "name": "leadhive-lms",
-  "version": "1.8.15",
+  "version": "1.8.16",
   "private": true,
-  "description": "Multi-tenant Lead Management System \u2014 Next.js UI + Express API (Vercel), MongoDB, S3",
+  "description": "Multi-tenant Lead Management System — Next.js UI + Express API (Vercel), MongoDB, S3",
   "scripts": {
     "dev": "next dev",
     "build": "next build",
@@ -17,10 +17,11 @@
     "releases": "node scripts/build-releases.mjs",
     "test:gate": "tsx tests/build-gate.test.ts",
     "test:errors": "tsx tests/error-messages.test.ts",
-    "test": "npm run test:gate && npm run test:errors && npm run test:signing && npm run test:workflow",
+    "test": "npm run test:gate && npm run test:errors && npm run test:signing && npm run test:workflow && npm run test:routes",
     "test:signing": "tsx tests/signing-key.test.ts",
     "test:workflow": "tsx tests/workflow-scripts.test.ts",
-    "verify:bundle": "cd mobile && npm ci --no-audit --no-fund && npx expo export --platform android --output-dir /tmp/lms-bundle-check --clear"
+    "verify:bundle": "cd mobile && npm ci --no-audit --no-fund && npx expo export --platform android --output-dir /tmp/lms-bundle-check --clear",
+    "test:routes": "tsx tests/router-params.test.ts"
   },
   "engines": {
     "node": ">=20"
