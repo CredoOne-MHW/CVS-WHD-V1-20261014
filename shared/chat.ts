@@ -9,11 +9,13 @@
 export const THREAD_KINDS = ["direct", "group"] as const;
 export type ThreadKind = (typeof THREAD_KINDS)[number];
 
-export const MESSAGE_KINDS = ["text", "system"] as const;
+export const MESSAGE_KINDS = ["text", "system", "file"] as const;
 export type MessageKind = (typeof MESSAGE_KINDS)[number];
 
 export const LIMITS = {
   message: 4000, // characters
+  /** One attachment. Big enough for a photo from a phone or a scanned document, small enough to send. */
+  fileMb: 15,
   groupName: 60,
   groupMembers: 500,
   page: 50, // messages fetched at a time
@@ -56,6 +58,30 @@ export const EVENTS = {
   typing: "typing",
   notice: "notice",
 } as const;
+
+/** What an attachment may be. Anything else is refused by name, so nobody waits for a failed upload. */
+export const FILE_TYPES: Record<string, string> = {
+  "image/png": "png",
+  "image/jpeg": "jpg",
+  "image/webp": "webp",
+  "image/heic": "heic",
+  "application/pdf": "pdf",
+  "application/msword": "doc",
+  "application/vnd.openxmlformats-officedocument.wordprocessingml.document": "docx",
+  "application/vnd.ms-excel": "xls",
+  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": "xlsx",
+  "text/csv": "csv",
+  "text/plain": "txt",
+};
+export const fileAccepted = (mime: string) => !!FILE_TYPES[String(mime || "").toLowerCase()];
+export const isImage = (mime?: string) => /^image\//.test(String(mime || ""));
+/** "2.4 MB", "812 KB" — what a person needs before deciding to open something. */
+export const fileSize = (bytes?: number) => {
+  const n = Number(bytes) || 0;
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${Math.round(n / 1024)} KB`;
+  return `${(n / 1024 / 1024).toFixed(1)} MB`;
+};
 
 /** A notice an administrator shows across the top of every screen in the apps. */
 export const NOTICE_TONES = ["info", "warning", "success"] as const;

@@ -1,6 +1,6 @@
 {
   "name": "credoone-lms-mobile",
-  "version": "1.8.14",
+  "version": "1.9.0",
   "private": true,
   "main": "index.js",
   "scripts": {
@@ -19,6 +19,7 @@
     "expo": "51.0.39",
     "expo-constants": "16.0.2",
     "expo-device": "6.0.2",
+    "expo-document-picker": "12.0.2",
     "expo-notifications": "0.28.19",
     "expo-status-bar": "1.12.1",
     "pusher-js": "8.4.0",

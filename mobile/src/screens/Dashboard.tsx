@@ -31,11 +31,20 @@ export default function Dashboard() {
       </View>
     );
 
+  /**
+   * Read straight from what /co/dashboard/overview actually returns.
+   *
+   * These four used to read `totals.newLeads`, `dueToday`, `won` and `clients` — a shape the endpoint has
+   * never had. Three of them silently fell back to 0, which looked like a quiet day rather than a bug, and
+   * the fourth found `clients`, which is an object, and rendered it as "[object Object]". That mismatch is
+   * what gave it away; the three zeros would have gone on lying indefinitely.
+   */
+  const num = (v: any) => (typeof v === "number" && Number.isFinite(v) ? v : 0);
   const cards = [
-    { label: "New leads", value: d?.totals?.newLeads ?? d?.newLeads ?? 0, hint: "last 30 days" },
-    { label: "Follow-ups due", value: d?.totals?.dueToday ?? d?.dueToday ?? 0, hint: "today" },
-    { label: "Converted", value: d?.totals?.won ?? d?.won ?? 0, hint: "last 30 days" },
-    { label: "Clients", value: d?.totals?.clients ?? d?.clients ?? 0, hint: "in all" },
+    { label: "New leads", value: num(d?.leads?.total), hint: `last ${d?.days ?? 30} days` },
+    { label: "Follow-ups due", value: num(d?.followups?.dueToday), hint: "today" },
+    { label: "Converted", value: num(d?.leads?.won), hint: `last ${d?.days ?? 30} days` },
+    { label: "Clients", value: num(d?.clients?.total), hint: "in all" },
   ];
 
   return (

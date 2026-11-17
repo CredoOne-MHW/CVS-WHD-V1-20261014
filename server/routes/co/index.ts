@@ -757,15 +757,83 @@ r.post("/integrations/events/:eventId/retry", can("integrations", "update"), h(a
 }));
 
 /* ───────────── Users (assigned roles) ───────────── */
-r.get("/users", can("roles:users", "read"), h(async (req, res) => {
-  res.json(await User.find({ companyId: req.auth!.companyId }).select("name email phone roleId isOwner active lastLoginAt").sort({ isOwner: -1, name: 1 }).lean());
+
+/**
+ * Names to pick from when tying a customer's sign-in to the record they already exist as.
+ *
+ * Clients and leads both live in the Lead collection — a client is a lead that converted — so one search
+ * covers both and says which is which. It answers to a few letters of a name, a phone number, an e-mail
+ * address or a client code, capped at 20, because this feeds a dropdown somebody is typing into: it has to
+ * come back inside a keystroke, and a list longer than a screenful is no more useful than a short one.
+ */
+r.get("/people-lookup", can("roles:users", "read"), h(async (req, res) => {
+  const q = String(req.query.q || "").trim();
+  const find: any = { ...tenant(req), deletedAt: null };
+  if (q) {
+    const rx = new RegExp(q.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i");
+    find.$or = [{ name: rx }, { companyName: rx }, { phone: rx }, { whatsapp: rx }, { email: rx }, { clientCode: rx }];
+  }
+  const rows = await Lead.find(find).select("name companyName phone whatsapp email isClient clientCode").sort({ isClient: -1, updatedAt: -1 }).limit(20).lean<any[]>();
+  res.json({
+    results: rows.map((l) => ({
+      id: String(l._id),
+      kind: l.isClient ? "client" : "lead",
+      label: l.name || l.companyName || l.clientCode || l.phone || "Unnamed",
+      sub: [l.isClient ? l.clientCode : null, l.companyName && l.companyName !== l.name ? l.companyName : null, l.phone || l.whatsapp, l.email].filter(Boolean).join(" · "),
+    })),
+  });
 }));
+
+/**
+ * Just the roles' names, for the one question "which role does this person get?".
+ *
+ * `/co/roles` carries the whole permission grid and is gated on Role Management › Roles. Somebody who may
+ * add users but not edit roles does not have that, which left them able to open the Users screen and unable
+ * to create anybody — the role list it needs was behind a permission they were never given. This answers
+ * the narrower question under the narrower permission, and exposes no grid.
+ */
+r.get("/assignable-roles", can("roles:users", "read"), h(async (req, res) => {
+  res.json({ roles: await Role.find({ companyId: req.auth!.companyId }).select("name").sort({ name: 1 }).lean() });
+}));
+
+r.get("/users", can("roles:users", "read"), h(async (req, res) => {
+  const list = await User.find({ companyId: req.auth!.companyId }).select("name email phone roleId isOwner active lastLoginAt kind clientId leadId").sort({ isOwner: -1, name: 1 }).lean<any[]>();
+  /**
+   * The name of whatever each customer is mapped to, resolved here rather than in the browser.
+   *
+   * Otherwise the users table would fire one request per customer row to show a name it could have been
+   * given with the list — the kind of thing that turns a fast page into a slow one as a company grows.
+   */
+  const ids = list.map((u) => u.clientId || u.leadId).filter(Boolean);
+  const names = new Map(
+    ids.length ? (await Lead.find({ _id: { $in: ids }, ...tenant(req) }).select("name companyName clientCode").lean<any[]>()).map((l: any) => [String(l._id), l.name || l.companyName || l.clientCode || "—"]) : []
+  );
+  res.json(list.map((u) => ({ ...u, mappedTo: names.get(String(u.clientId || u.leadId)) || null })));
+}));
+
+/** The mapping a customer sign-in may carry. Optional — a customer with no record yet still gets to talk. */
+const mapping = z.object({
+  kind: z.enum(["staff", "customer"]).optional(),
+  clientId: z.string().regex(/^[a-f0-9]{24}$/).optional().or(z.literal("")),
+  leadId: z.string().regex(/^[a-f0-9]{24}$/).optional().or(z.literal("")),
+});
+
+/** Checks a mapping belongs to this company, and keeps a client in clientId and a lead in leadId. */
+async function resolveMapping(req: any, b: { kind?: string; clientId?: string; leadId?: string }) {
+  const id = b.clientId || b.leadId;
+  if (!id) return { kind: b.kind || "staff", clientId: undefined, leadId: undefined };
+  const row = await Lead.findOne({ _id: id, ...tenant(req), deletedAt: null }).select("isClient name").lean<any>();
+  if (!row) throw badRequest("That client or lead is not in this company");
+  return { kind: "customer", clientId: row.isClient ? row._id : undefined, leadId: row.isClient ? undefined : row._id };
+}
+
 r.post("/users", can("roles:users", "create"), h(async (req, res) => {
-  const b = parse(z.object({ name: z.string().min(2), email: z.string().email(), phone: z.string().regex(/^\d{10}$/).optional().or(z.literal("")), password: z.string().min(8), roleId: z.string() }), req.body);
+  const b = parse(z.object({ name: z.string().min(2), email: z.string().email(), phone: z.string().regex(/^\d{10}$/).optional().or(z.literal("")), password: z.string().min(8), roleId: z.string() }).merge(mapping), req.body);
   const plan = await Plan.findOne({ name: req.auth!.plan }).lean<any>();
   if (plan?.userLimit && (await User.countDocuments({ companyId: req.auth!.companyId })) >= plan.userLimit) throw new HttpError(402, `Your plan allows ${plan.userLimit} users`);
   if (!(await Role.exists({ _id: b.roleId, companyId: req.auth!.companyId }))) throw badRequest("Unknown role");
-  const u = await User.create({ scope: "company", companyId: req.auth!.companyId, name: b.name, email: b.email.toLowerCase(), phone: b.phone || undefined, passwordHash: await bcrypt.hash(b.password, 12), roleId: b.roleId });
+  const map = await resolveMapping(req, b);
+  const u = await User.create({ scope: "company", companyId: req.auth!.companyId, name: b.name, email: b.email.toLowerCase(), phone: b.phone || undefined, passwordHash: await bcrypt.hash(b.password, 12), roleId: b.roleId, ...map });
   if (u.phone) {
     // welcome with the login address (never the password)
     const [co, role] = await Promise.all([Company.findById(req.auth!.companyId).select("name slug customDomain").lean<any>(), Role.findById(b.roleId).select("name").lean<any>()]);
@@ -777,12 +845,17 @@ r.post("/users", can("roles:users", "create"), h(async (req, res) => {
   res.status(201).json({ _id: u._id, name: u.name, email: u.email });
 }));
 r.put("/users/:id", can("roles:users", "update"), h(async (req, res) => {
-  const b = parse(z.object({ name: z.string().optional(), phone: z.string().optional(), roleId: z.string().optional(), active: z.boolean().optional(), password: z.string().min(8).optional() }), req.body);
+  const b = parse(z.object({ name: z.string().optional(), phone: z.string().optional(), roleId: z.string().optional(), active: z.boolean().optional(), password: z.string().min(8).optional() }).merge(mapping), req.body);
   const u = await User.findOne({ _id: req.params.id, companyId: req.auth!.companyId });
   if (!u) throw notFound();
   if (u.isOwner && (b.roleId || b.active === false)) throw forbidden("The company owner always keeps full access");
-  const { password, ...rest } = b;
+  const { password, kind, clientId, leadId, ...rest } = b;
   u.set(rest);
+  // the mapping is only touched when the form actually sent one, so an edit of a name cannot silently unlink
+  if (kind !== undefined || clientId !== undefined || leadId !== undefined) {
+    const map = await resolveMapping(req, { kind, clientId, leadId });
+    u.set({ kind: map.kind, clientId: map.clientId ?? null, leadId: map.leadId ?? null });
+  }
   if (password) {
     u.passwordHash = await bcrypt.hash(password, 12);
     u.tokenVersion += 1;
