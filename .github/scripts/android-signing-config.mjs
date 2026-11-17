@@ -20,12 +20,23 @@ import { join } from "path";
 const projectDir = process.argv[2] || "mobile";
 const file = join(projectDir, "android/app/build.gradle");
 
+/**
+ * `findProperty` rather than a bare name, and a message rather than a Groovy error.
+ *
+ * A bare `MYAPP_UPLOAD_STORE_FILE` that is not defined fails with "Could not get unknown property … for
+ * SigningConfig$AgpDecorated_Decorated{…}", seventy seconds into Gradle, which says nothing about what to
+ * do. This says which property is missing and where it was supposed to come from.
+ */
 const RELEASE_CONFIG = `signingConfigs {
         release {
-            storeFile file(MYAPP_UPLOAD_STORE_FILE)
-            storePassword MYAPP_UPLOAD_STORE_PASSWORD
-            keyAlias MYAPP_UPLOAD_KEY_ALIAS
-            keyPassword MYAPP_UPLOAD_KEY_PASSWORD
+            def ks = findProperty('MYAPP_UPLOAD_STORE_FILE')
+            if (!ks) {
+                throw new GradleException("MYAPP_UPLOAD_STORE_FILE is not set in android/gradle.properties. The workflow's \\"Signing key\\" step writes it; if this build skipped that step, no release key was collected.")
+            }
+            storeFile file(ks)
+            storePassword findProperty('MYAPP_UPLOAD_STORE_PASSWORD')
+            keyAlias findProperty('MYAPP_UPLOAD_KEY_ALIAS')
+            keyPassword findProperty('MYAPP_UPLOAD_KEY_PASSWORD')
         }`;
 
 if (!existsSync(file)) {
