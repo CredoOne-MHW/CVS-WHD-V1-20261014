@@ -1,6 +1,6 @@
 name: Build mobile app
 
-# lms-workflow: 1.10.0
+# lms-workflow: 1.11.1
 #
 # That line is read by Super Admin › Mobile App Release › Check GitHub setup. The platform knows which
 # revision it expects, so if this file in the repository is older than the platform, the panel says so by
@@ -190,12 +190,15 @@ jobs:
             echo "::error::No signing key. Set MOBILE_SIGNING_SECRET on the platform (it then makes and keeps one key per company), or add the four ANDROID_* secrets here. A build signed with a throw-away key cannot be updated over."
             exit 1
           fi
-          {
-            echo "MYAPP_UPLOAD_STORE_FILE=release.jks"
-            echo "MYAPP_UPLOAD_KEY_ALIAS=$ALIAS"
-            echo "MYAPP_UPLOAD_STORE_PASSWORD=$STORE_PW"
-            echo "MYAPP_UPLOAD_KEY_PASSWORD=$KEY_PW"
-          } >> android/gradle.properties
+          # Not appended with >>. gradle.properties is written by `expo prebuild` and does not always end
+          # in a newline — with expo-build-properties installed it ends "android.extraMavenRepos=[]" with
+          # none, which glued the first property onto that line and left Gradle unable to find it. The
+          # script reads, replaces and writes back, then checks Gradle will really find all four.
+          node ../.github/scripts/gradle-props.mjs android/gradle.properties \
+            "MYAPP_UPLOAD_STORE_FILE=release.jks" \
+            "MYAPP_UPLOAD_KEY_ALIAS=$ALIAS" \
+            "MYAPP_UPLOAD_STORE_PASSWORD=$STORE_PW" \
+            "MYAPP_UPLOAD_KEY_PASSWORD=$KEY_PW"
           node ../.github/scripts/android-signing-config.mjs .
 
       # Google Play takes an Android App Bundle and makes the phone-ready files itself; an .apk is what you
