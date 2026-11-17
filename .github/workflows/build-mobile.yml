@@ -1,6 +1,6 @@
 name: Build mobile app
 
-# lms-workflow: 1.8.11
+# lms-workflow: 1.8.13
 #
 # That line is read by Super Admin › Mobile App Release › Check GitHub setup. The platform knows which
 # revision it expects, so if this file in the repository is older than the platform, the panel says so by
@@ -87,7 +87,13 @@ jobs:
           AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           AWS_DEFAULT_REGION: ${{ secrets.AWS_REGION || 'ap-south-1' }}
         run: |
-          aws s3 cp "s3://${{ secrets.S3_BUCKET }}/${{ inputs.company_code }}/branding/app-icon.png" assets/company-icon.png || true
+          # the same address the finished file goes to, so the icon is looked for in the right bucket
+          PREFIX="${{ inputs.s3_prefix }}"
+          case "$PREFIX" in
+            s3://*) REST="${PREFIX#s3://}"; ICON_BUCKET="${REST%%/*}" ;;
+            *) ICON_BUCKET="${{ secrets.S3_BUCKET }}" ;;
+          esac
+          [ -n "$ICON_BUCKET" ] && aws s3 cp "s3://$ICON_BUCKET/${{ inputs.company_code }}/branding/app-icon.png" assets/company-icon.png || true
 
       - name: Brand this build
         run: node scripts/brand.mjs
@@ -211,8 +217,27 @@ jobs:
             SRC=$(ls ios/build/ipa/*.ipa | head -1)
             NAME="$(echo ${{ inputs.company_code }} | tr '[:upper:]' '[:lower:]')-ios-${{ inputs.version }}.ipa"
           fi
-          KEY="${{ inputs.s3_prefix }}/$NAME"
-          aws s3 cp "$SRC" "s3://${{ secrets.S3_BUCKET }}/$KEY"
+          # The platform sends a full s3:// address when it knows its bucket (v1.8.13), so the bucket is not
+          # configured twice. An older platform sends a bare prefix, and then the repository secret is used.
+          PREFIX="${{ inputs.s3_prefix }}"
+          case "$PREFIX" in
+            s3://*)
+              REST="${PREFIX#s3://}"
+              BUCKET="${REST%%/*}"
+              # with no path after the bucket, ${REST#*/} returns REST unchanged and would repeat the
+              # bucket name inside the key
+              if [ "$REST" = "$BUCKET" ]; then KEY="$NAME"; else KEY="${REST#*/}/$NAME"; fi
+              ;;
+            *)
+              BUCKET="${{ secrets.S3_BUCKET }}"
+              KEY="$PREFIX/$NAME"
+              ;;
+          esac
+          if [ -z "$BUCKET" ]; then
+            echo "::error::No S3 bucket. Set S3_BUCKET on the platform (it then sends it with every build), or add an S3_BUCKET secret to this repository. The app built fine — only the upload had nowhere to go."
+            exit 1
+          fi
+          aws s3 cp "$SRC" "s3://$BUCKET/$KEY"
           echo "file_key=$KEY" >> $GITHUB_OUTPUT
           echo "file_name=$NAME" >> $GITHUB_OUTPUT
           echo "file_size=$(stat -f%z "$SRC" 2>/dev/null || stat -c%s "$SRC")" >> $GITHUB_OUTPUT
