@@ -6,12 +6,12 @@
  * e-mail address, only a name and a role. Administrators get two extra tabs: Groups and Notices.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { MessageCircle, Users, Megaphone, Search, Send, Plus, Check, X } from "lucide-react";
+import { MessageCircle, Users, Megaphone, Search, Send, Plus, Check, X, Paperclip, FileText, Download } from "lucide-react";
 import { api } from "@/lib/api";
 import { PageHeader, Spinner, Empty, Btn, Badge, Modal, Field, useToast } from "@/components/ui";
 import { subscribe, poller, realtimeConfig, isLive } from "@/lib/realtime";
 import { useMe } from "@/components/Shell";
-import { threadTitle, shortTime, LIMITS, EVENTS, NOTICE_TONES, type PublicMember } from "@shared/chat";
+import { threadTitle, shortTime, LIMITS, EVENTS, NOTICE_TONES, FILE_TYPES, fileAccepted, fileSize, isImage, type PublicMember } from "@shared/chat";
 
 type Thread = any;
 
@@ -224,6 +224,33 @@ function ThreadPane({ threadId, onSent }: { threadId: string; onSent: () => void
     }
   };
 
+  /**
+   * Sending a file.
+   *
+   * Refused in the browser before anything is uploaded when the type is not one the server takes or the file
+   * is over the limit — waiting out a 15 MB upload to be told it was never going to be accepted is a poor way
+   * to find out. The message the server creates comes back and is appended exactly like a typed one.
+   */
+  const sendFile = async (f: File | null | undefined) => {
+    if (!f || sending) return;
+    if (!fileAccepted(f.type)) return alert(`${f.name} is not a kind of file this takes. Images, PDF, Word, Excel, CSV and text files are fine.`);
+    if (f.size > LIMITS.fileMb * 1024 * 1024) return alert(`${f.name} is ${fileSize(f.size)}. The limit is ${LIMITS.fileMb} MB.`);
+    setSending(true);
+    try {
+      const form = new FormData();
+      form.append("file", f);
+      const msg = await api<any>(`/co/chat/threads/${threadId}/files`, { form });
+      setData((d: any) => (d && !(d.messages || []).some((x: any) => String(x._id) === String(msg._id)) ? { ...d, messages: [...d.messages, msg] } : d));
+      lastAt.current = msg.createdAt;
+      scroll();
+      onSent();
+    } catch (e: any) {
+      alert(e?.message || "The file did not go out — try again.");
+    } finally {
+      setSending(false);
+    }
+  };
+
   if (!data) return <div className="flex h-96 items-center justify-center"><Spinner className="h-5 w-5" /></div>;
   const title = threadTitle(data.thread, meId);
 
@@ -248,7 +275,7 @@ function ThreadPane({ threadId, onSent }: { threadId: string; onSent: () => void
             <div key={m._id} className={`flex ${m.mine ? "justify-end" : "justify-start"}`}>
               <div className={`max-w-[80%] rounded-2xl px-3 py-2 text-sm shadow-sm ${m.mine ? "bg-hive-600 text-white" : "bg-white text-ink-800"}`}>
                 {!m.mine && data.thread.kind === "group" && <p className="mb-0.5 text-[11px] font-bold text-hive-700">{m.byName}</p>}
-                <p className="whitespace-pre-wrap break-words">{m.text}</p>
+                {m.kind === "file" && m.file ? <FileBubble msg={m} /> : <p className="whitespace-pre-wrap break-words">{m.text}</p>}
                 <p className={`mt-1 text-right text-[10px] ${m.mine ? "text-hive-100" : "text-ink-400"}`}>{shortTime(m.createdAt)}</p>
               </div>
             </div>
@@ -258,6 +285,18 @@ function ThreadPane({ threadId, onSent }: { threadId: string; onSent: () => void
       </div>
 
       <div className="flex items-end gap-2 border-t border-ink-100 p-3">
+        <label className={`btn-ghost h-10 shrink-0 cursor-pointer ${sending ? "pointer-events-none opacity-50" : ""}`} title={`Attach a file (up to ${LIMITS.fileMb} MB)`} aria-label="Attach a file">
+          <Paperclip className="h-4 w-4" />
+          <input
+            type="file"
+            className="hidden"
+            accept={Object.keys(FILE_TYPES).join(",")}
+            onChange={(e) => {
+              sendFile(e.target.files?.[0]);
+              e.target.value = ""; // so the same file can be sent twice
+            }}
+          />
+        </label>
         <textarea
           className="input max-h-28 min-h-10 flex-1 resize-none py-2"
           rows={1}
@@ -279,6 +318,64 @@ function ThreadPane({ threadId, onSent }: { threadId: string; onSent: () => void
           <Send className="h-4 w-4" />
         </Btn>
       </div>
+    </div>
+  );
+}
+
+/**
+ * An attachment in a conversation.
+ *
+ * The bucket is private and nothing in a message carries a usable address: the link is asked for when
+ * somebody actually wants the file, and the one that comes back stops working after five minutes. That is
+ * also why an image is not shown until its link is fetched — a thumbnail would need the same link, so the
+ * first click fetches it and the picture appears in place.
+ */
+function FileBubble({ msg }: { msg: any }) {
+  const [url, setUrl] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+  const f = msg.file || {};
+  const image = isImage(f.mime);
+
+  const fetchUrl = async () => {
+    if (url || busy) return url;
+    setBusy(true);
+    setErr("");
+    try {
+      const r = await api<any>(`/co/chat/files/${msg._id}`);
+      setUrl(r.url);
+      return r.url as string;
+    } catch (e: any) {
+      setErr(e?.message || "That file could not be opened.");
+      return null;
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  if (image && url) return <img src={url} alt={f.name} className="max-h-64 rounded-xl" />;
+
+  return (
+    <div className="min-w-[12rem]">
+      <button
+        type="button"
+        className="flex w-full items-center gap-2 text-left"
+        onClick={async () => {
+          const u = await fetchUrl();
+          if (u && !image) window.open(u, "_blank", "noopener");
+        }}
+      >
+        <span className={`grid h-9 w-9 shrink-0 place-items-center rounded-lg ${msg.mine ? "bg-white/20" : "bg-hive-100"}`}>
+          {busy ? <Spinner className="h-4 w-4" /> : image ? <Download className="h-4 w-4" /> : <FileText className="h-4 w-4" />}
+        </span>
+        <span className="min-w-0">
+          <span className="block truncate font-semibold">{f.name}</span>
+          <span className={`block text-[11px] ${msg.mine ? "text-hive-100" : "text-ink-400"}`}>
+            {fileSize(f.size)} · {image ? "click to view" : "click to open"}
+          </span>
+        </span>
+      </button>
+      {err && <p className="mt-1 text-[11px] text-red-600">{err}</p>}
     </div>
   );
 }

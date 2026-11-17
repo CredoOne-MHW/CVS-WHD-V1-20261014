@@ -6,13 +6,36 @@
  * poor comes back with the text still in the box instead of losing it.
  */
 import { useCallback, useEffect, useRef, useState } from "react";
-import { ActivityIndicator, FlatList, KeyboardAvoidingView, Modal, Platform, Pressable, RefreshControl, StyleSheet, Text, TextInput, View } from "react-native";
+import { ActivityIndicator, FlatList, Image, KeyboardAvoidingView, Linking, Modal, Platform, Pressable, RefreshControl, StyleSheet, Text, TextInput, View } from "react-native";
 import { createNativeStackNavigator } from "@react-navigation/native-stack";
+import * as DocumentPicker from "expo-document-picker";
 import { api } from "../lib/api";
 import { subscribe, poller, setLiveConfig, isLive } from "../lib/live";
 import { T } from "../theme";
 
 const LIMIT_MESSAGE = 4000;
+const LIMIT_FILE_MB = 15;
+/** The same list the server takes, so a file is never uploaded only to be refused on arrival. */
+const FILE_MIMES = [
+  "image/png",
+  "image/jpeg",
+  "image/webp",
+  "image/heic",
+  "application/pdf",
+  "application/msword",
+  "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  "application/vnd.ms-excel",
+  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  "text/csv",
+  "text/plain",
+];
+const isImageMime = (m?: string) => /^image\//.test(String(m || ""));
+const fileSize = (bytes?: number) => {
+  const n = Number(bytes) || 0;
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${Math.round(n / 1024)} KB`;
+  return `${(n / 1024 / 1024).toFixed(1)} MB`;
+};
 const Stack = createNativeStackNavigator();
 
 const initials = (n: string) => n.split(/\s+/).filter(Boolean).slice(0, 2).map((w) => w[0]?.toUpperCase()).join("") || "?";
@@ -199,6 +222,7 @@ function Thread({ route, me }: any) {
   const [data, setData] = useState<any>(null);
   const [text, setText] = useState("");
   const [sending, setSending] = useState(false);
+  const [note, setNote] = useState(""); // why an attachment did not go out, shown above the composer
   const meId = String(me?.userId || "");
   const lastAt = useRef<string | null>(null);
   const list = useRef<FlatList<any> | null>(null);
@@ -264,6 +288,39 @@ function Thread({ route, me }: any) {
     }
   };
 
+  /**
+   * Attaching a file from the phone.
+   *
+   * The system picker is used rather than a photo-library permission, so nothing has to be granted before a
+   * person can send a document, and a picture is reachable through it too. React Native's FormData takes the
+   * `{ uri, name, type }` shape and streams the file itself, so a 15 MB photo never has to be read into
+   * memory as a string first.
+   */
+  const attach = async () => {
+    if (sending) return;
+    const picked = await DocumentPicker.getDocumentAsync({ type: FILE_MIMES, copyToCacheDirectory: true, multiple: false }).catch(() => null);
+    const f = picked && !picked.canceled ? picked.assets?.[0] : null;
+    if (!f) return;
+    if (f.size && f.size > LIMIT_FILE_MB * 1024 * 1024) {
+      setNote(`That file is ${fileSize(f.size)}. The limit is ${LIMIT_FILE_MB} MB.`);
+      return;
+    }
+    setSending(true);
+    setNote("");
+    try {
+      const form = new FormData();
+      form.append("file", { uri: f.uri, name: f.name || "file", type: f.mimeType || "application/octet-stream" } as any);
+      const msg = await api(`/co/chat/threads/${threadId}/files`, { form });
+      setData((d: any) => (d && !(d.messages || []).some((x: any) => String(x._id) === String(msg._id)) ? { ...d, messages: [...d.messages, msg] } : d));
+      lastAt.current = msg.createdAt;
+      toEnd();
+    } catch (e: any) {
+      setNote(e?.message || "The file did not go out — try again.");
+    } finally {
+      setSending(false);
+    }
+  };
+
   if (!data)
     return (
       <View style={s.center}>
@@ -287,14 +344,22 @@ function Thread({ route, me }: any) {
             <View style={[s.bubbleRow, m.mine ? { justifyContent: "flex-end" } : { justifyContent: "flex-start" }]}>
               <View style={[s.bubble, m.mine ? s.mine : s.theirs]}>
                 {!m.mine && data.thread.kind === "group" && <Text style={s.who}>{m.byName}</Text>}
-                <Text style={m.mine ? s.mineText : s.theirsText}>{m.text}</Text>
+                {m.kind === "file" && m.file ? <FileBubble msg={m} /> : <Text style={m.mine ? s.mineText : s.theirsText}>{m.text}</Text>}
                 <Text style={[s.bubbleTime, m.mine && { color: "rgba(255,255,255,0.75)" }]}>{shortTime(m.createdAt)}</Text>
               </View>
             </View>
           )
         }
       />
+      {!!note && (
+        <Pressable onPress={() => setNote("")} style={s.note}>
+          <Text style={s.noteText}>{note}</Text>
+        </Pressable>
+      )}
       <View style={s.composer}>
+        <Pressable style={[s.clipBtn, sending && { opacity: 0.5 }]} onPress={attach} disabled={sending} accessibilityLabel="Attach a file">
+          <Text style={s.clipText}>＋</Text>
+        </Pressable>
         <TextInput
           style={s.composerInput}
           placeholder="Write a message"
@@ -309,6 +374,61 @@ function Thread({ route, me }: any) {
         </Pressable>
       </View>
     </KeyboardAvoidingView>
+  );
+}
+
+/**
+ * An attachment on the phone.
+ *
+ * Nothing in a message carries a usable address — the bucket is private — so the link is asked for on the
+ * tap that wants the file, and it stops working a few minutes later. A picture appears in place; anything
+ * else is handed to whatever app on the phone opens that kind of file.
+ */
+function FileBubble({ msg }: { msg: any }) {
+  const [url, setUrl] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+  const f = msg.file || {};
+  const image = isImageMime(f.mime);
+
+  const open = async () => {
+    if (busy) return;
+    if (url) {
+      if (!image) Linking.openURL(url).catch(() => setErr("Nothing on this phone opens that kind of file."));
+      return;
+    }
+    setBusy(true);
+    setErr("");
+    try {
+      const r = await api(`/co/chat/files/${msg._id}`);
+      setUrl(r.url);
+      if (!image) await Linking.openURL(r.url).catch(() => setErr("Nothing on this phone opens that kind of file."));
+    } catch (e: any) {
+      setErr(e?.message || "That file could not be opened.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  if (image && url) return <Image source={{ uri: url }} style={s.shot} resizeMode="cover" />;
+
+  return (
+    <View>
+      <Pressable style={s.fileRow} onPress={open}>
+        <View style={[s.fileIcon, msg.mine && { backgroundColor: "rgba(255,255,255,0.22)" }]}>
+          {busy ? <ActivityIndicator size="small" color={msg.mine ? "#fff" : T.brand} /> : <Text style={[s.fileIconText, msg.mine && { color: "#fff" }]}>{image ? "◻" : "▣"}</Text>}
+        </View>
+        <View style={{ flexShrink: 1 }}>
+          <Text style={[s.fileName, msg.mine && { color: "#fff" }]} numberOfLines={1}>
+            {f.name}
+          </Text>
+          <Text style={[s.fileMeta, msg.mine && { color: "rgba(255,255,255,0.75)" }]}>
+            {fileSize(f.size)} · {image ? "tap to view" : "tap to open"}
+          </Text>
+        </View>
+      </Pressable>
+      {!!err && <Text style={s.fileErr}>{err}</Text>}
+    </View>
   );
 }
 
@@ -350,4 +470,15 @@ const s = StyleSheet.create({
   composerInput: { flex: 1, maxHeight: 110, minHeight: 42, backgroundColor: T.bg, borderWidth: 1, borderColor: T.line, borderRadius: 18, paddingHorizontal: 14, paddingTop: 10, paddingBottom: 10, color: T.text },
   sendBtn: { backgroundColor: T.brand, height: 42, paddingHorizontal: 18, borderRadius: 21, alignItems: "center", justifyContent: "center" },
   sendText: { color: "#fff", fontWeight: "800" },
+  clipBtn: { height: 42, width: 42, borderRadius: 21, alignItems: "center", justifyContent: "center", backgroundColor: T.bg, borderWidth: 1, borderColor: T.line },
+  clipText: { fontSize: 22, lineHeight: 24, color: T.brand, fontWeight: "800" },
+  note: { backgroundColor: "#fdecec", paddingHorizontal: 14, paddingVertical: 8 },
+  noteText: { color: "#a11", fontSize: 12, fontWeight: "600" },
+  shot: { width: 220, height: 160, borderRadius: 12 },
+  fileRow: { flexDirection: "row", alignItems: "center", gap: 10, minWidth: 170 },
+  fileIcon: { height: 36, width: 36, borderRadius: 10, alignItems: "center", justifyContent: "center", backgroundColor: "rgba(47,92,36,0.12)" },
+  fileIconText: { fontSize: 16, color: T.brand },
+  fileName: { fontWeight: "800", color: T.text },
+  fileMeta: { fontSize: 11, color: T.muted, marginTop: 1 },
+  fileErr: { color: "#a11", fontSize: 11, marginTop: 4 },
 });

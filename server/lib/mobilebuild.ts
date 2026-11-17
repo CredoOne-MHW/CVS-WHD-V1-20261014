@@ -51,7 +51,7 @@ export const WORKFLOW_REVISION = "1.8.15";
  * dependencies behind, and the build then fails inside Metro on a module that was added releases ago. Bump
  * this only when something in mobile/ changes that a build depends on.
  */
-export const MOBILE_REVISION = "1.8.14";
+export const MOBILE_REVISION = "1.9.0";
 export const buildWorkflow = () => BUILD_WORKFLOW_FILE;
 /** A leftover value, so the panel can say it is being ignored and can be deleted. */
 export const ignoredWorkflowSetting = () => {

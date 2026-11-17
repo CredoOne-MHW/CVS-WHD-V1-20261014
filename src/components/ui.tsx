@@ -1,6 +1,6 @@
 "use client";
-import { createContext, useCallback, useContext, useEffect, useState, type ReactNode } from "react";
-import { X, CheckCircle2, AlertTriangle, Loader2, ChevronLeft, ChevronRight, Inbox } from "lucide-react";
+import { createContext, useCallback, useContext, useEffect, useRef, useState, type ReactNode } from "react";
+import { X, CheckCircle2, AlertTriangle, Loader2, ChevronLeft, ChevronRight, Inbox, Search } from "lucide-react";
 
 /* ───────── Toasts ───────── */
 type Toast = { id: number; kind: "ok" | "err"; text: string };
@@ -83,6 +83,174 @@ export function Field({ label, required, hint, children, className = "" }: { lab
       {children}
       {hint && <span className="mt-1 block text-xs text-ink-400">{hint}</span>}
     </label>
+  );
+}
+
+/* ───────── Searchable dropdown ───────── */
+
+export type LookupItem = { id: string; label: string; sub?: string; kind?: string };
+
+/**
+ * Type a few letters, pick one thing. Used for tying a customer's sign-in to a client or lead.
+ *
+ * Three things keep it quick. Typing waits 180 ms before asking the server, so a six-letter name is one
+ * request and not six. Every answer is kept for the session in a plain Map, so backspacing to a query
+ * already typed is instant and silent. And an answer that arrives after a newer one has been typed is
+ * dropped rather than painted, which is what otherwise makes a box like this flicker between results.
+ *
+ * `value` is what is chosen now; `onPick(null)` clears it. Nothing is chosen by typing alone — a half-typed
+ * name is not a selection, and treating it as one is how the wrong client gets attached to somebody's login.
+ */
+export function Lookup({
+  value,
+  onPick,
+  search,
+  placeholder = "Search…",
+  disabled,
+  emptyText = "Nothing matches",
+}: {
+  value?: LookupItem | null;
+  onPick: (item: LookupItem | null) => void;
+  search: (q: string) => Promise<LookupItem[]>;
+  placeholder?: string;
+  disabled?: boolean;
+  emptyText?: string;
+}) {
+  const [q, setQ] = useState("");
+  const [open, setOpen] = useState(false);
+  const [rows, setRows] = useState<LookupItem[] | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [active, setActive] = useState(0);
+  const cache = useRef(new Map<string, LookupItem[]>());
+  const seq = useRef(0);
+  const box = useRef<HTMLDivElement>(null);
+
+  // a click anywhere else closes the list, exactly as a native select would
+  useEffect(() => {
+    if (!open) return;
+    const away = (e: MouseEvent) => {
+      if (box.current && !box.current.contains(e.target as Node)) setOpen(false);
+    };
+    document.addEventListener("mousedown", away);
+    return () => document.removeEventListener("mousedown", away);
+  }, [open]);
+
+  useEffect(() => {
+    if (!open) return;
+    const key = q.trim().toLowerCase();
+    const hit = cache.current.get(key);
+    if (hit) {
+      setRows(hit);
+      setActive(0);
+      return;
+    }
+    const mine = ++seq.current;
+    setBusy(true);
+    const t = setTimeout(() => {
+      search(q.trim())
+        .then((out) => {
+          cache.current.set(key, out);
+          if (mine !== seq.current) return; // something newer is already on its way
+          setRows(out);
+          setActive(0);
+        })
+        .catch(() => {
+          if (mine === seq.current) setRows([]);
+        })
+        .finally(() => {
+          if (mine === seq.current) setBusy(false);
+        });
+    }, 180);
+    return () => clearTimeout(t);
+  }, [q, open, search]);
+
+  const pick = (item: LookupItem) => {
+    onPick(item);
+    setOpen(false);
+    setQ("");
+  };
+
+  if (value && !open)
+    return (
+      <div className="flex items-center gap-2">
+        <div className="input flex min-w-0 flex-1 items-center justify-between gap-2">
+          <span className="min-w-0 truncate">
+            <span className="font-semibold">{value.label}</span>
+            {value.sub && <span className="ml-2 text-xs text-ink-400">{value.sub}</span>}
+          </span>
+          {value.kind && <Badge color={value.kind === "client" ? "green" : "honey"}>{value.kind}</Badge>}
+        </div>
+        {!disabled && (
+          <button type="button" className="btn-ghost" aria-label="Clear selection" onClick={() => onPick(null)}>
+            <X className="h-4 w-4" />
+          </button>
+        )}
+      </div>
+    );
+
+  return (
+    <div ref={box}>
+      <div className="relative">
+        <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-ink-400" />
+        <input
+          className="input pl-9"
+          disabled={disabled}
+          placeholder={placeholder}
+          value={q}
+          onFocus={() => setOpen(true)}
+          onChange={(e) => {
+            setQ(e.target.value);
+            setOpen(true);
+          }}
+          onKeyDown={(e) => {
+            if (!rows?.length) return;
+            if (e.key === "ArrowDown") {
+              e.preventDefault();
+              setActive((i) => Math.min(i + 1, rows.length - 1));
+            } else if (e.key === "ArrowUp") {
+              e.preventDefault();
+              setActive((i) => Math.max(i - 1, 0));
+            } else if (e.key === "Enter") {
+              e.preventDefault();
+              pick(rows[active]);
+            } else if (e.key === "Escape") {
+              setOpen(false);
+            }
+          }}
+        />
+        {busy && <Spinner className="absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-ink-400" />}
+      </div>
+      {/*
+        The results sit in the flow rather than floating over it. A floating list is clipped the moment this
+        is used inside anything that scrolls — which is where it is used, in a modal — and a list cut off
+        halfway through its third row is worse than one that pushes the form down.
+      */}
+      {open && (
+        <div className="mt-1 max-h-64 w-full overflow-auto rounded-xl border border-ink-400/20 bg-white shadow-sm">
+          {rows === null ? (
+            <div className="p-3 text-sm text-ink-400">Searching…</div>
+          ) : rows.length === 0 ? (
+            <div className="p-3 text-sm text-ink-400">{emptyText}</div>
+          ) : (
+            rows.map((r, i) => (
+              <button
+                type="button"
+                key={r.id}
+                onMouseEnter={() => setActive(i)}
+                onClick={() => pick(r)}
+                className={`flex w-full items-center justify-between gap-2 px-3 py-2 text-left text-sm ${i === active ? "bg-hive-50" : ""}`}
+              >
+                <span className="min-w-0">
+                  <span className="block truncate font-semibold">{r.label}</span>
+                  {r.sub && <span className="block truncate text-xs text-ink-400">{r.sub}</span>}
+                </span>
+                {r.kind && <Badge color={r.kind === "client" ? "green" : "honey"}>{r.kind}</Badge>}
+              </button>
+            ))
+          )}
+        </div>
+      )}
+    </div>
   );
 }
 

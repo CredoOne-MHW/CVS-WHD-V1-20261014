@@ -21,6 +21,7 @@ import SignIn from "./screens/SignIn";
 import Consent from "./screens/Consent";
 import Dashboard from "./screens/Dashboard";
 import Chats from "./screens/Chats";
+import Users from "./screens/Users";
 import Profile from "./screens/Profile";
 import NoticeBanner from "./components/NoticeBanner";
 import { registerForPush, unregisterPush, setLiveConfig } from "./lib/live";
@@ -78,7 +79,13 @@ export default function App() {
     if (key === "profile") return true;
     const allowed = me?.mobileScreens; // set by the company's Mobile Modules tab
     if (Array.isArray(allowed) && !allowed.includes(key)) return false;
-    return !!me?.perms?.[key]?.read;
+    /**
+     * A screen's permission is not always its own name. Users sits under Role Management, whose permission
+     * key is "roles:users", and a company that granted the whole of Role Management holds it as "roles" —
+     * so both spellings count, exactly as the server reads them.
+     */
+    const perm = key === "users" ? me?.perms?.["roles:users"] || me?.perms?.roles : me?.perms?.[key];
+    return !!perm?.read;
   };
 
   return (
@@ -97,6 +104,7 @@ export default function App() {
         >
           {can("dashboard") && <Drawer.Screen name="Dashboard" component={Dashboard} options={{ title: BRAND.companyName }} />}
           {can("chats") && <Drawer.Screen name="Chats">{() => <Chats me={me} />}</Drawer.Screen>}
+          {can("users") && <Drawer.Screen name="Users">{() => <Users me={me} />}</Drawer.Screen>}
           <Drawer.Screen name="Profile">{() => <Profile me={me} onSignOut={signOut} />}</Drawer.Screen>
         </Drawer.Navigator>
       </NavigationContainer>
