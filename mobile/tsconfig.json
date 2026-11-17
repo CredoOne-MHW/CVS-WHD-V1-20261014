@@ -1,1 +1,11 @@
-{ "extends": "expo/tsconfig.base", "compilerOptions": { "strict": true, "jsx": "react-jsx" } }
+{
+  "extends": "expo/tsconfig.base",
+  "compilerOptions": {
+    "strict": true,
+    "jsx": "react-jsx",
+    // Expo's base sets `target` but not `module`, which then falls back to a level that predates
+    // dynamic import(). src/lib/live.ts loads pusher-js lazily, so without this the app does not
+    // typecheck. Metro handles ESM, so ESNext is what actually runs.
+    "module": "ESNext"
+  }
+}

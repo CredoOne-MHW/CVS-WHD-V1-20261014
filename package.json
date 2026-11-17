@@ -1,6 +1,6 @@
 {
   "name": "leadhive-lms",
-  "version": "1.8.13",
+  "version": "1.8.15",
   "private": true,
   "description": "Multi-tenant Lead Management System \u2014 Next.js UI + Express API (Vercel), MongoDB, S3",
   "scripts": {

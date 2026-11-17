@@ -192,7 +192,22 @@ r.post("/mobile-releases/github-secrets", write, h(async (req, res) => {
   let trigger = auto.secret;
   if (!trigger) trigger = (await saveState({ secret: newSecret() }, req.auth!.email)).secret;
 
-  const out = await pushSecrets({ MOBILE_BUILD_SECRET: callback, BUILD_TRIGGER_SECRET: trigger }).catch((e: any) => ({
+  /**
+   * The AWS pair goes too, when the platform has it.
+   *
+   * The upload runs on the runner, so the repository needs its own credentials — copying a secret access
+   * key by hand is both tedious and easy to get subtly wrong. They are sealed to the repository's public key
+   * like the others, so nothing travels in the clear. The platform only ever sends what it already holds.
+   */
+  const wanted: Record<string, string> = { MOBILE_BUILD_SECRET: callback, BUILD_TRIGGER_SECRET: trigger };
+  const aws = {
+    AWS_ACCESS_KEY_ID: (process.env.AWS_ACCESS_KEY_ID || "").trim(),
+    AWS_SECRET_ACCESS_KEY: (process.env.AWS_SECRET_ACCESS_KEY || "").trim(),
+    AWS_REGION: (process.env.S3_REGION || process.env.AWS_REGION || "").trim(),
+  };
+  for (const [k, v] of Object.entries(aws)) if (v) wanted[k] = v;
+
+  const out = await pushSecrets(wanted).catch((e: any) => ({
     repo: "",
     results: [{ name: "all", ok: false, message: e?.message || String(e) }],
   }));
