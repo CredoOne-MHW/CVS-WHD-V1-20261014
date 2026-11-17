@@ -966,3 +966,11 @@ A release is **platform code** (deployed to Vercel) and **`.github/` + `mobile/`
 **`npm run verify:bundle`** installs the app's dependencies and runs Metro exactly as Gradle's bundle step does, in about forty seconds. Run it before shipping anything that touches `mobile/`. An import sweep and an unmet-peer check are both worth doing, and neither would have caught this one.
 
 `MOBILE_REVISION` joins `WORKFLOW_REVISION`: the platform now notices a stale `mobile/` in the repository as well as a stale `.github/`, since pushing one half without the other was costing a build each time.
+
+## 33. v1.8.14 — a check that cannot run reports success
+
+`mobile/`'s typecheck had only ever been run without `node_modules`, so it died on unresolved imports before reaching any code and looked like it passed. With dependencies installed it found a real error: Expo's base tsconfig sets `target` but not `module`, leaving it below the level dynamic `import()` needs, which `src/lib/live.ts` uses for pusher-js. **Run `npm ci` in `mobile/` before trusting its typecheck**, and `npm run verify:bundle` before shipping anything that touches it.
+
+**The second finding is the more important one.** 63 screens load with `api(...).then(setState)` and no `.catch`, so a failed call leaves a spinner and no explanation. `installGlobalErrorHandlers` deliberately skipped API errors because they are "already shown as toasts" — but a rejection only reaches a global handler when nobody caught it, which means no toast was shown. The exclusion applied exactly to the cases that needed it. Unhandled API failures now raise a toast via `toastFromAnywhere`.
+
+The general lesson, which has now cost four releases: **an error carrying a good explanation, discarded by the code that catches it, is worse than no error handling at all** — it converts a diagnosable fault into a mystery.

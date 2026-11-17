@@ -1,6 +1,6 @@
 name: Build mobile app
 
-# lms-workflow: 1.8.13
+# lms-workflow: 1.8.15
 #
 # That line is read by Super Admin › Mobile App Release › Check GitHub setup. The platform knows which
 # revision it expects, so if this file in the repository is older than the platform, the panel says so by
@@ -48,6 +48,22 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+
+      # Everything this job needs from the repository, checked in the first second rather than discovered
+      # after six minutes of compiling. A build that cannot report back or cannot upload has already failed;
+      # it just does not know it yet.
+      - name: Check this repository has what the build needs
+        working-directory: .
+        run: |
+          MISSING=""
+          [ -z "${{ secrets.MOBILE_BUILD_SECRET }}" ] && MISSING="$MISSING MOBILE_BUILD_SECRET"
+          [ -z "${{ secrets.AWS_ACCESS_KEY_ID }}" ] && MISSING="$MISSING AWS_ACCESS_KEY_ID"
+          [ -z "${{ secrets.AWS_SECRET_ACCESS_KEY }}" ] && MISSING="$MISSING AWS_SECRET_ACCESS_KEY"
+          if [ -n "$MISSING" ]; then
+            echo "::error::This repository is missing:$MISSING — add them in Settings › Secrets and variables › Actions. The upload and the result callback both run here, on the runner, so they need this repository's own credentials. Super Admin › Mobile App Release › Set up secrets in GitHub can write them for you."
+            exit 1
+          fi
+          echo "Repository secrets are present."
 
       - name: Tell the platform the build has started
         if: always()
