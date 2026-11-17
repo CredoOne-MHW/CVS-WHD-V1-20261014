@@ -974,3 +974,11 @@ A release is **platform code** (deployed to Vercel) and **`.github/` + `mobile/`
 **The second finding is the more important one.** 63 screens load with `api(...).then(setState)` and no `.catch`, so a failed call leaves a spinner and no explanation. `installGlobalErrorHandlers` deliberately skipped API errors because they are "already shown as toasts" — but a rejection only reaches a global handler when nobody caught it, which means no toast was shown. The exclusion applied exactly to the cases that needed it. Unhandled API failures now raise a toast via `toastFromAnywhere`.
 
 The general lesson, which has now cost four releases: **an error carrying a good explanation, discarded by the code that catches it, is worse than no error handling at all** — it converts a diagnosable fault into a mystery.
+
+## 34. v1.8.16 — mergeParams
+
+`mobileRoutes` and `dpdpRoutes` are mounted at `/companies/:id`. **An Express sub-router does not inherit its mount path's parameters without `Router({ mergeParams: true })`** — so `req.params.id` was undefined, the company lookup matched nothing, and both tabs answered "Company not found" from the day they were written.
+
+The Mobile App tab's original symptom was a spinner that never stopped. v1.7.0 surfaced the error and added a retry, which was worth doing but was the symptom; the 404 underneath went unexamined for two more releases. **When a fix makes a failure visible, the next step is to read what it says, not to ship it.**
+
+`tests/router-params.test.ts` asserts the Express behaviour directly and scans every router mounted under a parameter. It was verified to fail with the bug reintroduced — a check nobody has watched fail is not yet a check.
