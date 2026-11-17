@@ -61,6 +61,17 @@ const UserSchema = new Schema(
     passwordHash: { type: String, required: true },
     roleId: { type: ObjectId, ref: "Role" }, // null = owner/full access within plan
     isOwner: { type: Boolean, default: false },
+    /**
+     * A customer who signs in to talk to the company, rather than someone who works there.
+     *
+     * The same User row either way — one sign-in, one password policy, one place to deactivate — but a
+     * customer is shown as a customer, is kept out of staff listings, and is optionally tied to the Client
+     * or Lead record they already exist as elsewhere, so a conversation sits next to their history instead
+     * of beside it.
+     */
+    kind: { type: String, enum: ["staff", "customer"], default: "staff", index: true },
+    clientId: { type: ObjectId, index: true, sparse: true },
+    leadId: { type: ObjectId, index: true, sparse: true },
     active: { type: Boolean, default: true },
     lastLoginAt: Date,
     tokenVersion: { type: Number, default: 0 }, // bump to revoke all sessions
@@ -562,8 +573,18 @@ const ChatMessageSchema = new Schema(
   {
     companyId: { type: ObjectId, required: true, index: true },
     threadId: { type: ObjectId, required: true, index: true },
-    kind: { type: String, enum: ["text", "system"], default: "text" },
+    kind: { type: String, enum: ["text", "system", "file"], default: "text" },
+    // a file message still carries text — the caption, or the file name when there is none
     text: { type: String, required: true },
+    /** Set only on a file message. The bytes live in the company's own S3 folder, never in the database. */
+    file: {
+      key: String, // the S3 object key
+      name: String,
+      size: Number,
+      mime: String,
+      width: Number, // images only, so a thumbnail can hold its shape before it loads
+      height: Number,
+    },
     byId: ObjectId,
     byName: String,
     /** who has read it — ids only, so a read receipt costs nothing to send */

@@ -41,15 +41,19 @@ export class ApiError extends Error {
   }
 }
 
-export async function api<T = any>(path: string, opts: { method?: string; body?: any } = {}): Promise<T> {
-  const method = opts.method || (opts.body ? "POST" : "GET");
+export async function api<T = any>(path: string, opts: { method?: string; body?: any; form?: FormData } = {}): Promise<T> {
+  const method = opts.method || (opts.body || opts.form ? "POST" : "GET");
+  /**
+   * A multipart body must NOT carry a Content-Type of our own: fetch adds one with the boundary it generated,
+   * and overwriting it leaves the server with a boundary that does not match the body it was sent.
+   */
   const res = await fetch(`${API_BASE}/api${path}`, {
     method,
     headers: {
-      "Content-Type": "application/json",
+      ...(opts.form ? {} : { "Content-Type": "application/json" }),
       ...(token ? { Cookie: `lms_token=${token}` } : {}),
     },
-    body: opts.body ? JSON.stringify(opts.body) : undefined,
+    body: opts.form ? opts.form : opts.body ? JSON.stringify(opts.body) : undefined,
   });
   // the platform sets the session on sign-in; keep it for the next start
   const setCookie = res.headers.get("set-cookie");

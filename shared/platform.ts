@@ -177,5 +177,6 @@ export const S3_AREAS = {
   app: "app",
   brain: "brain",
   dpdp: "dpdp",
+  chat: "chat", // one folder per conversation, under the company
 } as const;
 export const s3Area = (code: string, area: keyof typeof S3_AREAS, ...rest: string[]) => [code.toUpperCase(), S3_AREAS[area], ...rest].filter(Boolean).join("/");

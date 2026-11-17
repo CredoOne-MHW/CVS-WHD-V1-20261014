@@ -208,6 +208,19 @@ export async function relayoutAll() {
   return { moved };
 }
 
+/**
+ * A link to one object that stops working after a few minutes.
+ *
+ * Used for chat attachments: the bucket stays private, nothing is served from the platform's own bandwidth,
+ * and a link that escapes into a screenshot or a browser history is worthless almost immediately. The
+ * caller checks who is asking — this only signs what it is told to.
+ */
+export async function signedUrl(key: string, seconds = 300) {
+  const { getSignedUrl } = await import("@aws-sdk/s3-request-presigner");
+  const { GetObjectCommand } = await import("@aws-sdk/client-s3");
+  return getSignedUrl(s3() as any, new GetObjectCommand({ Bucket: bucket(), Key: key }) as any, { expiresIn: seconds });
+}
+
 export async function deleteObject(key: string) {
   await s3().send(new DeleteObjectCommand({ Bucket: bucket(), Key: key })).catch(() => undefined);
 }

@@ -10,13 +10,18 @@
 import { Router } from "express";
 import { z } from "zod";
 import mongoose from "mongoose";
+import { randomUUID } from "crypto";
 import { ChatThread, ChatMessage, Announcement, User, Role } from "../../models";
 import { can, tenant } from "../../middleware/auth";
 import { h, parse, notFound, badRequest, forbidden, paging, HttpError } from "../../lib/http";
 import { rateLimit } from "../../lib/cache";
 import { publish, authorize, clientConfig, realtimeOn } from "../../lib/realtime";
 import { pushToUsers, registerDevice, forgetDevice } from "../../lib/push";
-import { LIMITS, threadChannel, userChannel, companyChannel, EVENTS, publicMember, NOTICE_TONES } from "../../../shared/chat";
+import multer from "multer";
+import { LIMITS, threadChannel, userChannel, companyChannel, EVENTS, publicMember, NOTICE_TONES, fileAccepted, FILE_TYPES, isImage } from "../../../shared/chat";
+import { putAt, signedUrl } from "../../lib/s3";
+import { s3Area } from "../../../shared/platform";
+import { Company } from "../../models";
 
 const r = Router();
 const oid = (v: any) => new mongoose.Types.ObjectId(String(v));
@@ -189,6 +194,70 @@ r.post("/chat/threads/:id/messages", can("chats", "create"), h(async (req, res) 
     data: { threadId: String(t._id), kind: "chat" },
   });
   res.status(201).json({ ...out, mine: true });
+}));
+
+const attach = multer({ storage: multer.memoryStorage(), limits: { fileSize: LIMITS.fileMb * 1024 * 1024 } });
+
+/**
+ * Sends a file into a conversation.
+ *
+ * The bytes go to the company's own S3 folder, never into the database, and the message carries only a key.
+ * Nothing is served directly from that bucket: a reader asks for a link that expires, which is checked
+ * against their membership of the thread at the moment they ask.
+ */
+r.post("/chat/threads/:id/files", can("chats", "create"), attach.single("file"), h(async (req, res) => {
+  const t = await myThread(req, req.params.id);
+  const { id, companyId, name } = me(req);
+  const f = (req as any).file;
+  if (!f) throw badRequest("No file was sent");
+  if (!fileAccepted(f.mimetype)) throw badRequest(`${f.originalname} is a kind of file this does not take. Images, PDF, Word, Excel, CSV and text are fine.`);
+  if (!(await rateLimit(`chatfile:${id}`, 20, 60))) throw new HttpError(429, "Slow down a moment");
+
+  const company = await Company.findById(companyId).select("code s3Enabled").lean<any>();
+  if (!company?.s3Enabled) throw badRequest("File storage is switched off for this company, so attachments cannot be kept.");
+
+  const ext = FILE_TYPES[f.mimetype.toLowerCase()] || "bin";
+  const key = `${s3Area(company.code, "chat", String(t._id))}/${Date.now()}-${randomUUID().slice(0, 8)}.${ext}`;
+  await putAt(key, f.buffer, f.mimetype);
+
+  const caption = String(req.body?.text || "").trim().slice(0, LIMITS.message);
+  const msg = await ChatMessage.create({
+    companyId,
+    threadId: t._id,
+    kind: "file",
+    text: caption || f.originalname,
+    file: { key, name: f.originalname, size: f.size, mime: f.mimetype },
+    byId: oid(id),
+    byName: name,
+    readBy: [oid(id)],
+  });
+
+  const last = { text: `${isImage(f.mimetype) ? "Photo" : "File"}: ${caption || f.originalname}`.slice(0, 140), by: name, at: msg.createdAt, kind: "file" };
+  await ChatThread.updateOne({ _id: t._id }, { $set: { lastMessage: last } });
+
+  const out = { ...msg.toObject(), mine: false, readBy: undefined, reads: 1, threadId: String(t._id) };
+  const others = (t.memberIds || []).filter((x: any) => String(x) !== id);
+  await publish(threadChannel(String(companyId), String(t._id)), EVENTS.message, out);
+  await publish(others.map((u: any) => userChannel(String(companyId), String(u))), EVENTS.threadUpdated, { threadId: String(t._id), lastMessage: last });
+  await pushToUsers(companyId, others, {
+    title: t.kind === "group" ? t.name || "Group" : name,
+    body: last.text,
+    data: { threadId: String(t._id), kind: "chat" },
+  });
+  res.status(201).json({ ...out, mine: true });
+}));
+
+/**
+ * A link to one attachment, good for a few minutes.
+ *
+ * Membership is checked here rather than at upload time, because who is in a group changes: somebody removed
+ * from a thread stops being able to open its files from that moment, without anything having to be moved.
+ */
+r.get("/chat/files/:messageId", can("chats", "read"), h(async (req, res) => {
+  const msg = await ChatMessage.findOne({ _id: req.params.messageId, ...tenant(req) }).lean<any>();
+  if (!msg?.file?.key) throw notFound("That attachment is not here");
+  await myThread(req, String(msg.threadId)); // throws unless this person is in the conversation
+  res.json({ url: await signedUrl(msg.file.key, 300), name: msg.file.name, mime: msg.file.mime });
 }));
 
 /** Marks everything up to now as read, and tells the others. */

@@ -1,8 +1,8 @@
 "use client";
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { Plus, Save, Trash2, UserPlus, Pencil } from "lucide-react";
 import { api, fmtDate } from "@/lib/api";
-import { Btn, Field, Modal, Badge, Empty, Spinner, Confirm, useToast } from "./ui";
+import { Btn, Field, Modal, Badge, Empty, Spinner, Confirm, Lookup, useToast, type LookupItem } from "./ui";
 import { PermGrid } from "./PermGrid";
 import { usePerm } from "./Shell";
 import { Tabs } from "./Logs";
@@ -167,8 +167,21 @@ export function RoleManager({ base }: { base: "/sa" | "/co" }) {
   );
 }
 
-function Users({ roles }: { roles: any[] }) {
+function Users({ roles: fromParent }: { roles: any[] }) {
   const [list, setList] = useState<any[] | null>(null);
+  /**
+   * The parent's role list comes from `/co/roles`, which needs Role Management › Roles. Somebody who may add
+   * users but not edit roles gets nothing from it, which used to leave "Add user" permanently disabled. The
+   * narrower endpoint answers under the narrower permission, so it is asked only when the parent came empty.
+   */
+  const [own, setOwn] = useState<any[]>([]);
+  const roles = fromParent.length ? fromParent : own;
+  useEffect(() => {
+    if (fromParent.length) return;
+    api("/co/assignable-roles")
+      .then((r: any) => setOwn(r.roles || []))
+      .catch(() => {});
+  }, [fromParent.length]);
   const [form, setForm] = useState<any>(null);
   const perm = usePerm("roles:users");
   const toast = useToast();
@@ -177,12 +190,17 @@ function Users({ roles }: { roles: any[] }) {
     load();
   }, []);
   const roleName = (id: string) => roles.find((r) => r._id === id)?.name || "—";
+  /** Stable, so the dropdown's own debounce and cache are not thrown away on every keystroke upstream. */
+  const findPeople = useCallback(
+    (q: string) => api(`/co/people-lookup${q ? `?q=${encodeURIComponent(q)}` : ""}`).then((r: any) => r.results as LookupItem[]),
+    []
+  );
 
   return (
     <div className="card overflow-hidden">
       <div className="flex justify-end border-b border-ink-400/15 p-4">
         {perm.create && (
-          <Btn onClick={() => setForm({ name: "", email: "", phone: "", password: "", roleId: roles[0]?._id || "" })} disabled={!roles.length}>
+          <Btn onClick={() => setForm({ name: "", email: "", phone: "", password: "", roleId: roles[0]?._id || "", kind: "staff", mapped: null })} disabled={!roles.length}>
             <UserPlus className="h-4 w-4" /> Add user
           </Btn>
         )}
@@ -191,7 +209,7 @@ function Users({ roles }: { roles: any[] }) {
         <table className="w-full min-w-[720px]">
           <thead>
             <tr>
-              {["Name", "Email", "WhatsApp", "Role", "Last login", "Status", ""].map((h) => (
+              {["Name", "Email", "WhatsApp", "Type", "Role", "Last login", "Status", ""].map((h) => (
                 <th key={h} className="th">
                   {h}
                 </th>
@@ -204,6 +222,16 @@ function Users({ roles }: { roles: any[] }) {
                 <td className="td font-semibold">{u.name}</td>
                 <td className="td">{u.email}</td>
                 <td className="td mono">{u.phone || "—"}</td>
+                <td className="td">
+                  {u.kind === "customer" ? (
+                    <span className="flex flex-col items-start gap-1">
+                      <Badge color="green">Customer</Badge>
+                      {u.mappedTo && <span className="text-xs text-ink-400">{u.mappedTo}</span>}
+                    </span>
+                  ) : (
+                    <span className="text-ink-500">Staff</span>
+                  )}
+                </td>
                 <td className="td">{u.isOwner ? <Badge color="honey">Owner</Badge> : roleName(u.roleId)}</td>
                 <td className="td text-ink-500">{fmtDate(u.lastLoginAt)}</td>
                 <td className="td">
@@ -211,7 +239,18 @@ function Users({ roles }: { roles: any[] }) {
                 </td>
                 <td className="td text-right">
                   {perm.update && (
-                    <button className="btn-ghost" aria-label="Edit user" onClick={() => setForm({ ...u, password: "" })}>
+                    <button
+                      className="btn-ghost"
+                      aria-label="Edit user"
+                      onClick={() =>
+                        setForm({
+                          ...u,
+                          password: "",
+                          kind: u.kind || "staff",
+                          mapped: u.clientId || u.leadId ? { id: String(u.clientId || u.leadId), label: u.mappedTo || "Linked record", kind: u.clientId ? "client" : "lead" } : null,
+                        })
+                      }
+                    >
                       <Pencil className="h-4 w-4" />
                     </button>
                   )}
@@ -236,8 +275,16 @@ function Users({ roles }: { roles: any[] }) {
                 try {
                   const body = { ...form };
                   if (!body.password) delete body.password;
-                  if (form._id) await api(`/co/users/${form._id}`, { method: "PUT", body: { name: body.name, phone: body.phone, roleId: form.isOwner ? undefined : body.roleId, active: form.isOwner ? undefined : body.active, password: body.password } });
-                  else await api("/co/users", { body });
+                  delete body.mapped;
+                  delete body.mappedTo;
+                  /**
+                   * A customer may be mapped to a client or to a lead, and the server decides which field it
+                   * lands in from the record itself — the browser only says which record was chosen.
+                   */
+                  const picked: LookupItem | null = form.kind === "customer" ? form.mapped : null;
+                  const map = { kind: form.kind || "staff", clientId: picked?.kind === "client" ? picked.id : "", leadId: picked?.kind === "lead" ? picked.id : "" };
+                  if (form._id) await api(`/co/users/${form._id}`, { method: "PUT", body: { name: body.name, phone: body.phone, roleId: form.isOwner ? undefined : body.roleId, active: form.isOwner ? undefined : body.active, password: body.password, ...(form.isOwner ? {} : map) } });
+                  else await api("/co/users", { body: { ...body, ...map } });
                   setForm(null);
                   load();
                   toast("ok", "Saved");
@@ -262,7 +309,7 @@ function Users({ roles }: { roles: any[] }) {
             <Field label="WhatsApp" hint="Receives delete OTPs">
               <input className="input" maxLength={10} inputMode="numeric" value={form.phone || ""} onChange={(e) => setForm({ ...form, phone: e.target.value.replace(/\D/g, "") })} />
             </Field>
-            <Field label="Role">
+            <Field label="Role" hint="What this person may open and change">
               <select className="input" disabled={form.isOwner} value={form.roleId || ""} onChange={(e) => setForm({ ...form, roleId: e.target.value })}>
                 {roles.map((r) => (
                   <option key={r._id} value={r._id}>
@@ -280,6 +327,20 @@ function Users({ roles }: { roles: any[] }) {
                   <option value="1">Active</option>
                   <option value="0">Disabled</option>
                 </select>
+              </Field>
+            )}
+            {/* last, because the searchable list opens downward and pushes whatever follows it out of view */}
+            {!form.isOwner && (
+              <Field label="User type" hint={form.kind === "customer" ? "Signs in to talk to you, not to work here" : "Works here"}>
+                <select className="input" value={form.kind || "staff"} onChange={(e) => setForm({ ...form, kind: e.target.value, mapped: e.target.value === "customer" ? form.mapped : null })}>
+                  <option value="staff">Staff</option>
+                  <option value="customer">Customer</option>
+                </select>
+              </Field>
+            )}
+            {form.kind === "customer" && !form.isOwner && (
+              <Field label="Client / Lead" className="sm:col-span-2" hint="Optional — ties this sign-in to a record you already have, so a conversation sits next to their history">
+                <Lookup value={form.mapped} onPick={(item) => setForm({ ...form, mapped: item })} search={findPeople} placeholder="Search name, phone, email or client code…" emptyText="No client or lead matches" />
               </Field>
             )}
           </div>
