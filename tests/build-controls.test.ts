@@ -77,8 +77,23 @@ function storeCompliance() {
   const app = JSON.parse(readFileSync("mobile/app.json", "utf8"));
   const props = (app.expo.plugins || []).find((p: any) => Array.isArray(p) && p[0] === "expo-build-properties");
   ok("the Android API level is set explicitly rather than left at the Expo default", !!props);
-  ok("…and it is one Play still accepts", (props?.[1]?.android?.targetSdkVersion || 0) >= 35);
   check("compile and target levels match", props?.[1]?.android?.compileSdkVersion, props?.[1]?.android?.targetSdkVersion);
+
+  /**
+   * The level must be one the installed Expo can actually compile against.
+   *
+   * v1.10.0 set this to 35 for Google Play and broke every Android build: Expo 51's own Kotlin source is
+   * written against API 34, and in 35 Android annotated `PackageInfo.requestedPermissions` as nullable, so
+   * expo-modules-core stopped compiling. The level Play wants and the level Expo supports are two different
+   * things, and this is the one that decides whether anything builds at all.
+   */
+  const brand = readFileSync("mobile/scripts/brand.mjs", "utf8");
+  const caps = /MAX_SDK_FOR_EXPO = \{([^}]*)\}/.exec(brand)?.[1] || "";
+  const expoMajor = parseInt(String(JSON.parse(readFileSync("mobile/package.json", "utf8")).dependencies.expo).replace(/^\D*/, ""), 10);
+  const cap = Number(new RegExp(`\\b${expoMajor}\\s*:\\s*(\\d+)`).exec(caps)?.[1] || 0);
+  ok(`the app's Expo SDK (${expoMajor}) has a known ceiling`, cap > 0);
+  ok(`…and the configured level (${props?.[1]?.android?.compileSdkVersion}) is within it (${cap})`, (props?.[1]?.android?.compileSdkVersion || 99) <= cap);
+  ok("the build refuses a level above that ceiling rather than failing inside Expo", /::error::Android API level/.test(brand));
 
   // Without this every App Store upload stops and asks the same question by e-mail.
   check("the export-compliance answer is declared", app.expo.ios.infoPlist.ITSAppUsesNonExemptEncryption, false);
