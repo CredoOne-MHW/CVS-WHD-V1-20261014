@@ -141,7 +141,31 @@ export async function verifySetup(): Promise<{ ok: boolean; findings: Finding[] 
     findings.push({ key: "actions", label: "Actions", ok: false, detail: "Could not check Actions." });
   }
 
-  /* 5 — is the app source in the repository the one this platform ships? Pushing .github without mobile
+  /* 5 — does the repository hold the secrets its own steps need? The upload and the callback both run on
+         the runner, so these are its secrets, not the platform's. */
+  try {
+    const { listSecretNames } = await import("./githubsecrets");
+    const names = await listSecretNames();
+    if (!names.length) {
+      findings.push({ key: "secrets", label: "Repository secrets", ok: true, detail: "Could not read them — give the token Secrets: read to have this checked." });
+    } else {
+      const need = ["MOBILE_BUILD_SECRET", "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY"];
+      const missing = need.filter((n) => !names.includes(n));
+      if (!missing.length) findings.push({ key: "secrets", label: "Repository secrets", ok: true, detail: "The build has everything it needs to report back and to upload." });
+      else
+        findings.push({
+          key: "secrets", label: "Repository secrets", ok: false,
+          detail: `The repository is missing ${missing.join(", ")}.`,
+          fix: missing.includes("MOBILE_BUILD_SECRET")
+            ? "Press “Set up secrets in GitHub” above for MOBILE_BUILD_SECRET. The AWS pair must be added by hand — the upload runs on the runner, so it needs its own credentials."
+            : "Add these in GitHub → Settings → Secrets and variables → Actions. The upload runs on the runner, not on the platform, so it needs its own AWS credentials.",
+        });
+    }
+  } catch {
+    findings.push({ key: "secrets", label: "Repository secrets", ok: true, detail: "Not checked." });
+  }
+
+  /* 6 — is the app source in the repository the one this platform ships? Pushing .github without mobile
          leaves the app's dependencies behind, and the build then dies inside Metro. */
   try {
     const res = await gh(`/repos/${repo}/contents/${encodeURIComponent("mobile/package.json")}?ref=${encodeURIComponent(branch)}`);
@@ -166,7 +190,7 @@ export async function verifySetup(): Promise<{ ok: boolean; findings: Finding[] 
     findings.push({ key: "app", label: "App source", ok: true, detail: "Not checked." });
   }
 
-  /* 6 — can an Android app actually be signed? Neither route set up means a build that gets all the way to
+  /* 7 — can an Android app actually be signed? Neither route set up means a build that gets all the way to
          the signing step and dies there, which costs ten minutes to discover. */
   try {
     const { route, missing } = await signingRoute(true);

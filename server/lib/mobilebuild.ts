@@ -42,7 +42,7 @@ export const BUILD_WORKFLOW_FILE = "build-mobile.yml";
  * a matching `# lms-workflow:` line, and "Check GitHub setup" compares them. Bump this only when the workflow
  * or one of its scripts actually changes, or the panel cries wolf on every release.
  */
-export const WORKFLOW_REVISION = "1.8.11";
+export const WORKFLOW_REVISION = "1.8.13";
 
 /**
  * The revision of the app source the platform expects in the build repository, read from mobile/package.json.
@@ -199,7 +199,20 @@ export async function startBuild(company: any, platform: Platform, by: string, o
     primary: cfg.primary,
     accent: cfg.accent,
     api_base: (cfg as any).apiBase || "",
-    s3_prefix: s3Area(company.code, "app", platform, version),
+    /**
+     * The destination, as a full s3:// address when the platform knows its bucket.
+     *
+     * The upload runs on the GitHub runner, not here, so it used to read an S3_BUCKET *repository secret* —
+     * a second place to configure the same thing, and one nobody had filled in. The address came out as
+     * "s3:///CVS/app/…" and the upload failed after a six-minute build that had otherwise succeeded.
+     * Sending the bucket with the build removes that second place. An older workflow that still expects a
+     * bare prefix keeps working: it only ever prepends its own bucket when this does not start with s3://.
+     */
+    s3_prefix: (() => {
+      const area = s3Area(company.code, "app", platform, version);
+      const b = (process.env.S3_BUCKET || "").trim();
+      return b ? `s3://${b}/${area}` : area;
+    })(),
     callback_url: `${(cfg as any).apiBase || env("APP_BASE_URL")}/api/public/mobile/build`,
     // where the build collects the signing key — never the key itself, which a workflow input would print
     signing_url: signing ? `${(cfg as any).apiBase || env("APP_BASE_URL")}/api/public/mobile/signing/${build._id}` : "",
