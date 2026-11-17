@@ -30,7 +30,15 @@ async function target(req: Request, scope: Scope) {
 }
 
 export function mobileRoutes(scope: Scope) {
-  const r = Router();
+  /**
+   * mergeParams matters here, and its absence is why this tab never worked.
+   *
+   * These routes are mounted at `/companies/:id`, and an Express sub-router does NOT inherit its mount
+   * path's parameters unless it is told to. Without it `req.params.id` was undefined, the company lookup
+   * matched nothing, and every request answered "Company not found" — which the browser first showed as a
+   * spinner that never stopped, and later (v1.7.0) as a 404 nobody could explain.
+   */
+  const r = Router({ mergeParams: true });
   const read = scope === "company" ? can("mobile_app", "read") : can("companies", "read");
   const write = scope === "company" ? can("mobile_app", "update") : can("companies", "update");
 

@@ -24,7 +24,7 @@ type Scope = "super" | "company";
 
 /** Which company this request is about, and whether the caller may touch it. */
 async function target(req: Request, scope: Scope) {
-  const id = scope === "company" ? req.auth!.companyId : req.params.id || req.query.companyId;
+  const id = scope === "company" ? req.auth!.companyId : req.params.id;
   if (!id) return null; // Super Admin working on the platform's default notice
   const c = await Company.findOne({ _id: id, deletedAt: null }).lean<any>();
   if (!c) throw notFound("Company not found");
@@ -32,7 +32,8 @@ async function target(req: Request, scope: Scope) {
 }
 
 export function dpdpRoutes(scope: Scope) {
-  const r = Router();
+  // mounted at /companies/:id, so it must inherit that parameter — see mobileRoutes for what its absence did
+  const r = Router({ mergeParams: true });
   const read = scope === "company" ? can("dpdp:document", "read") : can("companies", "read");
   const write = scope === "company" ? can("dpdp:document", "update") : can("companies", "update");
   const readLog = scope === "company" ? can("dpdp:acceptance", "read") : can("companies", "read");
