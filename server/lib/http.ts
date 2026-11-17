@@ -35,7 +35,7 @@ function known(err: any): { status: number; message: string } | null {
   if (err?.name === "MulterError") {
     const mb = (n?: number) => (n ? `${Math.round(n / 1024 / 1024)} MB` : "the limit");
     const map: Record<string, string> = {
-      LIMIT_FILE_SIZE: `That file is too large. The most this accepts is ${mb(err.limit)} — save it smaller and try again.`,
+      LIMIT_FILE_SIZE: `Exceeded File Size — the most this accepts is ${mb(err.limit)}. Save it smaller and try again.`,
       LIMIT_FILE_COUNT: "Too many files at once.",
       LIMIT_UNEXPECTED_FILE: `This expects the file under “${err.field || "file"}”. If you are using the normal screen, this is a fault worth reporting.`,
       LIMIT_PART_COUNT: "Too many parts in that upload.",

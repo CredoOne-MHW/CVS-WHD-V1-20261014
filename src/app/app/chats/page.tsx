@@ -234,7 +234,7 @@ function ThreadPane({ threadId, onSent }: { threadId: string; onSent: () => void
   const sendFile = async (f: File | null | undefined) => {
     if (!f || sending) return;
     if (!fileAccepted(f.type)) return alert(`${f.name} is not a kind of file this takes. Images, PDF, Word, Excel, CSV and text files are fine.`);
-    if (f.size > LIMITS.fileMb * 1024 * 1024) return alert(`${f.name} is ${fileSize(f.size)}. The limit is ${LIMITS.fileMb} MB.`);
+    if (f.size > LIMITS.fileMb * 1024 * 1024) return alert(`Exceeded File Size — ${f.name} is ${fileSize(f.size)}, and the limit is ${LIMITS.fileMb} MB.`);
     setSending(true);
     try {
       const form = new FormData();
@@ -337,13 +337,14 @@ function FileBubble({ msg }: { msg: any }) {
   const f = msg.file || {};
   const image = isImage(f.mime);
 
-  const fetchUrl = async () => {
-    if (url || busy) return url;
+  /** `save` asks for a link that downloads under the file's own name rather than opening in a tab. */
+  const fetchUrl = async (save = false) => {
+    if (url && !save) return url;
     setBusy(true);
     setErr("");
     try {
-      const r = await api<any>(`/co/chat/files/${msg._id}`);
-      setUrl(r.url);
+      const r = await api<any>(`/co/chat/files/${msg._id}${save ? "?download=1" : ""}`);
+      if (!save) setUrl(r.url);
       return r.url as string;
     } catch (e: any) {
       setErr(e?.message || "That file could not be opened.");
@@ -353,28 +354,83 @@ function FileBubble({ msg }: { msg: any }) {
     }
   };
 
-  if (image && url) return <img src={url} alt={f.name} className="max-h-64 rounded-xl" />;
+  /**
+   * Saving the file.
+   *
+   * A fresh link is fetched each time, carrying the attachment disposition and the real file name — the
+   * viewing link deliberately does not, so a picture can still be shown in place. The anchor is created and
+   * clicked rather than using window.open, which a pop-up blocker stops when it does not follow a click.
+   */
+  const save = async () => {
+    const u = await fetchUrl(true);
+    if (!u) return;
+    const a = document.createElement("a");
+    a.href = u;
+    a.download = f.name || "attachment";
+    a.rel = "noopener";
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+  };
+
+  const DownloadBtn = (
+    <button
+      type="button"
+      onClick={save}
+      title={`Download ${f.name}`}
+      aria-label={`Download ${f.name}`}
+      className={`grid h-7 w-7 shrink-0 place-items-center rounded-lg transition ${msg.mine ? "bg-white/20 hover:bg-white/30" : "bg-ink-100 hover:bg-ink-200"}`}
+    >
+      {busy ? <Spinner className="h-3.5 w-3.5" /> : <Download className="h-3.5 w-3.5" />}
+    </button>
+  );
+
+  if (image && url)
+    return (
+      <div className="group relative w-fit">
+        <img src={url} alt={f.name} className="max-h-64 rounded-xl" />
+        <div className="absolute right-2 top-2 opacity-0 transition group-hover:opacity-100 focus-within:opacity-100">
+          <button
+            type="button"
+            onClick={save}
+            title={`Download ${f.name}`}
+            aria-label={`Download ${f.name}`}
+            className="grid h-8 w-8 place-items-center rounded-lg bg-black/55 text-white backdrop-blur hover:bg-black/70"
+          >
+            {busy ? <Spinner className="h-4 w-4" /> : <Download className="h-4 w-4" />}
+          </button>
+        </div>
+        <p className={`mt-1 flex items-center gap-1.5 text-[11px] ${msg.mine ? "text-hive-100" : "text-ink-400"}`}>
+          <span className="truncate">{f.name}</span>
+          <span>· {fileSize(f.size)}</span>
+        </p>
+        {err && <p className="mt-1 text-[11px] text-red-600">{err}</p>}
+      </div>
+    );
 
   return (
-    <div className="min-w-[12rem]">
-      <button
-        type="button"
-        className="flex w-full items-center gap-2 text-left"
-        onClick={async () => {
-          const u = await fetchUrl();
-          if (u && !image) window.open(u, "_blank", "noopener");
-        }}
-      >
-        <span className={`grid h-9 w-9 shrink-0 place-items-center rounded-lg ${msg.mine ? "bg-white/20" : "bg-hive-100"}`}>
-          {busy ? <Spinner className="h-4 w-4" /> : image ? <Download className="h-4 w-4" /> : <FileText className="h-4 w-4" />}
-        </span>
-        <span className="min-w-0">
-          <span className="block truncate font-semibold">{f.name}</span>
-          <span className={`block text-[11px] ${msg.mine ? "text-hive-100" : "text-ink-400"}`}>
-            {fileSize(f.size)} · {image ? "click to view" : "click to open"}
+    <div className="min-w-[13rem]">
+      <div className="flex items-center gap-2">
+        <button
+          type="button"
+          className="flex min-w-0 flex-1 items-center gap-2 text-left"
+          onClick={async () => {
+            const u = await fetchUrl();
+            if (u && !image) window.open(u, "_blank", "noopener");
+          }}
+        >
+          <span className={`grid h-9 w-9 shrink-0 place-items-center rounded-lg ${msg.mine ? "bg-white/20" : "bg-hive-100"}`}>
+            {busy ? <Spinner className="h-4 w-4" /> : <FileText className="h-4 w-4" />}
           </span>
-        </span>
-      </button>
+          <span className="min-w-0">
+            <span className="block truncate font-semibold">{f.name}</span>
+            <span className={`block text-[11px] ${msg.mine ? "text-hive-100" : "text-ink-400"}`}>
+              {fileSize(f.size)} · {image ? "click to view" : "click to open"}
+            </span>
+          </span>
+        </button>
+        {DownloadBtn}
+      </div>
       {err && <p className="mt-1 text-[11px] text-red-600">{err}</p>}
     </div>
   );

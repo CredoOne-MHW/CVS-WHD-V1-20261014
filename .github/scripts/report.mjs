@@ -6,10 +6,21 @@
  */
 import { createHmac } from "crypto";
 
+/**
+ * Usage: report.mjs <status> [percent] [phase…]
+ *
+ * The percentage and the sentence under the bar are reported by the step that just finished, so progress is
+ * a record of what actually happened rather than a timer pretending to be one.
+ */
 const status = process.argv[2] || "building";
+const pct = process.argv[3] && /^\d+$/.test(process.argv[3]) ? Number(process.argv[3]) : undefined;
+const phase = process.argv.slice(pct === undefined ? 3 : 4).join(" ") || undefined;
+
 const body = JSON.stringify({
   build_id: process.env.BUILD_ID,
   status,
+  progress: pct,
+  phase,
   run_id: process.env.RUN_ID,
   run_url: process.env.RUN_URL,
   file_key: process.env.FILE_KEY || undefined,

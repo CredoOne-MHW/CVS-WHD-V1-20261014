@@ -13,7 +13,7 @@
  * GitHub secrets, where a build can use them and nobody can read them back.
  */
 import { createHmac, timingSafeEqual } from "crypto";
-import { Company, MobileBuild } from "../models";
+import { Company, MobileBuild, PlatformSetting } from "../models";
 import { tenantUrls } from "./tenant";
 import { s3Area } from "../../shared/platform";
 import { bundleIdFor, nextVersion, platformLabel, artifactExt, BUILD_REQUIREMENTS, type Platform, type MobileConfig, type BuildTarget } from "../../shared/mobile";
@@ -42,7 +42,7 @@ export const BUILD_WORKFLOW_FILE = "build-mobile.yml";
  * a matching `# lms-workflow:` line, and "Check GitHub setup" compares them. Bump this only when the workflow
  * or one of its scripts actually changes, or the panel cries wolf on every release.
  */
-export const WORKFLOW_REVISION = "1.8.15";
+export const WORKFLOW_REVISION = "1.10.0";
 
 /**
  * The revision of the app source the platform expects in the build repository, read from mobile/package.json.
@@ -51,7 +51,7 @@ export const WORKFLOW_REVISION = "1.8.15";
  * dependencies behind, and the build then fails inside Metro on a module that was added releases ago. Bump
  * this only when something in mobile/ changes that a build depends on.
  */
-export const MOBILE_REVISION = "1.9.0";
+export const MOBILE_REVISION = "1.11.0";
 export const buildWorkflow = () => BUILD_WORKFLOW_FILE;
 /** A leftover value, so the panel can say it is being ignored and can be deleted. */
 export const ignoredWorkflowSetting = () => {
@@ -59,7 +59,25 @@ export const ignoredWorkflowSetting = () => {
   return v && v !== BUILD_WORKFLOW_FILE ? v : null;
 };
 export const buildRef = () => env("GITHUB_BUILD_REF");
-export const iosEnabled = () => env("MOBILE_IOS_SIGNING") === "1";
+/**
+ * Whether an iOS build can be started.
+ *
+ * Two ways to be on: the environment variable, as before, or the platform having seen Apple's four signing
+ * credentials land in the build repository. The second exists because the first alone meant somebody could
+ * supply every certificate correctly and still find the iOS button greyed out, with nothing saying why.
+ *
+ * Kept as a synchronous read because a dozen call sites build responses around it. `refreshIosFlag` loads
+ * the stored value and is awaited by the screens that show the state, which is often enough: the flag only
+ * ever changes when somebody saves credentials, and that path sets it directly.
+ */
+let iosFlag = { at: 0, on: false };
+export async function refreshIosFlag(maxAgeMs = 30_000) {
+  if (Date.now() - iosFlag.at < maxAgeMs) return iosFlag.on;
+  const row = await PlatformSetting.findById("mobile.iosSigning").lean<any>().catch(() => null);
+  iosFlag = { at: Date.now(), on: !!row?.value };
+  return iosFlag.on;
+}
+export const iosEnabled = () => env("MOBILE_IOS_SIGNING") === "1" || iosFlag.on;
 
 /** Which requirements are met — the Knowledge Base article and the Mobile App tab both show this. */
 /**
@@ -188,14 +206,32 @@ export async function startBuild(company: any, platform: Platform, by: string, o
     startedAt: new Date(),
   });
 
+  try {
+    await dispatchWorkflow(company, build);
+  } catch (e: any) {
+    await MobileBuild.updateOne({ _id: build._id }, { $set: { status: "failed", error: e.message, finishedAt: new Date() } });
+    throw e;
+  }
+  return build.toObject();
+}
+
+
+/**
+ * Sends one build to GitHub. Used both by a first start and by Resume, so the two cannot drift apart.
+ *
+ * Everything it needs comes off the build row rather than from whatever the caller happens to hold, which
+ * is what lets Resume send the same version and build number again instead of inventing a new one.
+ */
+async function dispatchWorkflow(company: any, build: any) {
+  const cfg = appConfig(company);
   const inputs = {
     build_id: String(build._id),
     company_code: String(company.code).toUpperCase(),
-    company_name: cfg.appName,
-    platform,
-    version,
-    build_number: String(n),
-    bundle_id: cfg.bundleId,
+    company_name: build.appName || cfg.appName,
+    platform: build.platform,
+    version: build.version,
+    build_number: String(build.buildNumber || 1),
+    bundle_id: build.bundleId || cfg.bundleId,
     primary: cfg.primary,
     accent: cfg.accent,
     api_base: (cfg as any).apiBase || "",
@@ -209,18 +245,20 @@ export async function startBuild(company: any, platform: Platform, by: string, o
      * bare prefix keeps working: it only ever prepends its own bucket when this does not start with s3://.
      */
     s3_prefix: (() => {
-      const area = s3Area(company.code, "app", platform, version);
+      const area = s3Area(company.code, "app", build.platform, build.version);
       const b = (process.env.S3_BUCKET || "").trim();
       return b ? `s3://${b}/${area}` : area;
     })(),
     callback_url: `${(cfg as any).apiBase || env("APP_BASE_URL")}/api/public/mobile/build`,
     // where the build collects the signing key — never the key itself, which a workflow input would print
-    signing_url: signing ? `${(cfg as any).apiBase || env("APP_BASE_URL")}/api/public/mobile/signing/${build._id}` : "",
+    signing_url: build.signedBy === "platform" ? `${(cfg as any).apiBase || env("APP_BASE_URL")}/api/public/mobile/signing/${build._id}` : "",
     // "test" makes an .apk / ad-hoc .ipa; "store" makes an .aab / App Store .ipa and uploads it if it can
-    target: opts.target || "test",
+    target: build.target || "test",
+    // Play moves this bar every August; a platform setting raises it without a code change and a release
+    android_target_sdk: (process.env.ANDROID_TARGET_SDK || "35").trim(),
   };
 
-  try {
+  {
     const res = await fetch(`https://api.github.com/repos/${buildRepo()}/actions/workflows/${encodeURIComponent(buildWorkflow())}/dispatches`, {
       method: "POST",
       headers: { Authorization: `Bearer ${env("GITHUB_BUILD_TOKEN")}`, Accept: "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28", "Content-Type": "application/json" },
@@ -231,11 +269,7 @@ export async function startBuild(company: any, platform: Platform, by: string, o
       const text = (await res.text()).slice(0, 300);
       throw new Error(res.status === 404 ? `GitHub refused the build (404). Push .github/workflows/${buildWorkflow()} to the branch and open the Actions tab once so Actions are enabled.` : `GitHub refused the build (${res.status}): ${text}`);
     }
-  } catch (e: any) {
-    await MobileBuild.updateOne({ _id: build._id }, { $set: { status: "failed", error: e.message, finishedAt: new Date() } });
-    throw e;
   }
-  return build.toObject();
 }
 
 let branchCache: { at: number; name: string } | null = null;
@@ -254,13 +288,96 @@ async function defaultBranch() {
 /** What the workflow sends back as it goes. */
 export async function updateBuild(
   buildId: string,
-  patch: { status?: string; runId?: string; runUrl?: string; fileKey?: string; fileName?: string; fileSize?: number; sha256?: string; error?: string; store?: any }
+  patch: { status?: string; runId?: string; runUrl?: string; fileKey?: string; fileName?: string; fileSize?: number; sha256?: string; error?: string; store?: any; progress?: number; phase?: string }
 ) {
   const set: any = {};
   for (const [k, v] of Object.entries(patch)) if (v !== undefined && v !== null && v !== "") set[k] = v;
+  if (patch.progress !== undefined) set.progress = Math.max(0, Math.min(100, Number(patch.progress) || 0));
   if (patch.status === "ready" || patch.status === "failed") set.finishedAt = new Date();
+  if (patch.status === "ready") set.progress = 100;
+  /**
+   * A paused build ignores whatever the run says next.
+   *
+   * Pausing cancels the run on GitHub, and a cancelled run keeps reporting for a few seconds afterwards.
+   * Without this guard that late report flips the row from "Paused" to "cancelled" or "failed" a moment
+   * after somebody pressed Pause, and Resume is then gone from a row they are still looking at.
+   */
+  const cur = await MobileBuild.findById(buildId).select("status").lean<any>();
+  if (cur?.status === "paused" && patch.status && patch.status !== "building") delete set.status;
   const build = await MobileBuild.findByIdAndUpdate(buildId, { $set: set }, { new: true }).lean<any>();
   return build;
+}
+
+/**
+ * Asks GitHub to cancel a run. Returns why it could not, rather than throwing.
+ *
+ * A run that has already finished, or that was never recorded, answers 409 or 404 — neither is a problem
+ * worth putting in front of somebody who has just pressed Stop on something that had already stopped.
+ */
+async function cancelRun(runId?: string): Promise<string | null> {
+  if (!runId) return "The build had not reached GitHub yet, so there was no run to cancel.";
+  try {
+    const res = await fetch(`https://api.github.com/repos/${buildRepo()}/actions/runs/${runId}/cancel`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${env("GITHUB_BUILD_TOKEN")}`, Accept: "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28" },
+      signal: AbortSignal.timeout(12_000),
+    });
+    if (res.status === 409) return "That run had already finished on GitHub.";
+    if (!res.ok) return `GitHub would not cancel the run (${res.status}).`;
+    return null;
+  } catch (e: any) {
+    return `GitHub could not be reached to cancel the run (${e?.message || e}).`;
+  }
+}
+
+/**
+ * Pause, Resume and Stop.
+ *
+ * GitHub Actions has no pause: a run is either going or cancelled, and nothing can freeze a build machine
+ * mid-step and pick it up later. So Pause does what can honestly be done — it cancels the run and remembers
+ * the version, the build number and how far it had reached — and Resume starts that same version again from
+ * the beginning. The screen says exactly that, so nobody expects it to carry on from 60%.
+ *
+ * Stop is final: the run is cancelled and the row is closed.
+ */
+export async function pauseBuild(build: any, by: string) {
+  if (!["queued", "building"].includes(build.status)) throw new Error("That build is not running.");
+  const problem = await cancelRun(build.runId);
+  await MobileBuild.updateOne({ _id: build._id }, { $set: { status: "paused", pausedBy: by, pausedAt: new Date(), phase: `Paused by ${by} at ${build.progress || 0}%` } });
+  return { paused: true, note: problem };
+}
+
+export async function stopBuild(build: any, by: string) {
+  if (["ready", "failed", "cancelled"].includes(build.status)) throw new Error("That build has already finished.");
+  const problem = await cancelRun(build.runId);
+  await MobileBuild.updateOne(
+    { _id: build._id },
+    { $set: { status: "cancelled", finishedAt: new Date(), error: `Stopped by ${by}`, phase: `Stopped by ${by} at ${build.progress || 0}%` } }
+  );
+  return { stopped: true, note: problem };
+}
+
+/**
+ * Starts the paused build again, at the same version.
+ *
+ * The row is reused rather than a new one created, so the history does not fill with half-builds of the
+ * same version, and the version and build number a tester was told about stay the ones they get.
+ */
+export async function resumeBuild(company: any, build: any, by: string) {
+  if (build.status !== "paused") throw new Error("That build is not paused.");
+  if (await MobileBuild.exists({ companyId: build.companyId, platform: build.platform, status: { $in: ["queued", "building"] } }))
+    throw new Error(`Another ${platformLabel(build.platform)} build is running for this company — wait for it to finish.`);
+  await MobileBuild.updateOne(
+    { _id: build._id },
+    { $set: { status: "queued", progress: 0, phase: "Starting again", startedAt: new Date(), error: undefined, runId: undefined, runUrl: undefined }, $inc: { resumeCount: 1 } }
+  );
+  try {
+    await dispatchWorkflow(company, build);
+  } catch (e: any) {
+    await MobileBuild.updateOne({ _id: build._id }, { $set: { status: "failed", error: e.message, finishedAt: new Date() } });
+    throw e;
+  }
+  return MobileBuild.findById(build._id).lean();
 }
 
 /** A build that has been running far too long is marked failed, so the tab never shows a spinner for ever. */

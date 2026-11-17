@@ -180,7 +180,7 @@ r.post("/chat/threads/:id/messages", can("chats", "create"), h(async (req, res) 
   if (!(await rateLimit(`chat:${id}`, 60, 60))) throw new HttpError(429, "Slow down a moment");
 
   const msg = await ChatMessage.create({ companyId, threadId: t._id, kind: "text", text: b.text, byId: oid(id), byName: name, readBy: [oid(id)] });
-  const last = { text: b.text.slice(0, 140), by: name, at: msg.createdAt, kind: "text" };
+  const last = { text: b.text.slice(0, 140), by: name, byId: oid(id), at: msg.createdAt, kind: "text" };
   await ChatThread.updateOne({ _id: t._id }, { $set: { lastMessage: last } });
 
   const out = { ...msg.toObject(), mine: false, readBy: undefined, reads: 1, threadId: String(t._id) };
@@ -232,7 +232,7 @@ r.post("/chat/threads/:id/files", can("chats", "create"), attach.single("file"),
     readBy: [oid(id)],
   });
 
-  const last = { text: `${isImage(f.mimetype) ? "Photo" : "File"}: ${caption || f.originalname}`.slice(0, 140), by: name, at: msg.createdAt, kind: "file" };
+  const last = { text: `${isImage(f.mimetype) ? "Photo" : "File"}: ${caption || f.originalname}`.slice(0, 140), by: name, byId: oid(id), at: msg.createdAt, kind: "file" };
   await ChatThread.updateOne({ _id: t._id }, { $set: { lastMessage: last } });
 
   const out = { ...msg.toObject(), mine: false, readBy: undefined, reads: 1, threadId: String(t._id) };
@@ -257,7 +257,11 @@ r.get("/chat/files/:messageId", can("chats", "read"), h(async (req, res) => {
   const msg = await ChatMessage.findOne({ _id: req.params.messageId, ...tenant(req) }).lean<any>();
   if (!msg?.file?.key) throw notFound("That attachment is not here");
   await myThread(req, String(msg.threadId)); // throws unless this person is in the conversation
-  res.json({ url: await signedUrl(msg.file.key, 300), name: msg.file.name, mime: msg.file.mime });
+  // ?download=1 asks for a link that saves the file under its own name rather than opening it in a tab
+  const save = req.query.download === "1" || req.query.download === "true";
+  res.locals.action = save ? "Download chat attachment" : "Open chat attachment";
+  res.locals.item = msg.file.name;
+  res.json({ url: await signedUrl(msg.file.key, 300, save ? msg.file.name : undefined), name: msg.file.name, mime: msg.file.mime });
 }));
 
 /** Marks everything up to now as read, and tells the others. */

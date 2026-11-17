@@ -35,7 +35,7 @@ export const targetHint = (platform: string, target: BuildTarget) =>
       : "An .apk anyone can install directly from the download page.";
 
 /** Where a build has got to. */
-export const BUILD_STATUSES = ["queued", "building", "ready", "failed", "cancelled"] as const;
+export const BUILD_STATUSES = ["queued", "building", "paused", "ready", "failed", "cancelled"] as const;
 export type BuildStatus = (typeof BUILD_STATUSES)[number];
 export const BUILD_LABEL: Record<BuildStatus, string> = {
   queued: "Queued",
@@ -43,6 +43,8 @@ export const BUILD_LABEL: Record<BuildStatus, string> = {
   ready: "Ready",
   failed: "Failed",
   cancelled: "Cancelled",
+  /** Cancelled on GitHub but remembered here — Resume starts the same version again from the beginning. */
+  paused: "Paused",
 };
 
 /** What the apps can show. Each one is a module key, so the Mobile Modules tab decides what appears. */

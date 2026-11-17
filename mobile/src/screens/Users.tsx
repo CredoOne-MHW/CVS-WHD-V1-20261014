@@ -14,7 +14,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ActivityIndicator, FlatList, KeyboardAvoidingView, Modal, Platform, Pressable, RefreshControl, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
 import { api } from "../lib/api";
-import { T } from "../theme";
+import { T, TYPE, LIFT } from "../theme";
 
 type Person = { id: string; label: string; sub?: string; kind?: string };
 
@@ -151,17 +151,32 @@ export default function Users({ me }: { me: any }) {
                 </Labeled>
               )}
 
+              {/*
+                Compact on purpose: a label and a two-way switch on one line rather than a stacked field.
+                It is a yes/no about one person, not a section, and giving it a section's worth of height
+                pushed Save off the bottom of a small screen.
+              */}
               {!form.isOwner && (
-                <Labeled label="User type">
-                  <Choice
-                    options={[
+                <View style={s.inlineRow}>
+                  <Text style={s.label}>User type</Text>
+                  <View style={s.segment}>
+                    {[
                       { value: "staff", label: "Staff" },
                       { value: "customer", label: "Customer" },
-                    ]}
-                    value={form.kind || "staff"}
-                    onChange={(v) => setForm({ ...form, kind: v, mapped: v === "customer" ? form.mapped : null })}
-                  />
-                </Labeled>
+                    ].map((o) => {
+                      const on = (form.kind || "staff") === o.value;
+                      return (
+                        <Pressable
+                          key={o.value}
+                          style={[s.segBtn, on && s.segBtnOn]}
+                          onPress={() => setForm({ ...form, kind: o.value, mapped: o.value === "customer" ? form.mapped : null })}
+                        >
+                          <Text style={[s.segText, on && s.segTextOn]}>{o.label}</Text>
+                        </Pressable>
+                      );
+                    })}
+                  </View>
+                </View>
               )}
 
               {form.kind === "customer" && !form.isOwner && (
@@ -333,11 +348,11 @@ const s = StyleSheet.create({
   empty: { textAlign: "center", color: T.muted, marginTop: 40 },
   note: { backgroundColor: "#fdecec", paddingHorizontal: 14, paddingVertical: 10 },
   noteText: { color: "#a11", fontSize: 12, fontWeight: "600" },
-  row: { flexDirection: "row", gap: 12, backgroundColor: T.card, borderRadius: 14, padding: 12, marginBottom: 10, borderWidth: 1, borderColor: T.line },
-  badgeWrap: { height: 42, width: 42, borderRadius: 21, backgroundColor: "rgba(47,92,36,0.12)", alignItems: "center", justifyContent: "center" },
+  row: { flexDirection: "row", gap: T.sm, backgroundColor: T.card, borderRadius: T.radius, padding: T.sm + 2, marginBottom: T.xs + 2, borderWidth: 1, borderColor: T.line, ...LIFT },
+  badgeWrap: { height: 38, width: 38, borderRadius: 19, backgroundColor: T.tint, alignItems: "center", justifyContent: "center" },
   badgeText: { color: T.brand, fontWeight: "800" },
-  name: { fontWeight: "800", color: T.text, fontSize: 15 },
-  sub: { color: T.muted, fontSize: 12, marginTop: 1 },
+  name: { ...TYPE.title, fontSize: 14.5 },
+  sub: { ...TYPE.meta, marginTop: 1 },
   tags: { flexDirection: "row", gap: 6, marginTop: 6, flexWrap: "wrap" },
   tag: { fontSize: 11, fontWeight: "800", paddingHorizontal: 8, paddingVertical: 2, borderRadius: 8, overflow: "hidden" },
   tagStaff: { backgroundColor: "rgba(0,0,0,0.06)", color: T.muted },
@@ -366,6 +381,12 @@ const s = StyleSheet.create({
   results: { marginTop: 6, backgroundColor: T.card, borderWidth: 1, borderColor: T.line, borderRadius: 12, padding: 8, gap: 2 },
   result: { flexDirection: "row", alignItems: "center", gap: 8, paddingHorizontal: 6, paddingVertical: 9 },
   resultName: { fontWeight: "700", color: T.text },
-  save: { backgroundColor: T.brand, borderRadius: 14, paddingVertical: 14, alignItems: "center", marginTop: 6 },
+  save: { backgroundColor: T.brand, borderRadius: T.radius, paddingVertical: 14, alignItems: "center", marginTop: T.xs, ...LIFT },
+  inlineRow: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: T.sm },
+  segment: { flexDirection: "row", backgroundColor: T.tint, borderRadius: T.radiusPill, padding: 3 },
+  segBtn: { paddingHorizontal: 14, paddingVertical: 7, borderRadius: T.radiusPill },
+  segBtnOn: { backgroundColor: T.brand },
+  segText: { fontWeight: "800", fontSize: 12, color: T.muted },
+  segTextOn: { color: "#fff" },
   saveText: { color: "#fff", fontWeight: "800", fontSize: 15 },
 });
