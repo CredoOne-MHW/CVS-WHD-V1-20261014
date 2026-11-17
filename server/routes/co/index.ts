@@ -478,28 +478,55 @@ r.get("/jobs/:id/download", h(async (req, res) => {
 /** Platforms that can't sign or send headers get one self-authenticating Lead URL: …/intake/<key>/<token> */
 const TOKEN_URL_TYPES = ["indiamart", "justdial", "sulekha", "shopify"];
 const baseUrl = (req: any) => process.env.APP_BASE_URL || `${req.headers["x-forwarded-proto"] || "https"}://${req.headers.host}`;
-const serializeConnector = (c: any, req: any) => ({
+
+/**
+ * The address a connector's URLs are handed out on — the company's own, not the platform's.
+ *
+ * A QR code printed at a camp, or a form URL pasted into a campaign, is seen by the public and lives for
+ * months on a poster. It has to read as the company's own address (its custom domain, else its subdomain of
+ * the platform's base domain), not as the deployment host the platform happens to run on today. Both
+ * addresses reach the same application, so this changes what is shown and copied, never where it goes —
+ * and a URL already printed keeps working.
+ *
+ * Cached for a minute per company: the list endpoint would otherwise re-read the same two fields for every
+ * connector on the page, and a slug or custom domain changes about once in the life of a company.
+ */
+const urlCache = new Map<string, { at: number; url: string }>();
+async function companyBaseUrl(req: any): Promise<string> {
+  const id = String(req.auth?.companyId || "");
+  const fallback = baseUrl(req);
+  if (!id) return fallback;
+  const hit = urlCache.get(id);
+  if (hit && Date.now() - hit.at < 60_000) return hit.url;
+  const c = await Company.findById(id).select("slug customDomain").lean<any>().catch(() => null);
+  const urls = c ? tenantUrls(c) : {};
+  const url = (urls as any).customUrl || (urls as any).platformUrl || fallback;
+  urlCache.set(id, { at: Date.now(), url });
+  return url;
+}
+
+const serializeConnector = (c: any, base: string) => ({
   ...c,
   secretEnc: undefined,
   prospectSeen: undefined,
   prospect: c.prospect ? { queued: c.prospect.queue?.length || 0, seededAt: c.prospect.seededAt, workedAt: c.prospect.workedAt, today: c.prospect.today, log: c.prospect.log || [] } : undefined,
   secretMasked: maskSecret(decrypt(c.secretEnc)),
-  endpoint: `${baseUrl(req)}/api/intake/${c.key}`,
-  formUrl: c.type === "qr_campaign" ? `${baseUrl(req)}/f/${c.key}` : undefined,
+  endpoint: `${base}/api/intake/${c.key}`,
+  formUrl: c.type === "qr_campaign" ? `${base}/f/${c.key}` : undefined,
   configSecretEnc: undefined,
   // sign-in connectors: tokens never leave the server
   oauth: c.oauth ? { provider: c.oauth.provider, account: c.oauth.account, status: c.oauth.status, error: c.oauth.error, expiresAt: c.oauth.expiresAt, connectedAt: c.oauth.connectedAt, connectedBy: c.oauth.connectedBy, scopes: c.oauth.scopes } : undefined,
   sso: c.sso ? { ...c.sso, pages: (c.sso.pages || []).map((p: any) => ({ id: p.id, name: p.name, ig: p.ig, subscribed: p.subscribed, error: p.error })) } : undefined,
   platformKeyMasked: c.configSecretEnc ? maskSecret(decrypt(c.configSecretEnc)) : undefined,
   // push platforms (IndiaMART, JustDial, Sulekha) get one self-authenticating URL: …/intake/<key>/<token>
-  pushUrlMasked: TOKEN_URL_TYPES.includes(c.type) ? `${baseUrl(req)}/api/intake/${c.key}/${maskSecret(decrypt(c.secretEnc))}` : undefined,
+  pushUrlMasked: TOKEN_URL_TYPES.includes(c.type) ? `${base}/api/intake/${c.key}/${maskSecret(decrypt(c.secretEnc))}` : undefined,
 });
 
 r.get("/integrations", can("integrations", "read"), h(async (req, res) => {
-  const list = await Connector.find(tenant(req)).sort({ createdAt: 1 }).lean();
+  const [list, base] = await Promise.all([Connector.find(tenant(req)).sort({ createdAt: 1 }).lean(), companyBaseUrl(req)]);
   const failed = await IntakeEvent.aggregate([{ $match: { companyId: oid(req.auth!.companyId!), status: { $in: ["failed", "dead"] } } }, { $group: { _id: "$connectorId", n: { $sum: 1 } } }]);
   const f = Object.fromEntries(failed.map((x: any) => [String(x._id), x.n]));
-  res.json({ types: CONNECTOR_TYPES, connectors: list.map((c: any) => ({ ...serializeConnector(c, req), pendingRetries: f[String(c._id)] || 0 })) });
+  res.json({ types: CONNECTOR_TYPES, connectors: list.map((c: any) => ({ ...serializeConnector(c, base), pendingRetries: f[String(c._id)] || 0 })) });
 }));
 
 const connectorBody = z.object({
@@ -601,8 +628,9 @@ r.post("/integrations", can("integrations", "create"), h(async (req, res) => {
   const doc = await Connector.create({ ...b, config, secret: undefined, platformKey: undefined, configSecretEnc: b.platformKey ? encrypt(b.platformKey) : undefined, ...tenant(req), key: `${b.type.slice(0, 3)}_${randomKey(10)}`, secretEnc: secret ? encrypt(secret) : undefined, verifyToken: b.type === "meta_leads" ? randomKey(12) : undefined, authMode: REST_TYPES.includes(b.type) ? "key" : undefined });
   await ConnectorKey.create({ key: doc.key, companyId: doc.companyId, db: currentDb(), type: doc.type, active: doc.active !== false });
   res.locals.item = doc.name;
+  const base = await companyBaseUrl(req);
   // the full secret is shown once, on creation
-  res.status(201).json({ ...serializeConnector(doc.toObject(), req), secret, pushUrl: TOKEN_URL_TYPES.includes(doc.type) ? `${baseUrl(req)}/api/intake/${doc.key}/${secret}` : undefined });
+  res.status(201).json({ ...serializeConnector(doc.toObject(), base), secret, pushUrl: TOKEN_URL_TYPES.includes(doc.type) ? `${base}/api/intake/${doc.key}/${secret}` : undefined });
 }));
 
 r.put("/integrations/:id", can("integrations", "update"), h(async (req, res) => {
@@ -624,7 +652,7 @@ r.put("/integrations/:id", can("integrations", "update"), h(async (req, res) => 
   if (b.active !== undefined) await ConnectorKey.updateOne({ key: doc.key }, { $set: { active: b.active } });
   await invalidate(`conn:${doc.key}`);
   res.locals.item = (doc as any).name;
-  res.json(serializeConnector(doc, req));
+  res.json(serializeConnector(doc, await companyBaseUrl(req)));
 }));
 
 r.post("/integrations/:id/rotate", can("integrations", "update"), h(async (req, res) => {
@@ -633,7 +661,8 @@ r.post("/integrations/:id/rotate", can("integrations", "update"), h(async (req, 
   if (!doc) throw notFound();
   res.locals.action = "Rotate secret";
   await invalidate(`conn:${(doc as any).key}`);
-  res.json({ ...serializeConnector(doc, req), secret, pushUrl: TOKEN_URL_TYPES.includes((doc as any).type) ? `${baseUrl(req)}/api/intake/${(doc as any).key}/${secret}` : undefined });
+  const base = await companyBaseUrl(req);
+  res.json({ ...serializeConnector(doc, base), secret, pushUrl: TOKEN_URL_TYPES.includes((doc as any).type) ? `${base}/api/intake/${(doc as any).key}/${secret}` : undefined });
 }));
 
 r.delete("/integrations/:id", can("integrations", "delete"), h(async (req, res) => {

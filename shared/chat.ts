@@ -15,7 +15,7 @@ export type MessageKind = (typeof MESSAGE_KINDS)[number];
 export const LIMITS = {
   message: 4000, // characters
   /** One attachment. Big enough for a photo from a phone or a scanned document, small enough to send. */
-  fileMb: 15,
+  fileMb: 20,
   groupName: 60,
   groupMembers: 500,
   page: 50, // messages fetched at a time

@@ -1,6 +1,6 @@
 name: Build mobile app
 
-# lms-workflow: 1.8.15
+# lms-workflow: 1.10.0
 #
 # That line is read by Super Admin › Mobile App Release › Check GitHub setup. The platform knows which
 # revision it expects, so if this file in the repository is older than the platform, the panel says so by
@@ -33,6 +33,7 @@ on:
       callback_url: { description: "Where to report back", required: true }
       signing_url: { description: "Where to collect the platform's signing key (empty = use the repository secrets)", required: false, default: "" }
       target: { description: "test = .apk / ad-hoc .ipa to install directly; store = .aab / App Store .ipa for the stores", required: false, default: "test" }
+      android_target_sdk: { description: "Android compile/target SDK level — Play refuses an app targeting a level more than about a year old", required: false, default: "35" }
 
 concurrency:
   group: mobile-${{ inputs.company_code }}-${{ inputs.platform }}
@@ -40,7 +41,9 @@ concurrency:
 
 jobs:
   build:
-    runs-on: ${{ inputs.platform == 'ios' && 'macos-14' || 'ubuntu-latest' }}
+    # macos-15 carries Xcode 16. App Store Connect refuses a build made with an older Xcode, so macos-14
+    # (Xcode 15) would be rejected at upload after a twenty-minute build.
+    runs-on: ${{ inputs.platform == 'ios' && 'macos-15' || 'ubuntu-latest' }}
     timeout-minutes: 60
     defaults:
       run:
@@ -69,7 +72,7 @@ jobs:
         if: always()
         working-directory: .
         run: |
-          node .github/scripts/report.mjs building
+          node .github/scripts/report.mjs building 5 Waiting for a build machine
         env:
           CALLBACK_URL: ${{ inputs.callback_url }}
           BUILD_ID: ${{ inputs.build_id }}
@@ -95,6 +98,17 @@ jobs:
             echo "::warning::mobile/package-lock.json is missing — installing without it, so this build may not match the last one."
             npm install
           fi
+
+      - name: Progress · installed
+        if: always()
+        working-directory: .
+        run: node .github/scripts/report.mjs building 20 Installing the app’s packages
+        env:
+          CALLBACK_URL: ${{ inputs.callback_url }}
+          BUILD_ID: ${{ inputs.build_id }}
+          MOBILE_BUILD_SECRET: ${{ secrets.MOBILE_BUILD_SECRET }}
+          RUN_ID: ${{ github.run_id }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
 
       - name: The company's icon, if it has one
         continue-on-error: true
@@ -122,11 +136,23 @@ jobs:
           ACCENT: ${{ inputs.accent }}
           API_BASE: ${{ inputs.api_base }}
           COMPANY_CODE: ${{ inputs.company_code }}
+          ANDROID_TARGET_SDK: ${{ inputs.android_target_sdk }}
 
       - name: Native project
         run: npx expo prebuild --platform ${{ inputs.platform }} --clean --no-install
 
       # ── Android ──────────────────────────────────────────────────────────
+      - name: Progress · native project
+        if: always()
+        working-directory: .
+        run: node .github/scripts/report.mjs building 40 Making the native project
+        env:
+          CALLBACK_URL: ${{ inputs.callback_url }}
+          BUILD_ID: ${{ inputs.build_id }}
+          MOBILE_BUILD_SECRET: ${{ secrets.MOBILE_BUILD_SECRET }}
+          RUN_ID: ${{ github.run_id }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+
       - name: Java
         if: inputs.platform == 'android'
         uses: actions/setup-java@v4
@@ -174,6 +200,17 @@ jobs:
 
       # Google Play takes an Android App Bundle and makes the phone-ready files itself; an .apk is what you
       # hand to a phone directly. They are different artefacts, so the target decides which one is built.
+      - name: Progress · compiling
+        if: always()
+        working-directory: .
+        run: node .github/scripts/report.mjs building 55 Compiling and bundling
+        env:
+          CALLBACK_URL: ${{ inputs.callback_url }}
+          BUILD_ID: ${{ inputs.build_id }}
+          MOBILE_BUILD_SECRET: ${{ secrets.MOBILE_BUILD_SECRET }}
+          RUN_ID: ${{ github.run_id }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+
       - name: Build the Android app
         if: inputs.platform == 'android'
         run: |
@@ -215,6 +252,17 @@ jobs:
             -exportOptionsPlist "$PLIST"
 
       # ── Upload and report ────────────────────────────────────────────────
+      - name: Progress · built
+        if: always()
+        working-directory: .
+        run: node .github/scripts/report.mjs building 85 Uploading the finished app
+        env:
+          CALLBACK_URL: ${{ inputs.callback_url }}
+          BUILD_ID: ${{ inputs.build_id }}
+          MOBILE_BUILD_SECRET: ${{ secrets.MOBILE_BUILD_SECRET }}
+          RUN_ID: ${{ github.run_id }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+
       - name: Upload to the company's folder
         id: upload
         env:

@@ -23,6 +23,7 @@ import Dashboard from "./screens/Dashboard";
 import Chats from "./screens/Chats";
 import Users from "./screens/Users";
 import Profile from "./screens/Profile";
+import UpdateBar from "./components/UpdateBar";
 import NoticeBanner from "./components/NoticeBanner";
 import { registerForPush, unregisterPush, setLiveConfig } from "./lib/live";
 
@@ -90,6 +91,8 @@ export default function App() {
 
   return (
     <Shell>
+      {/* above the notice, because an app that cannot be updated eventually cannot do anything else either */}
+      <UpdateBar />
       <NoticeBanner companyId={me?.companyId} />
       <NavigationContainer theme={{ ...DefaultTheme, colors: { ...DefaultTheme.colors, primary: T.brand, background: T.bg, card: "#fff", text: T.text, border: T.line } }}>
         <Drawer.Navigator

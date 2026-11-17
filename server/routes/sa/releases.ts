@@ -7,16 +7,17 @@
  */
 import { Router } from "express";
 import { z } from "zod";
-import { Company, MobileBuild, PushDevice } from "../../models";
+import { Company, MobileBuild, PushDevice, PlatformSetting } from "../../models";
 import { can } from "../../middleware/auth";
 import { h, parse, notFound, badRequest, paging } from "../../lib/http";
-import { startBuild, buildRepo, buildWorkflow, readyToBuild, setupState, iosEnabled, ignoredWorkflowSetting } from "../../lib/mobilebuild";
+import { startBuild, buildRepo, buildWorkflow, readyToBuild, setupState, iosEnabled, refreshIosFlag, ignoredWorkflowSetting, pauseBuild, resumeBuild, stopBuild } from "../../lib/mobilebuild";
 import { signingEnabled } from "../../lib/signing";
 import { state as autoState, saveState, newSecret, rebuildAll } from "../../lib/autobuild";
 import { buildSecret, ensureBuildSecret, rotateBuildSecret } from "../../lib/buildsecret";
 import { pushSecrets, listSecretNames } from "../../lib/githubsecrets";
 import { verifySetup } from "../../lib/verifysetup";
 import { PLATFORMS } from "../../../shared/mobile";
+import { CRED_GROUPS, ALL_CRED_KEYS, groupReady } from "../../../shared/storecreds";
 
 const r = Router();
 const read = can("mobile_release", "read");
@@ -26,6 +27,7 @@ const days = (n: number) => new Date(Date.now() - n * 86_400_000);
 /** The four numbers across the top, and everything the set-up panel shows. */
 r.get("/mobile-releases/summary", read, h(async (req, res) => {
   const since = days(7);
+  await refreshIosFlag(); // so a credential saved a moment ago is reflected here, not in thirty seconds
   const [building, ready, failed, auto] = await Promise.all([
     MobileBuild.countDocuments({ status: { $in: ["queued", "building"] } }),
     MobileBuild.countDocuments({ status: "ready", createdAt: { $gte: since } }),
@@ -167,6 +169,28 @@ r.post("/mobile-releases/build", write, h(async (req, res) => {
   });
 }));
 
+/**
+ * Pause, Resume and Stop on any company's build, from the one screen that lists them all.
+ *
+ * The same three actions the per-company Mobile App tab offers, so a build started here can be controlled
+ * here. GitHub has no pause: Pause cancels the run and keeps the version, Resume starts that same version
+ * again from the beginning, and Stop closes the row for good.
+ */
+r.post("/mobile-releases/build/:buildId/:act(pause|resume|stop)", write, h(async (req, res) => {
+  const build = await MobileBuild.findById(req.params.buildId).lean<any>();
+  if (!build) throw notFound("That build is not here");
+  const company = await Company.findOne({ _id: build.companyId, deletedAt: null }).lean<any>();
+  if (!company) throw notFound("Company not found");
+  const act = req.params.act;
+  const out =
+    act === "pause" ? await pauseBuild(build, req.auth!.email).catch((e: any) => { throw badRequest(e.message); })
+    : act === "resume" ? await resumeBuild(company, build, req.auth!.email).catch((e: any) => { throw badRequest(e.message); })
+    : await stopBuild(build, req.auth!.email).catch((e: any) => { throw badRequest(e.message); });
+  res.locals.action = `${act[0].toUpperCase()}${act.slice(1)} build`;
+  res.locals.item = `${company.code} · ${build.version}`;
+  res.json({ ...(out as any), build: await MobileBuild.findById(build._id).lean() });
+}));
+
 /** The automatic-rebuild switch, the branch, and a fresh secret when one is wanted. */
 r.put("/mobile-releases/auto", write, h(async (req, res) => {
   const b = parse(z.object({ on: z.boolean().optional(), branch: z.string().max(80).optional(), rotate: z.boolean().optional() }), req.body);
@@ -219,6 +243,51 @@ r.post("/mobile-releases/github-secrets", write, h(async (req, res) => {
 /** Asks GitHub whether a build would actually work — repository, branch, workflow file, Actions. */
 r.get("/mobile-releases/verify", read, h(async (req, res) => {
   res.json(await verifySetup());
+}));
+
+/**
+ * The Apple and Google credentials, and what each one unlocks.
+ *
+ * GitHub never gives a secret's value back, only its name, so this can say that something is present but
+ * never what it is — which is the right amount for a screen whose job is to tell you what is still missing.
+ */
+r.get("/mobile-releases/store-credentials", read, h(async (req, res) => {
+  const present = await listSecretNames();
+  res.json({
+    groups: CRED_GROUPS.map((g) => ({ ...g, ready: groupReady(g, present), present: g.creds.map((c) => c.key).filter((k) => present.includes(k)) })),
+    iosEnabled: iosEnabled(),
+    iosForcedOff: !iosEnabled() && CRED_GROUPS.filter((g) => g.id === "ios").every((g) => groupReady(g, present)),
+  });
+}));
+
+/**
+ * Saves credentials to the build repository, sealed to its public key.
+ *
+ * Files arrive already base64-encoded by the browser, which is the form a repository secret has to be in
+ * anyway. Nothing is written to the database on the way through: this platform never holds Apple's or
+ * Google's keys, it only passes them to the one place the build can read them from.
+ */
+r.put("/mobile-releases/store-credentials", write, h(async (req, res) => {
+  const body = parse(z.record(z.string().max(200_000)), req.body || {});
+  const wanted: Record<string, string> = {};
+  for (const [k, v] of Object.entries(body)) if (ALL_CRED_KEYS.includes(k) && v) wanted[k] = v;
+  if (!Object.keys(wanted).length) throw badRequest("Nothing to save — fill in at least one field.");
+  const out = await pushSecrets(wanted).catch((e: any) => ({ repo: "", results: [{ name: "all", ok: false, message: e?.message || String(e) }] }));
+
+  /**
+   * iOS switches itself on once its four credentials are in place.
+   *
+   * It used to need MOBILE_IOS_SIGNING=1 set by hand on the platform as well, which meant somebody could
+   * supply every certificate correctly and still find the button greyed out, with nothing on screen saying
+   * why. Having the credentials *is* the condition, so the platform records it the moment they land.
+   */
+  const present = await listSecretNames();
+  const iosGroup = CRED_GROUPS.find((g) => g.id === "ios")!;
+  if (groupReady(iosGroup, present)) await PlatformSetting.updateOne({ _id: "mobile.iosSigning" }, { $set: { value: true } }, { upsert: true });
+
+  res.locals.action = "Save app store credentials";
+  res.locals.item = Object.keys(wanted).join(", ");
+  res.json({ ...out, iosEnabled: iosEnabled() || groupReady(iosGroup, present) });
 }));
 
 /** Which of them the repository already holds. GitHub never gives back a value, only the names. */

@@ -41,7 +41,8 @@ const aws = (name: string) => Object.assign(new Error(name), { name, $metadata: 
 
 /* an upload that is too big is the user's to fix, not a crash */
 check("file too large names the limit", handle(multer("LIMIT_FILE_SIZE", { limit: 8 * 1024 * 1024 })), { status: 400, has: "8 MB" });
-check("file too large is not a 500", handle(multer("LIMIT_FILE_SIZE", { limit: 8 * 1024 * 1024 })), { status: 400, has: "too large" });
+// the exact phrase was asked for, so it is asserted rather than left to drift
+check("file too large is not a 500", handle(multer("LIMIT_FILE_SIZE", { limit: 8 * 1024 * 1024 })), { status: 400, has: "Exceeded File Size" });
 check("an unexpected field says so", handle(multer("LIMIT_UNEXPECTED_FILE", { field: "file" })), { status: 400, has: "file" });
 
 /* every S3 refusal says which setting is wrong */
