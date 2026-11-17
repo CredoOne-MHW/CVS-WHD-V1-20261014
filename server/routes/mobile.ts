@@ -13,7 +13,7 @@ import { can } from "../middleware/auth";
 import { h, parse, notFound, badRequest, paging } from "../lib/http";
 import { putAt, getObject, deleteObject } from "../lib/s3";
 import { s3Area } from "../../shared/platform";
-import { appConfig, startBuild, setupState, readyToBuild, latestReady, buildRepo, buildWorkflow, buildRef, iosEnabled, ignoredWorkflowSetting } from "../lib/mobilebuild";
+import { appConfig, startBuild, setupState, readyToBuild, latestReady, buildRepo, buildWorkflow, buildRef, iosEnabled, refreshIosFlag, ignoredWorkflowSetting, pauseBuild, resumeBuild, stopBuild } from "../lib/mobilebuild";
 import { signingSummary } from "../lib/signing";
 import { buildSecret } from "../lib/buildsecret";
 import { PLATFORMS, APP_SCREENS, platformLabel, type Platform } from "../../shared/mobile";
@@ -45,6 +45,7 @@ export function mobileRoutes(scope: Scope) {
   /** Settings, the state of the build set-up, and this company's builds. */
   r.get("/mobile", read, h(async (req, res) => {
     const c = await target(req, scope);
+    await refreshIosFlag(); // the iOS button's state is decided by credentials that may have just landed
     const { page, limit, skip } = paging(req.query);
     const [builds, total] = await Promise.all([
       MobileBuild.find({ companyId: c._id }).sort({ createdAt: -1 }).skip(skip).limit(limit).lean<any[]>(),
@@ -138,13 +139,24 @@ export function mobileRoutes(scope: Scope) {
       res.status(201).json(build);
     }));
 
-    /** Give up on a build that will never report back. */
-    r.post("/mobile/build/:buildId/cancel", write, h(async (req, res) => {
+    /**
+     * Pause, Resume and Stop, while a build is running.
+     *
+     * GitHub Actions cannot freeze a run and pick it up later, so Pause cancels the run and remembers the
+     * version; Resume starts that same version again from the beginning. The screen says so. Stop is final.
+     */
+    r.post("/mobile/build/:buildId/:act(pause|resume|stop|cancel)", write, h(async (req, res) => {
       const c = await target(req, scope);
-      const build = await MobileBuild.findOneAndUpdate({ _id: req.params.buildId, companyId: c._id, status: { $in: ["queued", "building"] } }, { $set: { status: "cancelled", finishedAt: new Date(), error: `Cancelled by ${req.auth!.email}` } }, { new: true }).lean<any>();
-      if (!build) throw notFound("That build has already finished");
-      res.locals.action = "Cancel build";
-      res.json(build);
+      const build = await MobileBuild.findOne({ _id: req.params.buildId, companyId: c._id }).lean<any>();
+      if (!build) throw notFound("That build is not here");
+      const act = req.params.act === "cancel" ? "stop" : req.params.act;
+      const out =
+        act === "pause" ? await pauseBuild(build, req.auth!.email).catch((e: any) => { throw badRequest(e.message); })
+        : act === "resume" ? await resumeBuild(c, build, req.auth!.email).catch((e: any) => { throw badRequest(e.message); })
+        : await stopBuild(build, req.auth!.email).catch((e: any) => { throw badRequest(e.message); });
+      res.locals.action = `${act[0].toUpperCase()}${act.slice(1)} build`;
+      res.locals.item = `${c.name} · ${build.version}`;
+      res.json({ ...(out as any), build: await MobileBuild.findById(build._id).lean() });
     }));
 
     r.delete("/mobile/build/:buildId", write, h(async (req, res) => {

@@ -321,6 +321,9 @@ r.post("/public/mobile/build", h(async (req: any, res) => {
     fileSize: b.file_size ? Number(b.file_size) : undefined,
     sha256: b.sha256 ? String(b.sha256).slice(0, 80) : undefined,
     error: b.error ? String(b.error).slice(0, 600) : undefined,
+    // how far along, and the sentence under the bar, reported by whichever step has just finished
+    progress: b.progress !== undefined && b.progress !== null ? Number(b.progress) : undefined,
+    phase: b.phase ? String(b.phase).slice(0, 120) : undefined,
     // a store build also says what became of it at Google or Apple
     store: b.store_note
       ? {
@@ -332,7 +335,57 @@ r.post("/public/mobile/build", h(async (req: any, res) => {
       : undefined,
   });
   if (!build) throw new HttpError(404, "Unknown build");
+
+  /**
+   * A finished app tells the phones that already have it.
+   *
+   * Only a build somebody can actually install is announced — a store build is an .aab or an App Store .ipa,
+   * which no phone installs directly, so telling people about one would send them to a file that cannot
+   * work. Devices already on this version are left alone. The push never fails the callback: a build that
+   * finished is still a build.
+   */
+  if (build.status === "ready" && build.target !== "store") {
+    (async () => {
+      const { Company } = await import("../models");
+      const { pushAppUpdate } = await import("../lib/push");
+      const { tenantUrls } = await import("../lib/tenant");
+      const c = await Company.findById(build.companyId).select("name slug customDomain mobile").lean<any>();
+      if (!c) return;
+      const u = tenantUrls(c);
+      const base = (u as any).customUrl || (u as any).platformUrl || (process.env.APP_BASE_URL || "");
+      await pushAppUpdate(build.companyId, build.platform, build.version, `${base}/app/settings/mobile-app`, c.mobile?.appName || c.name);
+    })().catch(() => {});
+  }
+
   res.json({ ok: true, status: build.status });
+}));
+
+/**
+ * What the newest installable version of a company's app is.
+ *
+ * The app asks this when it starts and when it comes back to the foreground, and shows a bar offering the
+ * update when its own version is behind. Public on purpose — it says a version number and a download page,
+ * nothing about anybody — and it answers for a company by its code, which is what the app already knows.
+ */
+r.get("/public/mobile/latest", h(async (req, res) => {
+  const { Company, MobileBuild } = await import("../models");
+  const { tenantUrls } = await import("../lib/tenant");
+  const code = String(req.query.code || "").trim().toUpperCase();
+  const platform = String(req.query.platform || "android") === "ios" ? "ios" : "android";
+  if (!code) throw new HttpError(400, "code is required");
+  const c = await Company.findOne({ code, deletedAt: null }).select("name slug customDomain mobile").lean<any>();
+  if (!c) throw new HttpError(404, "Unknown company");
+  const build = await MobileBuild.findOne({ companyId: c._id, platform, status: "ready", target: { $ne: "store" } }).sort({ createdAt: -1 }).select("version fileSize createdAt notes").lean<any>();
+  const u = tenantUrls(c);
+  const base = (u as any).customUrl || (u as any).platformUrl || (process.env.APP_BASE_URL || "");
+  res.json({
+    version: build?.version || null,
+    size: build?.fileSize || null,
+    releasedAt: build?.createdAt || null,
+    notes: build?.notes || null,
+    url: build ? `${base}/app/settings/mobile-app` : null,
+    appName: c.mobile?.appName || c.name,
+  });
 }));
 
 /**

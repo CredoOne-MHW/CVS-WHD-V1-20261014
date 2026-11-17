@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { ActivityIndicator, RefreshControl, ScrollView, StyleSheet, Text, View } from "react-native";
 import { api } from "../lib/api";
-import { T } from "../theme";
+import { T, TYPE, LIFT } from "../theme";
 
 /** Today at a glance — the same figures the web dashboard shows, read from the same endpoint. */
 export default function Dashboard() {
@@ -53,24 +53,30 @@ export default function Dashboard() {
       <View style={s.grid}>
         {cards.map((c) => (
           <View key={c.label} style={s.card}>
-            <Text style={s.cardLabel}>{c.label}</Text>
             <Text style={s.cardValue}>{String(c.value)}</Text>
+            <Text style={s.cardLabel}>{c.label}</Text>
             <Text style={s.cardHint}>{c.hint}</Text>
           </View>
         ))}
       </View>
-      <Text style={s.note}>Pull down to refresh. Leads, clients and chats are on the menu.</Text>
+      <Text style={s.note}>Pull down to refresh.</Text>
     </ScrollView>
   );
 }
 
 const s = StyleSheet.create({
   center: { flex: 1, alignItems: "center", justifyContent: "center", backgroundColor: T.bg },
-  grid: { flexDirection: "row", flexWrap: "wrap", gap: 12 },
-  card: { flexGrow: 1, flexBasis: "46%", backgroundColor: T.card, borderRadius: T.radius, padding: 16, borderWidth: 1, borderColor: T.line },
-  cardLabel: { color: T.muted, fontWeight: "700", fontSize: 12, textTransform: "uppercase", letterSpacing: 0.6 },
-  cardValue: { marginTop: 8, fontSize: 30, fontWeight: "800", color: T.text },
-  cardHint: { marginTop: 2, color: T.muted, fontSize: 12 },
-  note: { marginTop: 18, color: T.muted, fontSize: 12, textAlign: "center" },
-  err: { color: T.danger, fontWeight: "600", marginBottom: 12 },
+  grid: { flexDirection: "row", flexWrap: "wrap", gap: T.sm },
+  /**
+   * The number first and large, the label under it.
+   *
+   * The label used to be a small upper-case line above the figure, which made four tiles read as four
+   * headings with numbers attached. A dashboard is read by its numbers; everything else is a caption.
+   */
+  card: { flexGrow: 1, flexBasis: "47%", backgroundColor: T.card, borderRadius: T.radius, paddingHorizontal: T.md, paddingVertical: T.md, borderWidth: 1, borderColor: T.line, ...LIFT },
+  cardValue: { ...TYPE.display, color: T.brand },
+  cardLabel: { ...TYPE.label, marginTop: 2 },
+  cardHint: { ...TYPE.meta, marginTop: 1 },
+  note: { ...TYPE.meta, marginTop: T.lg, textAlign: "center" },
+  err: { color: T.danger, fontWeight: "700", fontSize: 12, marginBottom: T.sm },
 });

@@ -11,9 +11,10 @@ import { Smartphone, Hammer, Download, RotateCcw, Trash2, Save, ExternalLink, Ch
 import { api, fmtDate } from "@/lib/api";
 import { Field, Btn, Badge, Spinner, Empty, Confirm, useToast } from "@/components/ui";
 import { platformLabel, BUILD_LABEL, targetHint, type BuildStatus } from "@shared/mobile";
+import { BuildProgressRow, BuildControls, ProgressBar, isLive } from "@/components/BuildProgress";
 
 const size = (n?: number) => (!n ? "—" : n > 1048576 ? `${(n / 1048576).toFixed(1)} MB` : `${Math.round(n / 1024)} KB`);
-const TONE: Record<BuildStatus, "green" | "honey" | "red" | "gray"> = { ready: "green", building: "honey", queued: "gray", failed: "red", cancelled: "gray" };
+const TONE: Record<string, "green" | "honey" | "red" | "gray"> = { ready: "green", building: "honey", queued: "gray", failed: "red", cancelled: "gray", paused: "honey" };
 
 export function MobileAppTab({ id, canEdit }: { id: string; canEdit: boolean }) {
   const [d, setD] = useState<any>(null);
@@ -45,10 +46,13 @@ export function MobileAppTab({ id, canEdit }: { id: string; canEdit: boolean }) 
     load();
   }, [load]);
 
-  // a build that is running: look again every 20 seconds until it finishes
+  /**
+   * While a build is running the bar has to move, so this looks again every 5 seconds rather than every 20.
+   * A paused build is not polled: nothing changes until somebody presses Resume.
+   */
   useEffect(() => {
     if (!d?.builds?.some((b: any) => b.status === "queued" || b.status === "building")) return;
-    const t = setInterval(() => load(), 20_000);
+    const t = setInterval(() => load(), 5_000);
     return () => clearInterval(t);
   }, [d, load]);
 
@@ -184,7 +188,7 @@ export function MobileAppTab({ id, canEdit }: { id: string; canEdit: boolean }) 
                     onChange={(e) => set("platforms", e.target.checked ? [...(form.platforms || []), p] : (form.platforms || []).filter((x: string) => x !== p))}
                   />
                   {platformLabel(p)}
-                  {p === "ios" && !d.ios && <span className="text-[11px] font-normal text-ink-500">· signing not switched on</span>}
+                  {p === "ios" && !d.ios && <span className="text-[11px] font-normal text-ink-500">· needs Apple's signing credentials</span>}
                 </label>
               ))}
             </div>
@@ -223,7 +227,16 @@ export function MobileAppTab({ id, canEdit }: { id: string; canEdit: boolean }) 
               Store build
             </label>
             {(form.platforms || ["android"]).map((p: string) => (
-              <Btn key={p} type="button" variant={p === "android" ? "primary" : "secondary"} loading={busy === p} disabled={!canEdit || !d.setup?.ok || !!running || (p === "ios" && !d.ios)} onClick={() => build(p, storeBuild ? "store" : "test")}>
+              <Btn
+                key={p}
+                type="button"
+                variant={p === "android" ? "primary" : "secondary"}
+                loading={busy === p}
+                disabled={!canEdit || !d.setup?.ok || !!running || (p === "ios" && !d.ios)}
+                /* a greyed-out button with no reason on it sends people to ask; this says where to go */
+                title={p === "ios" && !d.ios ? "Apple's distribution certificate, provisioning profile and Team ID are not set. Add them in Mobile App Release › App store credentials and this switches on by itself." : undefined}
+                onClick={() => build(p, storeBuild ? "store" : "test")}
+              >
                 {p === "ios" ? <Apple className="h-4 w-4" /> : <Hammer className="h-4 w-4" />} Build {platformLabel(p)}
               </Btn>
             ))}
@@ -288,6 +301,33 @@ export function MobileAppTab({ id, canEdit }: { id: string; canEdit: boolean }) 
           </div>
         )}
 
+        {/*
+          Anything running or paused, shown above the table.
+          A build takes ten to twenty minutes, so the one thing somebody wants on opening this tab is how
+          far along it is — not to find it among the finished ones.
+        */}
+        {d.builds?.filter((b: any) => isLive(b)).length ? (
+          <div className="mt-4 space-y-2">
+            {d.builds
+              .filter((b: any) => isLive(b))
+              .map((b: any) => (
+                <BuildProgressRow
+                  key={b._id}
+                  build={b}
+                  base={`/sa/companies/${id}/mobile/build`}
+                  canEdit={canEdit}
+                  onDone={load}
+                  title={
+                    <>
+                      {platformLabel(b.platform)} <span className="mono text-xs font-bold text-ink-500">v{b.version}</span>
+                      {b.target === "store" && <span className="ml-2 align-middle"><Badge color="honey">Store</Badge></span>}
+                    </>
+                  }
+                />
+              ))}
+          </div>
+        ) : null}
+
         {d.builds?.length ? (
           <div className="mt-4 overflow-x-auto rounded-xl border border-ink-400/15">
             <table className="w-full min-w-[760px]">
@@ -312,7 +352,13 @@ export function MobileAppTab({ id, canEdit }: { id: string; canEdit: boolean }) 
                       {b.target === "store" && <span className="ml-2"><Badge color="honey">Store</Badge></span>}
                     </td>
                     <td className="td">
-                      <Badge color={TONE[b.status as BuildStatus]}>{BUILD_LABEL[b.status as BuildStatus]}</Badge>
+                      <Badge color={TONE[b.status] || "gray"}>{BUILD_LABEL[b.status as BuildStatus] || (b.status === "paused" ? "Paused" : b.status)}</Badge>
+                      {isLive(b) && (
+                        <div className="mt-1.5 max-w-[220px]">
+                          <ProgressBar value={b.progress || 0} status={b.status} />
+                          <p className="mt-1 text-[11px] text-ink-500">{b.phase || "Waiting for a build machine"}</p>
+                        </div>
+                      )}
                       {b.error && <p className="mt-1 max-w-[280px] text-xs text-red-600">{b.error}</p>}
                       {b.store?.message && <p className={`mt-1 max-w-[280px] text-xs ${b.store.uploaded ? "text-emerald-700" : "text-ink-500"}`}>{b.store.message}</p>}
                     </td>
@@ -334,12 +380,12 @@ export function MobileAppTab({ id, canEdit }: { id: string; canEdit: boolean }) 
                           <Download className="h-4 w-4" />
                         </a>
                       )}
-                      {(b.status === "queued" || b.status === "building") && canEdit && (
-                        <button className="btn-ghost" title="Cancel" onClick={() => api(`/sa/companies/${id}/mobile/build/${b._id}/cancel`, { method: "POST" }).then(load)}>
-                          <XCircle className="h-4 w-4" />
-                        </button>
+                      {isLive(b) && canEdit && (
+                        <span className="inline-flex justify-end">
+                          <BuildControls build={b} base={`/sa/companies/${id}/mobile/build`} canEdit={canEdit} onDone={load} compact />
+                        </span>
                       )}
-                      {b.status !== "building" && b.status !== "queued" && canEdit && (
+                      {!isLive(b) && canEdit && (
                         <button className="btn-ghost text-red-600 hover:bg-red-50" title="Delete" onClick={() => setKill(b)}>
                           <Trash2 className="h-4 w-4" />
                         </button>

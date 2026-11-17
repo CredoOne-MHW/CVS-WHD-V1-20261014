@@ -29,6 +29,24 @@ e.android.adaptiveIcon.backgroundColor = primary;
 if (e.notification) e.notification.color = primary;
 const notifyPlugin = (e.plugins || []).find((p) => Array.isArray(p) && p[0] === "expo-notifications");
 if (notifyPlugin) notifyPlugin[1] = { ...notifyPlugin[1], color: primary };
+
+/**
+ * The Android API level this is built against, overridable by the build.
+ *
+ * Google Play refuses an app that targets a level more than a year or so behind the current one, and that
+ * bar moves every August. Keeping it here rather than hard-coded means raising it is a setting on the
+ * platform, not a code change and a release — which matters because the day Play moves the bar is the day
+ * an upload starts being refused.
+ */
+const sdk = parseInt(get("ANDROID_TARGET_SDK", "35"), 10) || 35;
+const buildProps = (e.plugins || []).find((p) => Array.isArray(p) && p[0] === "expo-build-properties");
+if (buildProps) {
+  buildProps[1] = {
+    ...buildProps[1],
+    android: { ...(buildProps[1].android || {}), compileSdkVersion: sdk, targetSdkVersion: sdk, buildToolsVersion: `${sdk}.0.0` },
+  };
+  console.log(`Android compile/target SDK: ${sdk}`);
+}
 e.extra = {
   apiBase: get("API_BASE"),
   companyCode: get("COMPANY_CODE"),

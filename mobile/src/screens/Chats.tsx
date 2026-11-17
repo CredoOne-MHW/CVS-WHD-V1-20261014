@@ -11,10 +11,11 @@ import { createNativeStackNavigator } from "@react-navigation/native-stack";
 import * as DocumentPicker from "expo-document-picker";
 import { api } from "../lib/api";
 import { subscribe, poller, setLiveConfig, isLive } from "../lib/live";
-import { T } from "../theme";
+import { T, TYPE, LIFT } from "../theme";
+import { clock, listTime, toRows, tickFor, Ticks, DayPill, SystemLine, Tail, Typing, nameColour } from "../components/chat-ui";
 
 const LIMIT_MESSAGE = 4000;
-const LIMIT_FILE_MB = 15;
+const LIMIT_FILE_MB = 20;
 /** The same list the server takes, so a file is never uploaded only to be refused on arrival. */
 const FILE_MIMES = [
   "image/png",
@@ -77,7 +78,11 @@ function ThreadList({ navigation, me }: any) {
   const [channels, setChannels] = useState<any>(null);
   const [busy, setBusy] = useState(false);
   const [picker, setPicker] = useState(false);
+  const [group, setGroup] = useState(false);
+  const [search, setSearch] = useState("");
   const meId = String(me?.userId || "");
+  /** The same permission the web checks before offering to make a group. */
+  const canGroup = !!(me?.perms?.["chats:groups"]?.create || me?.perms?.chats?.create);
 
   const load = useCallback(async () => {
     const r = await api("/co/chat/threads").catch(() => null);
@@ -115,47 +120,91 @@ function ThreadList({ navigation, me }: any) {
       </View>
     );
 
+  const shown = threads.filter((t: any) => {
+    const q = search.trim().toLowerCase();
+    if (!q) return true;
+    return `${titleOf(t, meId)} ${t.lastMessage?.text || ""}`.toLowerCase().includes(q);
+  });
+
   return (
     <View style={s.wrap}>
+      {/* search sits above the list and filters what is already here — no request per keystroke */}
+      <View style={s.searchWrap}>
+        <TextInput
+          style={s.search}
+          value={search}
+          onChangeText={setSearch}
+          placeholder="Search conversations"
+          placeholderTextColor={T.muted}
+          autoCapitalize="none"
+          returnKeyType="search"
+        />
+      </View>
+
       <FlatList
-        data={threads}
+        data={shown}
         keyExtractor={(t) => String(t._id)}
         refreshControl={<RefreshControl refreshing={busy} onRefresh={refresh} tintColor={T.brand} />}
+        contentContainerStyle={{ paddingBottom: 90 }}
+        keyboardShouldPersistTaps="handled"
         ListEmptyComponent={
           <View style={s.empty}>
-            <Text style={s.emptyTitle}>No conversations yet</Text>
-            <Text style={s.emptyBody}>Tap “New chat” to message anyone in your company. Your administrator decides which groups you are in.</Text>
+            <Text style={s.emptyTitle}>{search ? "Nothing matches" : "No conversations yet"}</Text>
+            <Text style={s.emptyBody}>
+              {search ? "Try a different name or word." : "Tap “New chat” to message anyone in your company. Your administrator decides which groups you are in."}
+            </Text>
           </View>
         }
         renderItem={({ item }) => {
           const title = titleOf(item, meId);
+          const last = item.lastMessage;
+          const mineLast = last?.byId && String(last.byId) === meId;
+          const unread = Number(item.unread || 0);
           return (
             <Pressable style={s.row} android_ripple={{ color: "rgba(0,0,0,0.06)" }} onPress={() => navigation.navigate("Thread", { threadId: String(item._id), title })}>
               <Avatar name={title} group={item.kind === "group"} />
               <View style={s.rowBody}>
-                <Text style={s.rowTitle} numberOfLines={1}>
-                  {title}
-                  {item.kind === "group" ? `  ·  ${(item.members || []).length}` : ""}
-                </Text>
-                <Text style={s.rowSub} numberOfLines={1}>
-                  {item.lastMessage?.text || "No messages yet"}
-                </Text>
-              </View>
-              <View style={s.rowRight}>
-                <Text style={s.time}>{shortTime(item.lastMessage?.at)}</Text>
-                {!!item.unread && (
-                  <View style={s.badge}>
-                    <Text style={s.badgeText}>{item.unread}</Text>
-                  </View>
-                )}
+                <View style={s.rowTop}>
+                  <Text style={s.rowTitle} numberOfLines={1}>
+                    {title}
+                  </Text>
+                  <Text style={[s.time, unread > 0 && s.timeUnread]}>{listTime(last?.at)}</Text>
+                </View>
+                <View style={s.rowBottom}>
+                  {/*
+                    A tick on my own last message, and in a group the sender's name in front of it — the two
+                    things that let somebody scan this list without opening anything.
+                  */}
+                  {mineLast && <Ticks state={unread === 0 ? "read" : "sent"} />}
+                  <Text style={[s.rowSub, unread > 0 && s.rowSubUnread]} numberOfLines={1}>
+                    {item.kind === "group" && last?.by && last.by !== "system" ? `${mineLast ? "You" : String(last.by).split(/\s+/)[0]}: ` : ""}
+                    {last?.text || "No messages yet"}
+                  </Text>
+                  {unread > 0 && (
+                    <View style={s.badge}>
+                      <Text style={s.badgeText}>{unread > 99 ? "99+" : unread}</Text>
+                    </View>
+                  )}
+                </View>
               </View>
             </Pressable>
           );
         }}
       />
-      <Pressable style={s.fab} onPress={() => setPicker(true)}>
-        <Text style={s.fabText}>New chat</Text>
-      </Pressable>
+      {/*
+        Two actions, side by side. "New group" appears only for somebody whose role allows it — the same
+        permission the web checks — so a tele-caller does not get a button that answers "not allowed".
+      */}
+      <View style={s.fabRow}>
+        <Pressable style={[s.fabBtn, s.fabGhost]} onPress={() => setPicker(true)}>
+          <Text style={[s.fabText, { color: T.brand }]}>New chat</Text>
+        </Pressable>
+        {canGroup && (
+          <Pressable style={s.fabBtn} onPress={() => setGroup(true)}>
+            <Text style={s.fabText}>New group</Text>
+          </Pressable>
+        )}
+      </View>
       <PeoplePicker
         open={picker}
         onClose={() => setPicker(false)}
@@ -166,6 +215,15 @@ function ThreadList({ navigation, me }: any) {
             await load();
             navigation.navigate("Thread", { threadId: String(t._id), title: titleOf(t, meId) });
           }
+        }}
+      />
+      <GroupMaker
+        open={group}
+        onClose={() => setGroup(false)}
+        onMade={async (t: any) => {
+          setGroup(false);
+          await load();
+          if (t) navigation.navigate("Thread", { threadId: String(t._id), title: t.name || "Group" });
         }}
       />
       {!isLive() && <Text style={s.hint}>Messages refresh every few seconds.</Text>}
@@ -217,6 +275,107 @@ function PeoplePicker({ open, onClose, onPicked }: { open: boolean; onClose: () 
 
 /* ───────────────────────── One conversation ───────────────────────── */
 
+/**
+ * Making a group on the phone.
+ *
+ * A name and whoever is tapped. The person creating it is added by the server, so they are not in this
+ * list — being shown your own name with a tick beside it only invites somebody to untick it and wonder why
+ * nothing happened. Names and roles are all this ever shows; no phone numbers or e-mail addresses.
+ */
+function GroupMaker({ open, onClose, onMade }: { open: boolean; onClose: () => void; onMade: (t: any) => void }) {
+  const [people, setPeople] = useState<any[] | null>(null);
+  const [q, setQ] = useState("");
+  const [name, setName] = useState("");
+  const [picked, setPicked] = useState<string[]>([]);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+
+  useEffect(() => {
+    if (!open) return;
+    setName("");
+    setPicked([]);
+    setQ("");
+    setErr("");
+    api("/co/chat/people")
+      .then((r: any) => setPeople(r.people || []))
+      .catch(() => setPeople([]));
+  }, [open]);
+
+  const list = (people || []).filter((p: any) => !q.trim() || `${p.name} ${p.role || ""}`.toLowerCase().includes(q.trim().toLowerCase()));
+
+  const make = async () => {
+    if (!name.trim()) return setErr("Give the group a name");
+    if (!picked.length) return setErr("Add at least one person");
+    setBusy(true);
+    setErr("");
+    try {
+      onMade(await api("/co/chat/groups", { body: { name: name.trim(), memberIds: picked } }));
+    } catch (e: any) {
+      setErr(e?.message || "That group could not be made.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <Modal visible={open} animationType="slide" onRequestClose={onClose}>
+      <View style={{ flex: 1, backgroundColor: T.bg }}>
+        <View style={s.gHead}>
+          <Text style={s.gHeadText}>New group</Text>
+          <Pressable onPress={onClose} hitSlop={10}>
+            <Text style={s.gClose}>Close</Text>
+          </Pressable>
+        </View>
+
+        <View style={{ padding: 14, gap: 10 }}>
+          {!!err && <Text style={s.formErr}>{err}</Text>}
+          <TextInput style={s.gInput} value={name} onChangeText={setName} placeholder="Group name" placeholderTextColor={T.muted} maxLength={60} />
+          <TextInput style={s.gInput} value={q} onChangeText={setQ} placeholder="Search people" placeholderTextColor={T.muted} autoCapitalize="none" />
+          <Text style={s.pickCount}>{picked.length ? `${picked.length} selected` : "Tap the people to add"}</Text>
+        </View>
+
+        {people === null ? (
+          <View style={s.center}>
+            <ActivityIndicator color={T.brand} />
+          </View>
+        ) : (
+          <FlatList
+            data={list}
+            keyExtractor={(p) => String(p.userId)}
+            contentContainerStyle={{ paddingHorizontal: 14, paddingBottom: 100 }}
+            ListEmptyComponent={<Text style={s.hint}>Nobody matches.</Text>}
+            renderItem={({ item }) => {
+              const on = picked.includes(String(item.userId));
+              return (
+                <Pressable style={[s.pickRow, on && s.pickRowOn]} onPress={() => setPicked((p) => (on ? p.filter((x) => x !== String(item.userId)) : [...p, String(item.userId)]))}>
+                  <Avatar name={item.name} />
+                  <View style={{ flex: 1 }}>
+                    <Text style={s.rowTitle} numberOfLines={1}>
+                      {item.name}
+                    </Text>
+                    {!!item.role && (
+                      <Text style={s.rowSub} numberOfLines={1}>
+                        {item.role}
+                      </Text>
+                    )}
+                  </View>
+                  <Text style={[s.tick, on && { color: T.brand }]}>{on ? "✓" : ""}</Text>
+                </Pressable>
+              );
+            }}
+          />
+        )}
+
+        <View style={s.sheetFoot}>
+          <Pressable style={[s.makeBtn, (busy || !name.trim() || !picked.length) && { opacity: 0.5 }]} onPress={make} disabled={busy || !name.trim() || !picked.length}>
+            {busy ? <ActivityIndicator color="#fff" /> : <Text style={s.fabText}>Create group</Text>}
+          </Pressable>
+        </View>
+      </View>
+    </Modal>
+  );
+}
+
 function Thread({ route, me }: any) {
   const { threadId } = route.params;
   const [data, setData] = useState<any>(null);
@@ -226,8 +385,43 @@ function Thread({ route, me }: any) {
   const meId = String(me?.userId || "");
   const lastAt = useRef<string | null>(null);
   const list = useRef<FlatList<any> | null>(null);
+  /** Who is typing right now, and when to stop saying so. */
+  const [typingWho, setTypingWho] = useState("");
+  const typingTimer = useRef<any>(null);
+  const sentTypingAt = useRef(0);
+  /**
+   * Whether the view is at the newest message.
+   *
+   * Kept in a ref as well as state: the ref is read inside onContentSizeChange, which must not re-subscribe
+   * when it changes, while the state is what decides whether the jump button is on screen.
+   */
+  const atEnd = useRef(true);
+  const [atEndState, setAtEndState] = useState(true);
 
   const toEnd = () => setTimeout(() => list.current?.scrollToEnd({ animated: true }), 50);
+
+  const onScroll = useCallback((e: any) => {
+    const { contentOffset, contentSize, layoutMeasurement } = e.nativeEvent;
+    const near = contentSize.height - (contentOffset.y + layoutMeasurement.height) < 120;
+    atEnd.current = near;
+    setAtEndState((was) => (was === near ? was : near));
+  }, []);
+
+  /**
+   * Typing, told to the others at most once every three seconds.
+   *
+   * Sending one of these per keystroke would be a request per character. The others stop seeing it four
+   * seconds after the last one arrives, so a person who stops mid-sentence does not appear to type for ever.
+   */
+  const onType = useCallback(
+    (v: string) => {
+      setText(v);
+      if (!v.trim() || Date.now() - sentTypingAt.current < 3000) return;
+      sentTypingAt.current = Date.now();
+      api(`/co/chat/threads/${threadId}/typing`, { method: "POST", body: {} }).catch(() => undefined);
+    },
+    [threadId]
+  );
 
   const load = useCallback(async () => {
     const r = await api(`/co/chat/threads/${threadId}/messages`).catch(() => null);
@@ -242,14 +436,29 @@ function Thread({ route, me }: any) {
     load();
   }, [load]);
 
-  /** Only what arrived since the last message we hold. */
+  /**
+   * Only what arrived since the last message we hold — plus, now and then, the read counts.
+   *
+   * Where there is no real-time service the `message.read` event never arrives, so the ticks on messages
+   * already on screen would stay where they were for the life of the conversation. Every sixth poll
+   * (about half a minute) the visible page is re-read and only its `reads` counts are merged in: the scroll
+   * position is untouched and no message moves, which is the whole reason this is not just `load()`.
+   */
+  const pollCount = useRef(0);
   const catchUp = useCallback(async () => {
     if (!lastAt.current) return load();
     const r = await api(`/co/chat/threads/${threadId}/messages?after=${encodeURIComponent(lastAt.current)}`).catch(() => null);
-    if (!r?.messages?.length) return;
+    if (!r?.messages?.length) {
+      if (isLive() || ++pollCount.current % 6) return;
+      const fresh = await api(`/co/chat/threads/${threadId}/messages`).catch(() => null);
+      if (!fresh?.messages?.length) return;
+      const reads = new Map(fresh.messages.map((m: any) => [String(m._id), Number(m.reads || 1)]));
+      setData((d: any) => (d ? { ...d, messages: d.messages.map((m: any) => (reads.has(String(m._id)) ? { ...m, reads: reads.get(String(m._id)) } : m)) } : d));
+      return;
+    }
     setData((d: any) => ({ ...d, messages: [...(d?.messages || []), ...r.messages] }));
     lastAt.current = r.messages[r.messages.length - 1].createdAt;
-    toEnd();
+    if (atEnd.current) toEnd();
     api(`/co/chat/threads/${threadId}/read`, { method: "POST" }).catch(() => undefined);
   }, [threadId, load]);
 
@@ -261,27 +470,63 @@ function Thread({ route, me }: any) {
       message: (m: any) => {
         setData((d: any) => (d && !(d.messages || []).some((x: any) => String(x._id) === String(m._id)) ? { ...d, messages: [...d.messages, { ...m, mine: String(m.byId) === meId }] } : d));
         lastAt.current = m.createdAt || lastAt.current;
-        toEnd();
+        setTypingWho(""); // the message is here, so they have stopped
+        if (atEnd.current) toEnd();
+      },
+      /** Someone else is typing. Never mine, and it clears itself if nothing follows. */
+      typing: (p: any) => {
+        if (String(p?.userId) === meId) return;
+        setTypingWho(String(p?.name || "Someone"));
+        clearTimeout(typingTimer.current);
+        typingTimer.current = setTimeout(() => setTypingWho(""), 4000);
+      },
+      /**
+       * Somebody opened the conversation, which marks everything up to that moment as read.
+       *
+       * This is what moves the ticks on messages already on screen. Without it they could never change:
+       * the catch-up only ever asks for messages newer than the last one it holds, so a read receipt on
+       * something older would never arrive and a sent message would show one tick for ever.
+       */
+      "message.read": (p: any) => {
+        if (String(p?.userId) === meId) return;
+        setData((d: any) => (d ? { ...d, messages: d.messages.map((m: any) => (m.mine && !m.pending ? { ...m, reads: Math.max(Number(m.reads || 1), 2) } : m)) } : d));
       },
     }).then((f) => (stop = f));
     const off = poller(catchUp, 6000);
     return () => {
       stop();
       off();
+      clearTimeout(typingTimer.current);
     };
   }, [data?.thread?.companyId, threadId, meId, catchUp]);
 
+  /**
+   * Sending.
+   *
+   * The message appears in the conversation immediately, with a clock face where its ticks will be, and is
+   * replaced by the real one when the server answers. On a weak signal that is the difference between an
+   * app that feels instant and one that appears to have swallowed what you typed; if the send fails the
+   * placeholder is taken out again and the text is put back in the box, so nothing is lost either way.
+   */
   const send = async () => {
     const body = text.trim();
     if (!body || sending) return;
+    const tempId = `tmp-${Date.now()}`;
     setSending(true);
     setText("");
+    setData((d: any) => (d ? { ...d, messages: [...d.messages, { _id: tempId, kind: "text", text: body, mine: true, pending: true, byId: meId, createdAt: new Date().toISOString(), reads: 1 }] } : d));
+    toEnd();
     try {
       const msg = await api(`/co/chat/threads/${threadId}/messages`, { body: { text: body } });
-      setData((d: any) => (d && !(d.messages || []).some((x: any) => String(x._id) === String(msg._id)) ? { ...d, messages: [...d.messages, msg] } : d));
+      setData((d: any) => {
+        if (!d) return d;
+        const without = d.messages.filter((x: any) => String(x._id) !== tempId && String(x._id) !== String(msg._id));
+        return { ...d, messages: [...without, { ...msg, mine: true }] };
+      });
       lastAt.current = msg.createdAt;
       toEnd();
     } catch {
+      setData((d: any) => (d ? { ...d, messages: d.messages.filter((x: any) => String(x._id) !== tempId) } : d));
       setText(body); // nothing typed is lost
     } finally {
       setSending(false);
@@ -302,7 +547,7 @@ function Thread({ route, me }: any) {
     const f = picked && !picked.canceled ? picked.assets?.[0] : null;
     if (!f) return;
     if (f.size && f.size > LIMIT_FILE_MB * 1024 * 1024) {
-      setNote(`That file is ${fileSize(f.size)}. The limit is ${LIMIT_FILE_MB} MB.`);
+      setNote(`Exceeded File Size — that file is ${fileSize(f.size)}, and the limit is ${LIMIT_FILE_MB} MB.`);
       return;
     }
     setSending(true);
@@ -328,49 +573,80 @@ function Thread({ route, me }: any) {
       </View>
     );
 
+  const rows = toRows(data.messages || []);
+  const members = (data.thread?.members || []).length || 2;
+  const isGroup = data.thread?.kind === "group";
+
   return (
-    <KeyboardAvoidingView style={s.wrap} behavior={Platform.OS === "ios" ? "padding" : undefined}>
-      <FlatList
-        ref={list}
-        data={data.messages || []}
-        keyExtractor={(m) => String(m._id)}
-        contentContainerStyle={{ padding: 14, paddingBottom: 8 }}
-        onContentSizeChange={() => list.current?.scrollToEnd({ animated: false })}
-        ListEmptyComponent={<Text style={[s.emptyBody, { marginTop: 40 }]}>Say hello.</Text>}
-        renderItem={({ item: m }) =>
-          m.kind === "system" ? (
-            <Text style={s.system}>{m.text}</Text>
-          ) : (
-            <View style={[s.bubbleRow, m.mine ? { justifyContent: "flex-end" } : { justifyContent: "flex-start" }]}>
-              <View style={[s.bubble, m.mine ? s.mine : s.theirs]}>
-                {!m.mine && data.thread.kind === "group" && <Text style={s.who}>{m.byName}</Text>}
-                {m.kind === "file" && m.file ? <FileBubble msg={m} /> : <Text style={m.mine ? s.mineText : s.theirsText}>{m.text}</Text>}
-                <Text style={[s.bubbleTime, m.mine && { color: "rgba(255,255,255,0.75)" }]}>{shortTime(m.createdAt)}</Text>
+    <KeyboardAvoidingView style={s.wrap} behavior={Platform.OS === "ios" ? "padding" : undefined} keyboardVerticalOffset={Platform.OS === "ios" ? 90 : 0}>
+      {/* the conversation sits on a tinted ground, so the bubbles read as cards on a surface */}
+      <View style={s.paper}>
+        <FlatList
+          ref={list}
+          data={rows}
+          keyExtractor={(r) => r.key}
+          contentContainerStyle={{ paddingHorizontal: 10, paddingTop: 6, paddingBottom: 10 }}
+          onContentSizeChange={() => atEnd.current && list.current?.scrollToEnd({ animated: false })}
+          onScroll={onScroll}
+          scrollEventThrottle={120}
+          ListEmptyComponent={<Text style={[s.emptyBody, { marginTop: 48 }]}>No messages yet. Say hello.</Text>}
+          renderItem={({ item: r }) => {
+            if (r.type === "day") return <DayPill date={r.date!} />;
+            const m = r.msg;
+            if (m.kind === "system") return <SystemLine text={m.text} />;
+            const mine = !!m.mine;
+            const colour = mine ? T.brand : "#ffffff";
+            return (
+              <View style={[s.bubbleRow, mine ? s.rowMine : s.rowTheirs, { marginTop: r.head ? 6 : 1.5 }]}>
+                <View style={[s.bubble, mine ? s.mine : s.theirs, r.tail && (mine ? s.mineTail : s.theirsTail)]}>
+                  {r.tail && <Tail mine={mine} colour={colour} />}
+                  {!mine && isGroup && r.head && <Text style={[s.who, { color: nameColour(String(m.byId || m.byName)) }]}>{m.byName}</Text>}
+                  {m.kind === "file" && m.file ? <FileBubble msg={m} /> : <Text style={mine ? s.mineText : s.theirsText}>{m.text}</Text>}
+                  {/* the time sits in the bottom corner of the bubble, with the ticks beside it */}
+                  <View style={s.stamp}>
+                    <Text style={[s.bubbleTime, mine && s.bubbleTimeMine]}>{clock(m.createdAt)}</Text>
+                    {mine && <Ticks state={tickFor(m, members)} onBrand />}
+                  </View>
+                </View>
               </View>
-            </View>
-          )
-        }
-      />
+            );
+          }}
+        />
+
+        {!!typingWho && <Typing who={typingWho} />}
+
+        {/* only when scrolled away from the newest message, as a phone does */}
+        {!atEndState && (
+          <Pressable style={s.jump} onPress={() => list.current?.scrollToEnd({ animated: true })} accessibilityLabel="Go to the newest message">
+            <Text style={s.jumpText}>⌄</Text>
+          </Pressable>
+        )}
+      </View>
+
       {!!note && (
         <Pressable onPress={() => setNote("")} style={s.note}>
           <Text style={s.noteText}>{note}</Text>
         </Pressable>
       )}
+
       <View style={s.composer}>
-        <Pressable style={[s.clipBtn, sending && { opacity: 0.5 }]} onPress={attach} disabled={sending} accessibilityLabel="Attach a file">
-          <Text style={s.clipText}>＋</Text>
-        </Pressable>
-        <TextInput
-          style={s.composerInput}
-          placeholder="Write a message"
-          placeholderTextColor={T.muted}
-          value={text}
-          onChangeText={setText}
-          maxLength={LIMIT_MESSAGE}
-          multiline
-        />
-        <Pressable style={[s.sendBtn, (!text.trim() || sending) && { opacity: 0.5 }]} onPress={send} disabled={!text.trim() || sending}>
-          {sending ? <ActivityIndicator color="#fff" size="small" /> : <Text style={s.sendText}>Send</Text>}
+        <View style={s.inputPill}>
+          <Pressable style={s.clipBtn} onPress={attach} disabled={sending} hitSlop={6} accessibilityLabel="Attach a file">
+            <Text style={[s.clipText, sending && { opacity: 0.4 }]}>＋</Text>
+          </Pressable>
+          <TextInput
+            style={s.composerInput}
+            placeholder="Message"
+            placeholderTextColor={T.muted}
+            value={text}
+            onChangeText={onType}
+            maxLength={LIMIT_MESSAGE}
+            multiline
+          />
+        </View>
+        {/* one round button that is Send when there is something to send, as a phone does */}
+        <Pressable style={[s.sendBtn, !text.trim() && !sending && { opacity: 0.55 }]} onPress={send} disabled={!text.trim() || sending} accessibilityLabel="Send">
+          {sending ? <ActivityIndicator color="#fff" size="small" /> : <Text style={s.sendGlyph}>➤</Text>}
         </Pressable>
       </View>
     </KeyboardAvoidingView>
@@ -410,23 +686,63 @@ function FileBubble({ msg }: { msg: any }) {
     }
   };
 
-  if (image && url) return <Image source={{ uri: url }} style={s.shot} resizeMode="cover" />;
+  /**
+   * Saving the file to the phone.
+   *
+   * A separate link is fetched carrying the attachment disposition and the real name, and handed to the
+   * phone's browser, which saves it to Downloads under that name. The viewing link deliberately does not
+   * carry it, so a picture can still be shown in place.
+   */
+  const save = async () => {
+    if (busy) return;
+    setBusy(true);
+    setErr("");
+    try {
+      const r = await api(`/co/chat/files/${msg._id}?download=1`);
+      await Linking.openURL(r.url);
+    } catch (e: any) {
+      setErr(e?.message || "That file could not be saved.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  if (image && url)
+    return (
+      <View>
+        <Image source={{ uri: url }} style={s.shot} resizeMode="cover" />
+        <View style={s.imgFoot}>
+          <Text style={[s.fileMeta, msg.mine && { color: "rgba(255,255,255,0.8)" }]} numberOfLines={1}>
+            {f.name} · {fileSize(f.size)}
+          </Text>
+          <Pressable onPress={save} hitSlop={8} accessibilityLabel={`Save ${f.name}`}>
+            {busy ? <ActivityIndicator size="small" color={msg.mine ? "#fff" : T.brand} /> : <Text style={[s.saveLink, msg.mine && { color: "#fff" }]}>Save</Text>}
+          </Pressable>
+        </View>
+        {!!err && <Text style={s.fileErr}>{err}</Text>}
+      </View>
+    );
 
   return (
     <View>
-      <Pressable style={s.fileRow} onPress={open}>
-        <View style={[s.fileIcon, msg.mine && { backgroundColor: "rgba(255,255,255,0.22)" }]}>
-          {busy ? <ActivityIndicator size="small" color={msg.mine ? "#fff" : T.brand} /> : <Text style={[s.fileIconText, msg.mine && { color: "#fff" }]}>{image ? "◻" : "▣"}</Text>}
-        </View>
-        <View style={{ flexShrink: 1 }}>
-          <Text style={[s.fileName, msg.mine && { color: "#fff" }]} numberOfLines={1}>
-            {f.name}
-          </Text>
-          <Text style={[s.fileMeta, msg.mine && { color: "rgba(255,255,255,0.75)" }]}>
-            {fileSize(f.size)} · {image ? "tap to view" : "tap to open"}
-          </Text>
-        </View>
-      </Pressable>
+      <View style={s.fileRow}>
+        <Pressable style={s.fileMain} onPress={open}>
+          <View style={[s.fileIcon, msg.mine && { backgroundColor: "rgba(255,255,255,0.22)" }]}>
+            {busy ? <ActivityIndicator size="small" color={msg.mine ? "#fff" : T.brand} /> : <Text style={[s.fileIconText, msg.mine && { color: "#fff" }]}>{image ? "◻" : "▣"}</Text>}
+          </View>
+          <View style={{ flexShrink: 1 }}>
+            <Text style={[s.fileName, msg.mine && { color: "#fff" }]} numberOfLines={1}>
+              {f.name}
+            </Text>
+            <Text style={[s.fileMeta, msg.mine && { color: "rgba(255,255,255,0.75)" }]}>
+              {fileSize(f.size)} · {image ? "tap to view" : "tap to open"}
+            </Text>
+          </View>
+        </Pressable>
+        <Pressable onPress={save} hitSlop={8} accessibilityLabel={`Save ${f.name}`}>
+          <Text style={[s.saveLink, msg.mine && { color: "#fff" }]}>Save</Text>
+        </Pressable>
+      </View>
       {!!err && <Text style={s.fileErr}>{err}</Text>}
     </View>
   );
@@ -435,15 +751,21 @@ function FileBubble({ msg }: { msg: any }) {
 const s = StyleSheet.create({
   wrap: { flex: 1, backgroundColor: T.bg },
   center: { flex: 1, alignItems: "center", justifyContent: "center", backgroundColor: T.bg },
-  row: { flexDirection: "row", alignItems: "center", gap: 12, paddingHorizontal: 14, paddingVertical: 12, backgroundColor: T.card, borderBottomWidth: 1, borderBottomColor: T.line },
+  row: { flexDirection: "row", alignItems: "center", gap: T.sm, paddingHorizontal: T.pad, paddingVertical: T.sm + 1, backgroundColor: T.card, borderBottomWidth: 1, borderBottomColor: T.line },
   rowBody: { flex: 1, minWidth: 0 },
-  rowTitle: { fontWeight: "800", color: T.text, fontSize: 15 },
-  rowSub: { color: T.muted, fontSize: 12.5, marginTop: 2 },
+  rowTop: { flexDirection: "row", alignItems: "center", gap: 8 },
+  rowBottom: { flexDirection: "row", alignItems: "center", gap: 4, marginTop: 2 },
+  rowTitle: { ...TYPE.title, fontSize: 15, flex: 1 },
+  rowSub: { ...TYPE.meta, flex: 1, fontSize: 12.5 },
+  rowSubUnread: { color: T.text, fontWeight: "600" },
+  searchWrap: { paddingHorizontal: T.pad, paddingTop: T.sm, paddingBottom: T.xs, backgroundColor: T.card },
+  search: { backgroundColor: T.bg, borderRadius: 20, paddingHorizontal: 16, paddingVertical: 9, fontSize: 13.5, color: T.text },
   rowRight: { alignItems: "flex-end", gap: 4 },
-  time: { color: T.muted, fontSize: 11 },
+  time: { fontSize: 11, color: T.muted, fontWeight: "600" },
+  timeUnread: { color: T.brand, fontWeight: "800" },
   badge: { minWidth: 20, height: 20, paddingHorizontal: 6, borderRadius: 10, backgroundColor: T.brand, alignItems: "center", justifyContent: "center" },
   badgeText: { color: "#fff", fontSize: 11, fontWeight: "800" },
-  avatar: { width: 42, height: 42, borderRadius: 21, backgroundColor: "rgba(47,92,36,0.12)", alignItems: "center", justifyContent: "center" },
+  avatar: { height: 40, width: 40, borderRadius: 20, backgroundColor: T.tint, alignItems: "center", justifyContent: "center" },
   avatarText: { fontWeight: "800", color: T.brand, fontSize: 13 },
   empty: { padding: 36, alignItems: "center" },
   emptyTitle: { fontWeight: "800", color: T.text, fontSize: 16 },
@@ -451,31 +773,67 @@ const s = StyleSheet.create({
   hint: { textAlign: "center", color: T.muted, fontSize: 11, paddingVertical: 6 },
   fab: { position: "absolute", right: 18, bottom: 22, backgroundColor: T.brand, paddingHorizontal: 20, paddingVertical: 13, borderRadius: 26, elevation: 4 },
   fabText: { color: "#fff", fontWeight: "800" },
+  fabBtn: { backgroundColor: T.brand, paddingHorizontal: 20, paddingVertical: 13, borderRadius: 26, elevation: 4 },
+  fabRow: { position: "absolute", right: 14, left: 14, bottom: 18, flexDirection: "row", justifyContent: "flex-end", gap: 10 },
+  fabGhost: { backgroundColor: T.card, borderWidth: 1, borderColor: T.line },
+  gHead: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", backgroundColor: T.brand, paddingHorizontal: 16, paddingVertical: 14, paddingTop: Platform.OS === "ios" ? 52 : 16 },
+  gHeadText: { color: "#fff", fontWeight: "800", fontSize: 17 },
+  gClose: { color: "#fff", fontWeight: "700" },
+  gInput: { backgroundColor: T.card, borderWidth: 1, borderColor: T.line, borderRadius: 12, paddingHorizontal: 14, paddingVertical: 11, color: T.text },
+  formErr: { backgroundColor: "#fdecec", color: "#a11", fontWeight: "600", fontSize: 12, padding: 10, borderRadius: 10 },
+  pickCount: { color: T.muted, fontSize: 11, fontWeight: "700" },
+  pickRow: { flexDirection: "row", alignItems: "center", gap: 11, backgroundColor: T.card, borderWidth: 1, borderColor: T.line, borderRadius: 13, padding: 10, marginBottom: 8 },
+  pickRowOn: { borderColor: T.brand, backgroundColor: "rgba(47,92,36,0.06)" },
+  tick: { fontSize: 16, fontWeight: "800", color: "transparent", width: 18, textAlign: "center" },
+  sheetFoot: { position: "absolute", left: 14, right: 14, bottom: 18 },
+  makeBtn: { backgroundColor: T.brand, borderRadius: 16, paddingVertical: 14, alignItems: "center" },
   sheet: { flex: 1, backgroundColor: T.bg, paddingTop: 48 },
   sheetHead: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", paddingHorizontal: 16, paddingBottom: 12 },
   sheetTitle: { fontSize: 18, fontWeight: "800", color: T.text },
   close: { color: T.brand, fontWeight: "700" },
   input: { marginHorizontal: 16, marginBottom: 10, backgroundColor: T.card, borderWidth: 1, borderColor: T.line, borderRadius: 14, paddingHorizontal: 14, paddingVertical: 11, color: T.text },
   privacy: { color: T.muted, fontSize: 11.5, padding: 16, lineHeight: 17 },
-  bubbleRow: { flexDirection: "row", marginBottom: 8 },
-  bubble: { maxWidth: "82%", borderRadius: 18, paddingHorizontal: 12, paddingVertical: 9 },
-  mine: { backgroundColor: T.brand, borderBottomRightRadius: 6 },
-  theirs: { backgroundColor: T.card, borderBottomLeftRadius: 6, borderWidth: 1, borderColor: T.line },
+  /**
+   * The conversation's ground.
+   *
+   * A tint taken from the company's own brand rather than a borrowed wallpaper: this app is white-label,
+   * so the surface has to belong to whichever company the build is for.
+   */
+  paper: { flex: 1, backgroundColor: "#eef1ec" },
+  bubbleRow: { flexDirection: "row", paddingHorizontal: 4 },
+  rowMine: { justifyContent: "flex-end" },
+  rowTheirs: { justifyContent: "flex-start" },
+  bubble: { maxWidth: "80%", borderRadius: 14, paddingHorizontal: 9, paddingTop: 6, paddingBottom: 5, ...LIFT },
+  mine: { backgroundColor: T.brand },
+  /** Only the last bubble of a run squares off, because that is the one wearing the tail. */
+  mineTail: { borderBottomRightRadius: 3 },
+  theirs: { backgroundColor: "#ffffff" },
+  theirsTail: { borderBottomLeftRadius: 3 },
   mineText: { color: "#fff", fontSize: 14.5, lineHeight: 20 },
+  /** The time and ticks tuck into the bottom-right corner of the bubble. */
+  stamp: { flexDirection: "row", alignItems: "center", alignSelf: "flex-end", marginTop: 1 },
   theirsText: { color: T.text, fontSize: 14.5, lineHeight: 20 },
-  who: { fontSize: 11, fontWeight: "800", color: T.brand, marginBottom: 2 },
-  bubbleTime: { fontSize: 10, color: T.muted, textAlign: "right", marginTop: 3 },
+  who: { fontSize: 11.5, fontWeight: "800", marginBottom: 2 },
+  bubbleTime: { fontSize: 10, color: T.muted },
+  bubbleTimeMine: { color: "rgba(255,255,255,0.72)" },
+  jump: { position: "absolute", right: 14, bottom: 14, height: 38, width: 38, borderRadius: 19, backgroundColor: "#fff", alignItems: "center", justifyContent: "center", ...LIFT },
+  jumpText: { fontSize: 20, lineHeight: 22, color: T.brand, fontWeight: "800", marginTop: -3 },
   system: { textAlign: "center", color: T.muted, fontSize: 11.5, paddingVertical: 6 },
-  composer: { flexDirection: "row", alignItems: "flex-end", gap: 8, padding: 10, backgroundColor: T.card, borderTopWidth: 1, borderTopColor: T.line },
-  composerInput: { flex: 1, maxHeight: 110, minHeight: 42, backgroundColor: T.bg, borderWidth: 1, borderColor: T.line, borderRadius: 18, paddingHorizontal: 14, paddingTop: 10, paddingBottom: 10, color: T.text },
-  sendBtn: { backgroundColor: T.brand, height: 42, paddingHorizontal: 18, borderRadius: 21, alignItems: "center", justifyContent: "center" },
-  sendText: { color: "#fff", fontWeight: "800" },
-  clipBtn: { height: 42, width: 42, borderRadius: 21, alignItems: "center", justifyContent: "center", backgroundColor: T.bg, borderWidth: 1, borderColor: T.line },
-  clipText: { fontSize: 22, lineHeight: 24, color: T.brand, fontWeight: "800" },
+  composer: { flexDirection: "row", alignItems: "flex-end", gap: 8, paddingHorizontal: 8, paddingVertical: 8, backgroundColor: "#eef1ec" },
+  /** One rounded field holding the attach button and the text, with Send as a separate round button. */
+  inputPill: { flex: 1, flexDirection: "row", alignItems: "flex-end", backgroundColor: "#fff", borderRadius: 24, paddingLeft: 4, paddingRight: 12, minHeight: 46 },
+  composerInput: { flex: 1, maxHeight: 120, minHeight: 46, paddingTop: 12, paddingBottom: 12, color: T.text, fontSize: 15 },
+  sendBtn: { backgroundColor: T.brand, height: 46, width: 46, borderRadius: 23, alignItems: "center", justifyContent: "center", ...LIFT },
+  sendGlyph: { color: "#fff", fontSize: 17, marginLeft: 2 },
+  clipBtn: { height: 46, width: 42, alignItems: "center", justifyContent: "center" },
+  clipText: { fontSize: 23, lineHeight: 25, color: T.muted, fontWeight: "700" },
   note: { backgroundColor: "#fdecec", paddingHorizontal: 14, paddingVertical: 8 },
   noteText: { color: "#a11", fontSize: 12, fontWeight: "600" },
   shot: { width: 220, height: 160, borderRadius: 12 },
-  fileRow: { flexDirection: "row", alignItems: "center", gap: 10, minWidth: 170 },
+  fileRow: { flexDirection: "row", alignItems: "center", gap: 10, minWidth: 190 },
+  fileMain: { flexDirection: "row", alignItems: "center", gap: 10, flex: 1 },
+  imgFoot: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 10, marginTop: 5 },
+  saveLink: { fontWeight: "800", fontSize: 12, color: T.brand },
   fileIcon: { height: 36, width: 36, borderRadius: 10, alignItems: "center", justifyContent: "center", backgroundColor: "rgba(47,92,36,0.12)" },
   fileIconText: { fontSize: 16, color: T.brand },
   fileName: { fontWeight: "800", color: T.text },

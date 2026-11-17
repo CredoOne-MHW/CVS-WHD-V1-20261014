@@ -210,9 +210,22 @@ const MobileBuildSchema = new Schema(
     buildNumber: Number, // n
     bundleId: String,
     appName: String,
-    status: { type: String, enum: ["queued", "building", "ready", "failed", "cancelled"], default: "queued", index: true },
+    status: { type: String, enum: ["queued", "building", "ready", "failed", "cancelled", "paused"], default: "queued", index: true },
     runId: String, // the GitHub Actions run
     runUrl: String,
+    /**
+     * How far along, 0–100, and the plain sentence under the bar.
+     *
+     * The workflow reports these as it passes each step, so they are what actually happened rather than a
+     * timer pretending to be progress. `phase` is the step's own words — "Waiting for a build machine",
+     * "Bundling the app" — because a bar with no words says only that something is happening.
+     */
+    progress: { type: Number, default: 0 },
+    phase: String,
+    /** Paused builds remember who stopped them and where, so Resume can say what it is resuming. */
+    pausedBy: String,
+    pausedAt: Date,
+    resumeCount: { type: Number, default: 0 },
     fileKey: String, // <CODE>/app/<platform>/<version>/<file>
     fileName: String,
     fileSize: Number,
@@ -560,7 +573,8 @@ const ChatThreadSchema = new Schema(
     members: { type: [{ userId: ObjectId, name: String, role: String, isAdmin: Boolean, joinedAt: Date, mutedUntil: Date }], default: [] },
     memberIds: { type: [ObjectId], default: [], index: true }, // for "my threads" in one query
     createdBy: String,
-    lastMessage: { text: String, by: String, at: Date, kind: String },
+    /** `byId` is what lets the conversation list show a tick on your own last message, as a phone does. */
+    lastMessage: { text: String, by: String, byId: ObjectId, at: Date, kind: String },
     archivedAt: Date,
   },
   ts

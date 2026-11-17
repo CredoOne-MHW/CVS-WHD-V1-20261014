@@ -13,8 +13,10 @@ import { Smartphone, Hammer, GitBranch, Copy, Eye, RefreshCw, ShieldCheck, Check
 import { api, fmtDate } from "@/lib/api";
 import { PageHeader, Btn, Badge, Spinner, Empty, Field, useToast } from "@/components/ui";
 import { BUILD_LABEL, platformLabel, targetHint, type BuildStatus } from "@shared/mobile";
+import { BuildProgressRow, BuildControls, ProgressBar, isLive } from "@/components/BuildProgress";
+import { StoreCredentials } from "@/components/sa/StoreCredentials";
 
-const TONE: Record<BuildStatus, "green" | "honey" | "red" | "gray"> = { ready: "green", building: "honey", queued: "gray", failed: "red", cancelled: "gray" };
+const TONE: Record<string, "green" | "honey" | "red" | "gray"> = { ready: "green", building: "honey", queued: "gray", failed: "red", cancelled: "gray" };
 const PAGE = 25;
 
 export default function Page() {
@@ -90,6 +92,10 @@ export default function Page() {
 
       <AutoBuild sum={sum} onChanged={loadSummary} toast={toast} />
       <StartBuild sum={sum} companies={companies} onStarted={loadSummary} toast={toast} busy={busy} setBusy={setBusy} />
+      {/* directly under Start a build, because this is what the greyed-out iOS button sends people to */}
+      <div className="mb-5">
+        <StoreCredentials canEdit onSaved={loadSummary} />
+      </div>
       <Builds companies={companies} />
     </>
   );
@@ -447,7 +453,7 @@ function StartBuild({ sum, companies, onStarted, toast, busy, setBusy }: any) {
             ))}
           </select>
         </Field>
-        <Field label="Platform">
+        <Field label="Platform" hint={!sum.setup.ios ? "iOS needs Apple's signing credentials — see App store credentials below" : undefined}>
           <div className="flex gap-2 pt-1">
             {["android", "ios"].map((p) => (
               <button
@@ -455,7 +461,9 @@ function StartBuild({ sum, companies, onStarted, toast, busy, setBusy }: any) {
                 type="button"
                 onClick={() => setPlatform(p)}
                 disabled={p === "ios" && !sum.setup.ios}
-                className={`rounded-xl px-4 py-2 text-sm font-bold disabled:opacity-40 ${platform === p ? "bg-hive-600 text-white" : "bg-ink-400/[0.07] text-ink-700"}`}
+                /* a greyed-out button with no reason on it sends people to ask; the title says why */
+                title={p === "ios" && !sum.setup.ios ? "Add Apple's distribution certificate, provisioning profile and Team ID under “App store credentials” and this switches on by itself." : undefined}
+                className={`rounded-xl px-4 py-2 text-sm font-bold disabled:cursor-not-allowed disabled:opacity-40 ${platform === p ? "bg-hive-600 text-white" : "bg-ink-400/[0.07] text-ink-700"}`}
               >
                 {platformLabel(p)}
               </button>
@@ -522,10 +530,13 @@ function Builds({ companies }: { companies: any[] }) {
     load();
   }, [load]);
 
-  // something running: look again until it finishes
+  /**
+   * Something running: look again every 5 seconds so the bars move. A paused build is not polled — nothing
+   * about it changes until somebody presses Resume.
+   */
   useEffect(() => {
     if (!rows?.some((b) => b.status === "queued" || b.status === "building")) return;
-    const t = setInterval(load, 20_000);
+    const t = setInterval(load, 5_000);
     return () => clearInterval(t);
   }, [rows, load]);
 
@@ -556,9 +567,9 @@ function Builds({ companies }: { companies: any[] }) {
           </select>
           <select className="input max-w-[10rem]" value={f.status} onChange={(e) => set("status", e.target.value)}>
             <option value="">Any status</option>
-            {["queued", "building", "ready", "failed", "cancelled"].map((s) => (
+            {["queued", "building", "paused", "ready", "failed", "cancelled"].map((s) => (
               <option key={s} value={s}>
-                {BUILD_LABEL[s as BuildStatus]}
+                {BUILD_LABEL[s as BuildStatus] || "Paused"}
               </option>
             ))}
           </select>
@@ -573,6 +584,31 @@ function Builds({ companies }: { companies: any[] }) {
         <Empty title="No builds match" hint="Change the filters, or start one above." />
       ) : (
         <>
+          {/*
+            Anything running or paused, lifted above the table. A build takes ten to twenty minutes, so the
+            one thing somebody wants on opening this page is how far along it is — not to hunt for it among
+            the finished rows.
+          */}
+          {rows.filter((b) => isLive(b as any)).length > 0 && (
+            <div className="mb-3 space-y-2">
+              {rows
+                .filter((b) => isLive(b as any))
+                .map((b) => (
+                  <BuildProgressRow
+                    key={b._id}
+                    build={b as any}
+                    base="/sa/mobile-releases/build"
+                    canEdit
+                    onDone={load}
+                    title={
+                      <>
+                        {b.company || b.companyCode} · {platformLabel(b.platform)} <span className="mono text-xs font-bold text-ink-500">v{b.version}</span>
+                      </>
+                    }
+                  />
+                ))}
+            </div>
+          )}
           <div className="overflow-x-auto">
             <table className="w-full min-w-[860px]">
               <thead>
@@ -601,7 +637,13 @@ function Builds({ companies }: { companies: any[] }) {
                       <span className="ml-2 text-[11px] font-normal text-ink-400">build {b.buildNumber}</span>
                     </td>
                     <td className="td">
-                      <Badge color={TONE[b.status as BuildStatus]}>{BUILD_LABEL[b.status as BuildStatus]}</Badge>
+                      <Badge color={(TONE as any)[b.status] || "gray"}>{BUILD_LABEL[b.status as BuildStatus] || (b.status === "paused" ? "Paused" : b.status)}</Badge>
+                      {isLive(b as any) && (
+                        <div className="mt-1.5 max-w-[210px]">
+                          <ProgressBar value={(b as any).progress || 0} status={b.status} />
+                          <p className="mt-1 text-[11px] text-ink-500">{(b as any).phase || "Waiting for a build machine"}</p>
+                        </div>
+                      )}
                       {b.error && <p className="mt-1 max-w-[260px] text-xs text-red-600">{b.error}</p>}
                       {b.store?.message && <p className={`mt-1 max-w-[260px] text-xs ${b.store.uploaded ? "text-emerald-700" : "text-ink-500"}`}>{b.store.message}</p>}
                     </td>
@@ -610,12 +652,15 @@ function Builds({ companies }: { companies: any[] }) {
                       {b.startedBy}
                       {b.trigger && b.trigger !== "manual" && <span className="block text-[11px] text-ink-400">{b.trigger === "push" ? "on a push" : "every company"}</span>}
                     </td>
-                    <td className="td text-right">
-                      {b.runUrl && (
-                        <a href={b.runUrl} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-xs font-semibold text-hive-700 hover:underline">
-                          Run <ExternalLink className="h-3 w-3" />
-                        </a>
-                      )}
+                    <td className="td">
+                      <div className="flex items-center justify-end gap-2">
+                        {b.runUrl && (
+                          <a href={b.runUrl} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-xs font-semibold text-hive-700 hover:underline">
+                            Run <ExternalLink className="h-3 w-3" />
+                          </a>
+                        )}
+                        {isLive(b as any) && <BuildControls build={b as any} base="/sa/mobile-releases/build" canEdit onDone={load} compact />}
+                      </div>
                     </td>
                   </tr>
                 ))}

@@ -215,10 +215,21 @@ export async function relayoutAll() {
  * and a link that escapes into a screenshot or a browser history is worthless almost immediately. The
  * caller checks who is asking — this only signs what it is told to.
  */
-export async function signedUrl(key: string, seconds = 300) {
+export async function signedUrl(key: string, seconds = 300, downloadAs?: string) {
   const { getSignedUrl } = await import("@aws-sdk/s3-request-presigner");
   const { GetObjectCommand } = await import("@aws-sdk/client-s3");
-  return getSignedUrl(s3() as any, new GetObjectCommand({ Bucket: bucket(), Key: key }) as any, { expiresIn: seconds });
+  /**
+   * `downloadAs` makes the browser save the file under its own name instead of displaying it.
+   *
+   * Without it a PDF or an image opens in a tab and is saved, if at all, under the random key this is
+   * stored as. The name is quoted and stripped of anything that would break the header.
+   */
+  const name = downloadAs ? downloadAs.replace(/[\\"\r\n]/g, "").slice(0, 120) : "";
+  return getSignedUrl(
+    s3() as any,
+    new GetObjectCommand({ Bucket: bucket(), Key: key, ...(name ? { ResponseContentDisposition: `attachment; filename="${name}"` } : {}) }) as any,
+    { expiresIn: seconds }
+  );
 }
 
 export async function deleteObject(key: string) {
