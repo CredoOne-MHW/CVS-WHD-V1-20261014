@@ -254,7 +254,10 @@ function AutoBuild({ sum, onChanged, toast }: { sum: any; onChanged: () => void;
           <div className="rounded-xl bg-hive-50/70 p-3">
             <div className="flex flex-wrap items-center justify-between gap-3">
               <p className="min-w-0 text-sm text-ink-700">
-                Or let the platform write both of them into <span className="mono">{sum.setup.repo || "the repository"}</span> for you — nothing to paste.
+                Or let the platform write them into <span className="mono">{sum.setup.repo || "the repository"}</span> for you — nothing to paste. It sends{" "}
+                <span className="mono">MOBILE_BUILD_SECRET</span>, <span className="mono">BUILD_TRIGGER_SECRET</span> and, because the upload runs on the runner, its own{" "}
+                <span className="mono">AWS_ACCESS_KEY_ID</span>, <span className="mono">AWS_SECRET_ACCESS_KEY</span> and <span className="mono">AWS_REGION</span>. Each one is
+                sealed to the repository's public key before it is sent.
               </p>
               <Btn
                 variant="secondary"

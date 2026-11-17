@@ -7,6 +7,13 @@ type Toast = { id: number; kind: "ok" | "err"; text: string };
 const ToastCtx = createContext<(kind: Toast["kind"], text: string) => void>(() => {});
 export const useToast = () => useContext(ToastCtx);
 
+/**
+ * A way to raise a toast from outside React — used by the global unhandled-rejection handler, which has no
+ * component to hang a hook off but still needs to tell somebody that a screen's data never arrived.
+ */
+let externalToast: ((kind: Toast["kind"], text: string) => void) | null = null;
+export const toastFromAnywhere = (kind: Toast["kind"], text: string) => externalToast?.(kind, text);
+
 export function ToastProvider({ children }: { children: ReactNode }) {
   const [list, setList] = useState<Toast[]>([]);
   const push = useCallback((kind: Toast["kind"], text: string) => {
@@ -14,6 +21,12 @@ export function ToastProvider({ children }: { children: ReactNode }) {
     setList((l) => [...l, { id, kind, text }]);
     setTimeout(() => setList((l) => l.filter((t) => t.id !== id)), 4500);
   }, []);
+  useEffect(() => {
+    externalToast = push;
+    return () => {
+      externalToast = null;
+    };
+  }, [push]);
   return (
     <ToastCtx.Provider value={push}>
       {children}

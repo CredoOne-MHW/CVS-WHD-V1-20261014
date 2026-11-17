@@ -47,9 +47,26 @@ export function installGlobalErrorHandlers() {
     if (reloadIfStale(e.error || e.message)) return;
     if (e.error) reportClientError(e.error, "window.onerror");
   });
-  window.addEventListener("unhandledrejection", (e) => {
+  window.addEventListener("unhandledrejection", async (e) => {
     if (reloadIfStale(e.reason)) return;
-    // API errors are already shown to the user as toasts — only report genuine code errors
-    if (e.reason && !(e.reason as any).status) reportClientError(e.reason, "unhandledrejection");
+    const reason = e.reason as any;
+
+    /**
+     * An unhandled rejection is, by definition, one nobody caught — so nobody showed a toast for it.
+     *
+     * This used to skip anything with a `status` on the grounds that "API errors are already shown as
+     * toasts". That is true of a call with a `.catch`, and those never reach here. The ones that do are
+     * exactly the calls with no `.catch`: a screen whose data never arrived, which then sits on a spinner
+     * with nothing on screen to say why. Saying so is the least this can do.
+     */
+    if (reason?.status) {
+      const { toastFromAnywhere } = await import("@/components/ui");
+      const what = reason.status === 403 ? "You do not have permission for that." : reason.status === 404 ? "That was not found." : reason.message || "The platform did not answer.";
+      // the server's own message rarely ends in a full stop, and two sentences running together read badly
+      const sentence = /[.!?]$/.test(what) ? what : `${what}.`;
+      toastFromAnywhere("err", reason.status >= 500 ? `${sentence} Please try again.` : sentence);
+      return;
+    }
+    if (reason) reportClientError(reason, "unhandledrejection");
   });
 }
