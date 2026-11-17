@@ -42,7 +42,7 @@ export const BUILD_WORKFLOW_FILE = "build-mobile.yml";
  * a matching `# lms-workflow:` line, and "Check GitHub setup" compares them. Bump this only when the workflow
  * or one of its scripts actually changes, or the panel cries wolf on every release.
  */
-export const WORKFLOW_REVISION = "1.11.1";
+export const WORKFLOW_REVISION = "1.11.2";
 
 /**
  * The revision of the app source the platform expects in the build repository, read from mobile/package.json.
@@ -51,7 +51,7 @@ export const WORKFLOW_REVISION = "1.11.1";
  * dependencies behind, and the build then fails inside Metro on a module that was added releases ago. Bump
  * this only when something in mobile/ changes that a build depends on.
  */
-export const MOBILE_REVISION = "1.11.1";
+export const MOBILE_REVISION = "1.11.2";
 export const buildWorkflow = () => BUILD_WORKFLOW_FILE;
 /** A leftover value, so the panel can say it is being ignored and can be deleted. */
 export const ignoredWorkflowSetting = () => {
@@ -255,7 +255,7 @@ async function dispatchWorkflow(company: any, build: any) {
     // "test" makes an .apk / ad-hoc .ipa; "store" makes an .aab / App Store .ipa and uploads it if it can
     target: build.target || "test",
     // Play moves this bar every August; a platform setting raises it without a code change and a release
-    android_target_sdk: (process.env.ANDROID_TARGET_SDK || "35").trim(),
+    android_target_sdk: (process.env.ANDROID_TARGET_SDK || "34").trim(),
   };
 
   {
