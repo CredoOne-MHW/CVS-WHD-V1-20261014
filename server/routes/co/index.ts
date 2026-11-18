@@ -52,6 +52,7 @@ r.use("/integrations", (req, res, next) => {
 // Vercel caps request bodies at ~4.5 MB; keep uploads under that.
 r.use(clientRoutes); // Client module + service master
 r.use(chatRoutes); // Chats: one-to-one, groups, notices, push devices
+import homeRoutes from "./home";
 r.use(ssoRoutes); // sign-in connectors (Facebook, Instagram, LinkedIn, Google Sheets)
 
 const upload = ctxUpload(multer({ storage: multer.memoryStorage(), limits: { fileSize: 4 * 1024 * 1024, files: 10 } }));
@@ -342,7 +343,7 @@ r.post("/leads/import", can("leads:import", "create"), upload.single("file"), h(
   res.status(202).json(jobView(await Job.findById(job._id).lean()));
 }));
 
-/** Reads the template's "Service / product" and "No of Licenses" columns: "A, B" with "2, 1" (or one number for all). */
+/** Reads the template's "Service / product" and "Qty" columns: "A, B" with "2, 1" (or one number for all). */
 function serviceLinesFromRow(row: any): { service: string; licenses: number }[] {
   const pick = (names: string[]) => {
     const key = Object.keys(row || {}).find((k) => names.includes(k.toLowerCase().replace(/[\s\-\/]+/g, "_").replace(/_+/g, "_")));
@@ -372,7 +373,7 @@ defineJob("leads.import", async (p, st, ctx) => {
       // idempotent: upsertLead merges by phone/email, so a slice that is re-run never creates duplicates
       const r2 = await upsertLead(companyId, { ...m, source: m.source || p.source, campaign: m.campaign || p.campaign, customFields: { importBatch: s.batchId } }, { by: p.by, notify: false });
       r2.created ? s.created++ : s.merged++;
-      // "Service / product" + "No of Licenses" columns — the lead is kept even when a service name is unknown
+      // "Service / product" + "Qty" columns — the lead is kept even when a service name is unknown
       const lines = serviceLinesFromRow(rows[i]);
       if (lines.length) {
         try {
@@ -796,6 +797,14 @@ r.post("/integrations/events/:eventId/retry", can("integrations", "update"), h(a
  * come back inside a keystroke, and a list longer than a screenful is no more useful than a short one.
  */
 r.get("/people-lookup", can("roles:users", "read"), h(async (req, res) => {
+  /**
+   * Never a customer, whatever permissions their role happens to carry.
+   *
+   * This searches the company's clients and leads — its book of business. A role grid is configured by
+   * hand, so a company could tick Users on their customer role without realising it opens this; the
+   * refusal is here rather than left to that configuration being right.
+   */
+  if (req.auth!.kind === "customer") throw forbidden("Not available to customer sign-ins");
   const q = String(req.query.q || "").trim();
   const find: any = { ...tenant(req), deletedAt: null };
   if (q) {
@@ -1297,5 +1306,6 @@ r.use("/roles", roleRoutes("company"));
 r.use("/activity-logs", activityRoutes("company"));
 r.use("/webhooks", webhookRoutes("company"));
 r.use("/wa-logs", waLogRoutes("company"));
+r.use(homeRoutes); // the phone's home screen, and a customer's own support tickets
 
 export default r;

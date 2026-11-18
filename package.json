@@ -1,6 +1,6 @@
 {
   "name": "leadhive-lms",
-  "version": "1.11.2",
+  "version": "1.14.0",
   "private": true,
   "description": "Multi-tenant Lead Management System — Next.js UI + Express API (Vercel), MongoDB, S3",
   "scripts": {
@@ -17,14 +17,17 @@
     "releases": "node scripts/build-releases.mjs",
     "test:gate": "tsx tests/build-gate.test.ts",
     "test:errors": "tsx tests/error-messages.test.ts",
-    "test": "npm run test:gate && npm run test:errors && npm run test:signing && npm run test:workflow && npm run test:routes && npm run test:builds && npm run test:chat && npm run test:gradle",
+    "test": "npm run test:gate && npm run test:errors && npm run test:signing && npm run test:workflow && npm run test:routes && npm run test:builds && npm run test:chat && npm run test:gradle && npm run test:tenancy && npm run test:push",
     "test:signing": "tsx tests/signing-key.test.ts",
     "test:workflow": "tsx tests/workflow-scripts.test.ts",
     "verify:bundle": "cd mobile && npm ci --no-audit --no-fund && npx expo export --platform android --output-dir /tmp/lms-bundle-check --clear",
     "test:routes": "tsx tests/router-params.test.ts",
     "test:builds": "tsx tests/build-controls.test.ts",
     "test:chat": "tsx tests/chat-view.test.ts",
-    "test:gradle": "tsx tests/gradle-props.test.ts"
+    "test:gradle": "tsx tests/gradle-props.test.ts",
+    "test:tenancy": "tsx tests/tenancy.test.ts",
+    "preflight": "node scripts/preflight.mjs",
+    "test:push": "tsx tests/push.test.ts"
   },
   "engines": {
     "node": ">=20"

@@ -25,7 +25,7 @@ export interface Cred {
 }
 
 export interface CredGroup {
-  id: "ios" | "ios_store" | "play";
+  id: "ios" | "ios_store" | "play" | "push";
   title: string;
   /** What switches on once every non-optional credential in the group is present. */
   unlocks: string;
@@ -83,6 +83,27 @@ export const CRED_GROUPS: CredGroup[] = [
         kind: "file",
         accept: ".p8",
         help: "Downloadable only once, at the moment the key is created. If you no longer have it, make a new key.",
+      },
+    ],
+  },
+  {
+    id: "push",
+    title: "Push notifications",
+    unlocks: "Notifications actually arriving on phones — new messages, notices and ticket updates",
+    from: "A Firebase project (console.firebase.google.com) and an Expo project (expo.dev)",
+    creds: [
+      {
+        key: "EXPO_PROJECT_ID",
+        label: "Expo project ID",
+        kind: "text",
+        help: "A UUID from expo.dev → your project → Overview. An installed app cannot ask for a push token without it — only an app running inside Expo Go can.",
+      },
+      {
+        key: "GOOGLE_SERVICES_JSON",
+        label: "Firebase config (google-services.json)",
+        kind: "file",
+        accept: ".json",
+        help: "Firebase Console → Project settings → Your apps → Android. The package name in it must match the company's application id exactly, or Android refuses every message. Expo delivers Android notifications through Firebase, so without this nothing arrives.",
       },
     ],
   },

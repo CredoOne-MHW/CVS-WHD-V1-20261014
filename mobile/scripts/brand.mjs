@@ -69,6 +69,32 @@ if (maxSdk && sdk > maxSdk) {
   process.exit(1);
 }
 
+/**
+ * Push notifications: the two things without which nothing is delivered to an installed app.
+ *
+ * `projectId` is what `getExpoPushTokenAsync` needs outside Expo Go — without it the phone never gets a
+ * token, so it is never registered, so nothing can be sent to it. `google-services.json` is Firebase's
+ * config, and Expo delivers Android notifications through Firebase, so without it messages are accepted by
+ * Expo and then quietly dropped.
+ *
+ * Both are optional here on purpose: a build with neither still works, it simply has no notifications, and
+ * saying so once is better than failing a build over something the app does not need to run.
+ */
+const expoProjectId = get("EXPO_PROJECT_ID", "").trim();
+if (expoProjectId) {
+  e.extra = { ...(e.extra || {}), eas: { projectId: expoProjectId } };
+  console.log(`Expo project: ${expoProjectId}`);
+} else {
+  console.log("::warning::No EXPO_PROJECT_ID — this build cannot obtain a push token, so no notifications will arrive. Add it under Mobile App Release › App store credentials › Push notifications.");
+}
+
+if (existsSync("google-services.json")) {
+  e.android = { ...(e.android || {}), googleServicesFile: "./google-services.json" };
+  console.log("Firebase config found — Android notifications can be delivered");
+} else {
+  console.log("::warning::No google-services.json — Android notifications will not be delivered. Add it under Mobile App Release › App store credentials › Push notifications.");
+}
+
 const buildProps = (e.plugins || []).find((p) => Array.isArray(p) && p[0] === "expo-build-properties");
 if (buildProps) {
   buildProps[1] = {

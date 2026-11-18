@@ -27,6 +27,15 @@ export interface AuthCtx {
   paused?: string[];
   /** AI agents only: the data tables this agent was granted (undefined = every table the user can read). */
   allowedDatasets?: string[];
+  /**
+   * Customer sign-ins: who this person is on the other side of the business.
+   *
+   * A customer may only ever see their own records, so the endpoints that serve them scope every query by
+   * this id rather than by a permission. Staff have kind "staff" and no client of their own.
+   */
+  kind?: "staff" | "customer";
+  clientId?: string;
+  leadId?: string;
 }
 
 declare global {
@@ -130,6 +139,9 @@ export async function buildContext(p: TokenPayload): Promise<AuthCtx> {
     name: user.name,
     email: user.email,
     isOwner: user.isOwner,
+    kind: user.kind === "customer" ? "customer" : "staff",
+    clientId: user.clientId ? String(user.clientId) : undefined,
+    leadId: user.leadId ? String(user.leadId) : undefined,
     impersonatedBy: p.imp,
     perms: await companyPerms(company.plan, user.isOwner ? undefined : user.roleId, company.moduleAccess),
     paused: Object.entries(company.moduleAccess || {}).filter(([, v]: any) => v?.mode === "paused").map(([k]) => k),

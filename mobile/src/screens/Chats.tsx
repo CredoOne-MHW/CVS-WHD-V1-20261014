@@ -10,7 +10,7 @@ import { ActivityIndicator, FlatList, Image, KeyboardAvoidingView, Linking, Moda
 import { createNativeStackNavigator } from "@react-navigation/native-stack";
 import * as DocumentPicker from "expo-document-picker";
 import { api } from "../lib/api";
-import { subscribe, poller, setLiveConfig, isLive } from "../lib/live";
+import { subscribe, poller, setLiveConfig, isLive, setOpenThread, setBadge } from "../lib/live";
 import { T, TYPE, LIFT } from "../theme";
 import { clock, listTime, toRows, tickFor, Ticks, DayPill, SystemLine, Tail, Typing, nameColour } from "../components/chat-ui";
 
@@ -120,6 +120,11 @@ function ThreadList({ navigation, me }: any) {
       </View>
     );
 
+  /** The number on the app icon is the unread total, recomputed whenever the list is. */
+  useEffect(() => {
+    setBadge(threads.reduce((n: number, t: any) => n + Number(t.unread || 0), 0));
+  }, [threads]);
+
   const shown = threads.filter((t: any) => {
     const q = search.trim().toLowerCase();
     if (!q) return true;
@@ -128,6 +133,13 @@ function ThreadList({ navigation, me }: any) {
 
   return (
     <View style={s.wrap}>
+      {/*
+        The polling note, at the top rather than the bottom.
+        It used to be the last child of this view, which put it underneath the floating buttons — half of
+        it was hidden behind "New chat" and there was no way to read it.
+      */}
+      {!isLive() && <Text style={s.pollNote}>Messages refresh every few seconds</Text>}
+
       {/* search sits above the list and filters what is already here — no request per keystroke */}
       <View style={s.searchWrap}>
         <TextInput
@@ -226,7 +238,6 @@ function ThreadList({ navigation, me }: any) {
           if (t) navigation.navigate("Thread", { threadId: String(t._id), title: t.name || "Group" });
         }}
       />
-      {!isLive() && <Text style={s.hint}>Messages refresh every few seconds.</Text>}
     </View>
   );
 }
@@ -399,6 +410,15 @@ function Thread({ route, me }: any) {
   const [atEndState, setAtEndState] = useState(true);
 
   const toEnd = () => setTimeout(() => list.current?.scrollToEnd({ animated: true }), 50);
+
+  /**
+   * While this conversation is on screen, its own notifications are not shown as banners — you are already
+   * looking at them. Cleared on the way out, so the next message does notify.
+   */
+  useEffect(() => {
+    setOpenThread(String(threadId));
+    return () => setOpenThread(null);
+  }, [threadId]);
 
   const onScroll = useCallback((e: any) => {
     const { contentOffset, contentSize, layoutMeasurement } = e.nativeEvent;
@@ -751,29 +771,30 @@ function FileBubble({ msg }: { msg: any }) {
 const s = StyleSheet.create({
   wrap: { flex: 1, backgroundColor: T.bg },
   center: { flex: 1, alignItems: "center", justifyContent: "center", backgroundColor: T.bg },
-  row: { flexDirection: "row", alignItems: "center", gap: T.sm, paddingHorizontal: T.pad, paddingVertical: T.sm + 1, backgroundColor: T.card, borderBottomWidth: 1, borderBottomColor: T.line },
+  row: { flexDirection: "row", alignItems: "center", gap: T.sm, paddingHorizontal: T.pad, paddingVertical: 9, backgroundColor: T.card, borderBottomWidth: 1, borderBottomColor: T.line },
   rowBody: { flex: 1, minWidth: 0 },
   rowTop: { flexDirection: "row", alignItems: "center", gap: 8 },
   rowBottom: { flexDirection: "row", alignItems: "center", gap: 4, marginTop: 2 },
   rowTitle: { ...TYPE.title, fontSize: 15, flex: 1 },
   rowSub: { ...TYPE.meta, flex: 1, fontSize: 12.5 },
   rowSubUnread: { color: T.text, fontWeight: "600" },
-  searchWrap: { paddingHorizontal: T.pad, paddingTop: T.sm, paddingBottom: T.xs, backgroundColor: T.card },
-  search: { backgroundColor: T.bg, borderRadius: 20, paddingHorizontal: 16, paddingVertical: 9, fontSize: 13.5, color: T.text },
+  searchWrap: { paddingHorizontal: T.pad, paddingTop: T.xs + 2, paddingBottom: T.xs, backgroundColor: T.card },
+  pollNote: { backgroundColor: T.tint, color: T.brand, fontSize: 11, fontWeight: "700", textAlign: "center", paddingVertical: 5 },
+  search: { backgroundColor: T.bg, borderRadius: 18, paddingHorizontal: 14, paddingVertical: 7, fontSize: 13, color: T.text },
   rowRight: { alignItems: "flex-end", gap: 4 },
   time: { fontSize: 11, color: T.muted, fontWeight: "600" },
   timeUnread: { color: T.brand, fontWeight: "800" },
   badge: { minWidth: 20, height: 20, paddingHorizontal: 6, borderRadius: 10, backgroundColor: T.brand, alignItems: "center", justifyContent: "center" },
   badgeText: { color: "#fff", fontSize: 11, fontWeight: "800" },
-  avatar: { height: 40, width: 40, borderRadius: 20, backgroundColor: T.tint, alignItems: "center", justifyContent: "center" },
+  avatar: { height: 44, width: 44, borderRadius: 22, backgroundColor: T.tint, alignItems: "center", justifyContent: "center" },
   avatarText: { fontWeight: "800", color: T.brand, fontSize: 13 },
   empty: { padding: 36, alignItems: "center" },
   emptyTitle: { fontWeight: "800", color: T.text, fontSize: 16 },
   emptyBody: { color: T.muted, textAlign: "center", marginTop: 8, lineHeight: 20, paddingHorizontal: 20 },
   hint: { textAlign: "center", color: T.muted, fontSize: 11, paddingVertical: 6 },
   fab: { position: "absolute", right: 18, bottom: 22, backgroundColor: T.brand, paddingHorizontal: 20, paddingVertical: 13, borderRadius: 26, elevation: 4 },
-  fabText: { color: "#fff", fontWeight: "800" },
-  fabBtn: { backgroundColor: T.brand, paddingHorizontal: 20, paddingVertical: 13, borderRadius: 26, elevation: 4 },
+  fabText: { color: "#fff", fontWeight: "800", fontSize: 13 },
+  fabBtn: { backgroundColor: T.brand, paddingHorizontal: 17, paddingVertical: 11, borderRadius: 22, ...LIFT, elevation: 4 },
   fabRow: { position: "absolute", right: 14, left: 14, bottom: 18, flexDirection: "row", justifyContent: "flex-end", gap: 10 },
   fabGhost: { backgroundColor: T.card, borderWidth: 1, borderColor: T.line },
   gHead: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", backgroundColor: T.brand, paddingHorizontal: 16, paddingVertical: 14, paddingTop: Platform.OS === "ios" ? 52 : 16 },

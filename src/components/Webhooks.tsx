@@ -1,6 +1,6 @@
 "use client";
 import { useEffect, useMemo, useState } from "react";
-import { Plus, Trash2, Send, Tag, Save } from "lucide-react";
+import { Plus, Trash2, Send, Tag, Save, ChevronRight, Pencil } from "lucide-react";
 import { api } from "@/lib/api";
 import { Btn, Field, Modal, Empty, Badge, useToast, Confirm, Spinner } from "./ui";
 import { usePerm } from "./Shell";
@@ -432,6 +432,119 @@ export function WebhookCard({ hook, base, eventLabel, testPhone, onChanged }: { 
 }
 
 /* ───────── Webhook page body (cards grouped by event) ───────── */
+/**
+ * One webhook as a row in a list.
+ *
+ * Every webhook used to be drawn fully open — URL, template, separator, limits, preview, the lot — so a
+ * company with eight of them had a page metres long and no way to see what it had at a glance. A list of
+ * rows answers "what do I have, and is it on?" in one screen; the detail is one tap away and editing is
+ * another, which is the right order for something looked at far more often than it is changed.
+ *
+ * Nothing was taken away: editing opens the same card, with the same fields, preview and test button.
+ */
+function WebhookRow({
+  hook,
+  base,
+  eventLabel,
+  onEdit,
+  onChanged,
+}: {
+  hook: Hook;
+  base: string;
+  eventLabel: string;
+  onEdit: () => void;
+  onChanged: () => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [del, setDel] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const perm = usePerm("wa_webhooks:webhooks");
+  const toast = useToast();
+
+  const remove = async () => {
+    setBusy(true);
+    try {
+      await api(`${base}/webhooks/${hook._id}`, { method: "DELETE" });
+      toast("ok", `${hook.name} deleted`);
+      setDel(false);
+      onChanged();
+    } catch (e: any) {
+      toast("err", e?.message || "That could not be deleted");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  /** A short, honest summary of what this one does — no editing, nothing truncated into a lie. */
+  const facts: [string, React.ReactNode][] = [
+    ["Endpoint", <span key="u" className="mono break-all text-[11px]">{hook.method} {hook.url}</span>],
+    ["Template", hook.templateName || <span className="text-ink-400">none</span>],
+    ["Message", hook.singleLine ? `one line, joined by “${hook.lineSeparator === "" ? " | " : hook.lineSeparator}”` : "as written, with line breaks"],
+    ["Split above", `${hook.maxChars || 800} characters`],
+    ["Also sent to", hook.extraNumbers?.length ? hook.extraNumbers.join(", ") : <span className="text-ink-400">nobody else</span>],
+  ];
+  if (hook.schedule && hook.schedule.freq !== "off")
+    facts.push(["Sends", hook.schedule.freq === "daily" ? `every day at ${hourLabel(hook.schedule.hour)}` : `every ${WEEKDAYS[hook.schedule.weekday]} at ${hourLabel(hook.schedule.hour)}`]);
+
+  return (
+    <div className="overflow-hidden rounded-xl border border-ink-400/15 bg-white">
+      <div className="flex items-center gap-2 px-3 py-2.5">
+        <button
+          type="button"
+          className="flex min-w-0 flex-1 items-center gap-2.5 text-left"
+          onClick={() => setOpen((v) => !v)}
+          aria-expanded={open}
+          title={open ? "Hide details" : "Show details"}
+        >
+          <ChevronRight className={`h-4 w-4 shrink-0 text-ink-400 transition-transform ${open ? "rotate-90" : ""}`} />
+          <span className="min-w-0">
+            <span className="flex flex-wrap items-center gap-2">
+              <span className="truncate text-[13.5px] font-bold">{hook.name}</span>
+              {hook.active ? <Badge color="green">Active</Badge> : <Badge color="gray">Off</Badge>}
+            </span>
+            <span className="mono mt-0.5 block truncate text-[11px] text-ink-400">{hook.url}</span>
+          </span>
+        </button>
+
+        <span className="hidden shrink-0 text-[11px] text-ink-400 sm:block">{eventLabel}</span>
+
+        {perm.update && (
+          <button className="btn-ghost shrink-0" title={`Edit ${hook.name}`} aria-label={`Edit ${hook.name}`} onClick={onEdit}>
+            <Pencil className="h-4 w-4" />
+          </button>
+        )}
+        {perm.delete && (
+          <button className="btn-ghost shrink-0 text-red-600" title={`Delete ${hook.name}`} aria-label={`Delete ${hook.name}`} onClick={() => setDel(true)}>
+            <Trash2 className="h-4 w-4" />
+          </button>
+        )}
+      </div>
+
+      {open && (
+        <dl className="grid gap-x-4 gap-y-1.5 border-t border-ink-400/10 bg-[#fafbf9] px-3 py-2.5 text-xs sm:grid-cols-[auto_1fr]">
+          {facts.map(([k, v]) => (
+            <div key={k} className="contents">
+              <dt className="font-semibold text-ink-500">{k}</dt>
+              <dd className="min-w-0 text-ink-800">{v}</dd>
+            </div>
+          ))}
+          {!!hook.description && <p className="col-span-full mt-1 text-ink-500">{hook.description}</p>}
+        </dl>
+      )}
+
+      <Confirm
+        open={del}
+        onClose={() => setDel(false)}
+        onConfirm={remove}
+        title={`Delete ${hook.name}?`}
+        body="Messages for this event stop going out. This cannot be undone."
+        confirmLabel={busy ? 'Deleting…' : 'Delete'}
+        danger
+      />
+    </div>
+  );
+}
+
 export function WebhookBoard({ base, createAlign = "right", allowEventTypes = false }: { base: "/sa" | "/co"; createAlign?: "left" | "right"; allowEventTypes?: boolean }) {
   const [hooks, setHooks] = useState<Hook[] | null>(null);
   const [events, setEvents] = useState<EventOpt[]>([]);
@@ -439,6 +552,7 @@ export function WebhookBoard({ base, createAlign = "right", allowEventTypes = fa
   const [evModal, setEvModal] = useState(false);
   const [newEv, setNewEv] = useState("");
   const [testPhone, setTestPhone] = useState("");
+  const [edit, setEdit] = useState<Hook | null>(null); // the one being edited, in a modal
   const perm = usePerm("wa_webhooks:webhooks");
   const toast = useToast();
 
@@ -505,13 +619,23 @@ export function WebhookBoard({ base, createAlign = "right", allowEventTypes = fa
           <Empty title="No webhooks yet" hint="Create a webhook for each event that should send WhatsApp messages." action={createBtn} />
         </div>
       ) : (
-        <div className="space-y-8">
+        <div className="space-y-5">
           {groups.map(([ev, list]) => (
             <section key={ev}>
-              <h2 className="mb-3 text-lg font-bold text-[#22305f]">{label(ev)}</h2>
-              <div className="grid gap-5 xl:grid-cols-2">
+              <h2 className="mb-2 flex items-center gap-2 text-sm font-bold text-[#22305f]">
+                {label(ev)}
+                <span className="rounded-full bg-hive-50 px-2 py-0.5 text-[10px] font-bold text-hive-800">{list.length}</span>
+              </h2>
+              <div className="space-y-2">
                 {list.map((h) => (
-                  <WebhookCard key={h._id} hook={h} base={base} eventLabel={`${list.length > 1 ? "One of " + list.length + " hooks" : "Sent to recipient"}`} testPhone={testPhone} onChanged={load} />
+                  <WebhookRow
+                    key={h._id}
+                    hook={h}
+                    base={base}
+                    eventLabel={list.length > 1 ? `one of ${list.length}` : "sent to recipient"}
+                    onEdit={() => setEdit(h)}
+                    onChanged={load}
+                  />
                 ))}
               </div>
             </section>
@@ -520,6 +644,25 @@ export function WebhookBoard({ base, createAlign = "right", allowEventTypes = fa
       )}
 
       <WebhookModal open={modal} onClose={() => setModal(false)} base={base} events={events} onSaved={load} onNewEvent={allowEventTypes ? () => setEvModal(true) : undefined} />
+
+      {/*
+        Editing opens the card that used to be on the page — every field, the preview and the test button
+        are the same ones, so nothing was lost by collapsing the page into a list.
+      */}
+      <Modal open={!!edit} onClose={() => setEdit(null)} title={edit?.name || "Webhook"} size="lg">
+        {edit && (
+          <WebhookCard
+            hook={edit}
+            base={base}
+            eventLabel={label(edit.event)}
+            testPhone={testPhone}
+            onChanged={() => {
+              load();
+              setEdit(null);
+            }}
+          />
+        )}
+      </Modal>
 
       <Modal open={evModal} onClose={() => setEvModal(false)} title="Event types" size="md">
         <p className="mb-4 text-sm text-ink-500">System events fire automatically. Custom events are for your own webhooks — use them from Post, lead reminders or the API.</p>
