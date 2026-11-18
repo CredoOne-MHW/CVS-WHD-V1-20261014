@@ -34,6 +34,24 @@ export const T = {
   pad: 14,
 } as const;
 
+/**
+ * A brand colour at a given opacity.
+ *
+ * `T.tint` and several screens hardcode `rgba(47,92,36,…)`, which is the *default* brand green. A company
+ * whose build sets another colour therefore gets green selections next to its own headers. This derives the
+ * tint from whatever `T.brand` actually is, so the two always agree.
+ *
+ * Anything that is not a #rgb or #rrggbb value is returned untouched rather than mangled.
+ */
+export const withAlpha = (hex: string, a: number) => {
+  const h = String(hex || "").trim();
+  const m = /^#([0-9a-f]{3}|[0-9a-f]{6})$/i.exec(h);
+  if (!m) return h;
+  const full = m[1].length === 3 ? m[1].split("").map((c) => c + c).join("") : m[1];
+  const n = parseInt(full, 16);
+  return `rgba(${(n >> 16) & 255},${(n >> 8) & 255},${n & 255},${a})`;
+};
+
 /** The type scale. Weight and size together, so a heading is one choice rather than two. */
 export const TYPE = {
   display: { fontSize: 26, fontWeight: "800" as const, color: T.text, letterSpacing: -0.4 },
