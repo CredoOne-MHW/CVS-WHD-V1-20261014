@@ -42,7 +42,7 @@ export const BUILD_WORKFLOW_FILE = "build-mobile.yml";
  * a matching `# lms-workflow:` line, and "Check GitHub setup" compares them. Bump this only when the workflow
  * or one of its scripts actually changes, or the panel cries wolf on every release.
  */
-export const WORKFLOW_REVISION = "1.11.2";
+export const WORKFLOW_REVISION = "1.13.0";
 
 /**
  * The revision of the app source the platform expects in the build repository, read from mobile/package.json.
@@ -51,7 +51,7 @@ export const WORKFLOW_REVISION = "1.11.2";
  * dependencies behind, and the build then fails inside Metro on a module that was added releases ago. Bump
  * this only when something in mobile/ changes that a build depends on.
  */
-export const MOBILE_REVISION = "1.11.2";
+export const MOBILE_REVISION = "1.13.0";
 export const buildWorkflow = () => BUILD_WORKFLOW_FILE;
 /** A leftover value, so the panel can say it is being ignored and can be deleted. */
 export const ignoredWorkflowSetting = () => {

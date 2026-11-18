@@ -52,17 +52,17 @@ export function bizError(f: BizForm) {
 export function linesError(lines: ServiceLine[]) {
   const named = lines.filter((l) => l.service);
   if (lines.some((l) => !l.service && String(l.licenses ?? "") !== "" && Number(l.licenses) !== 1)) return "Pick a service or product on every row";
-  if (named.some((l) => !Number.isInteger(Number(l.licenses)) || Number(l.licenses) < 1)) return "No of Licenses must be a whole number of at least 1";
+  if (named.some((l) => !Number.isInteger(Number(l.licenses)) || Number(l.licenses) < 1)) return "Qty must be a whole number of at least 1";
   const names = named.map((l) => l.service.toLowerCase());
-  if (new Set(names).size !== names.length) return "A service is listed twice — put all its licences on one row";
+  if (new Set(names).size !== names.length) return "A service is listed twice — put the whole quantity on one row";
   return "";
 }
-/** Rows to send (empty rows dropped, licences as numbers). */
+/** Rows to send (empty rows dropped, quantities as numbers). */
 export const linesPayload = (lines: ServiceLine[]) => lines.filter((l) => l.service).map((l) => ({ service: l.service, licenses: Number(l.licenses) || 1 }));
 
 /**
  * Services / products opted for, one row each: service (from the Service master — type to add, trash to remove from the
- * list) + No of Licenses, with + / − to add or remove rows. Used on Lead and Client; Payment Details read the licences.
+ * list) + Qty, with + / − to add or remove rows. Used on Lead and Client; Payment Details read the quantities.
  */
 export function ServiceField({ lines, onChange }: { lines: ServiceLine[]; onChange: (v: ServiceLine[]) => void }) {
   const rows = lines.length ? lines : [{ service: "", licenses: 1 }];
@@ -72,7 +72,7 @@ export function ServiceField({ lines, onChange }: { lines: ServiceLine[]; onChan
     <div className="sm:col-span-2">
       <div className="mb-1.5 hidden grid-cols-[1fr_9rem_2.5rem] gap-3 sm:grid">
         <p className="label mb-0">Service / product</p>
-        <p className="label mb-0">No of Licenses</p>
+        <p className="label mb-0">Qty</p>
         <span />
       </div>
       <div className="space-y-2.5">
@@ -85,7 +85,7 @@ export function ServiceField({ lines, onChange }: { lines: ServiceLine[]; onChan
             <input
               className="input tabular-nums"
               inputMode="numeric"
-              aria-label={`No of Licenses for ${r.service || `row ${i + 1}`}`}
+              aria-label={`Qty for ${r.service || `row ${i + 1}`}`}
               placeholder="1"
               value={r.licenses === 0 ? "" : String(r.licenses ?? "")}
               onChange={(e) => set(i, { licenses: (e.target.value.replace(/\D/g, "").slice(0, 7) || 0) as any })}

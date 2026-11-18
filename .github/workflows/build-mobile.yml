@@ -1,6 +1,6 @@
 name: Build mobile app
 
-# lms-workflow: 1.11.2
+# lms-workflow: 1.13.0
 #
 # That line is read by Super Admin › Mobile App Release › Check GitHub setup. The platform knows which
 # revision it expects, so if this file in the repository is older than the platform, the panel says so by
@@ -110,6 +110,21 @@ jobs:
           RUN_ID: ${{ github.run_id }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
 
+      # Firebase's config, written before branding so brand.mjs can point app.json at it. Expo delivers
+      # Android notifications through Firebase: without this the build still works and notifications are
+      # accepted by Expo, then silently dropped.
+      - name: Firebase config, if there is one
+        if: inputs.platform == 'android'
+        env:
+          GOOGLE_SERVICES_JSON: ${{ secrets.GOOGLE_SERVICES_JSON }}
+        run: |
+          if [ -n "$GOOGLE_SERVICES_JSON" ]; then
+            echo "$GOOGLE_SERVICES_JSON" | base64 -d > google-services.json
+            echo "Firebase config written ($(wc -c < google-services.json) bytes)"
+          else
+            echo "::warning::No GOOGLE_SERVICES_JSON secret — Android notifications will not be delivered."
+          fi
+
       - name: The company's icon, if it has one
         continue-on-error: true
         env:
@@ -137,6 +152,7 @@ jobs:
           API_BASE: ${{ inputs.api_base }}
           COMPANY_CODE: ${{ inputs.company_code }}
           ANDROID_TARGET_SDK: ${{ inputs.android_target_sdk }}
+          EXPO_PROJECT_ID: ${{ secrets.EXPO_PROJECT_ID }}
 
       - name: Native project
         run: npx expo prebuild --platform ${{ inputs.platform }} --clean --no-install

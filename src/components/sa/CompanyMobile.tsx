@@ -272,6 +272,33 @@ export function MobileAppTab({ id, canEdit }: { id: string; canEdit: boolean }) 
         </div>
 
         {/* the key the app is signed with — Android refuses an update signed with a different one */}
+        {/*
+          Whether notifications can reach anybody at all.
+
+          A phone appears here only once it has obtained a push token and sent it in, which it cannot do
+          without the Expo project id baked into the build — so "0 phones" is the first and clearest sign
+          that the push credentials are missing, rather than that nobody has installed the app.
+        */}
+        {d.push && (
+          <div className="mt-4 rounded-xl border border-ink-400/15 bg-ink-400/[0.03] p-4 text-sm">
+            <p className="font-bold">Notifications</p>
+            {d.push.devices > 0 ? (
+              <p className="mt-1 text-ink-600">
+                <span className="font-bold text-ink-900">{d.push.reachable}</span> of {d.push.devices} registered{" "}
+                {d.push.devices === 1 ? "phone" : "phones"} can be reached
+                {Object.keys(d.push.byPlatform || {}).length > 0 && (
+                  <span className="text-ink-400"> · {Object.entries(d.push.byPlatform).map(([k, v]) => `${v} ${k}`).join(", ")}</span>
+                )}
+              </p>
+            ) : (
+              <p className="mt-1 text-ink-600">
+                No phone has registered for notifications yet. An installed app cannot obtain a push token without an Expo project id, and Android cannot receive one without Firebase —
+                both are set under <span className="font-semibold">Mobile App Release › App store credentials › Push notifications</span>, and take effect on the next build.
+              </p>
+            )}
+          </div>
+        )}
+
         {d.signing && (
           <div className="mt-4 rounded-xl border border-ink-400/15 bg-ink-400/[0.03] p-4 text-sm">
             <p className="font-bold">Android signing</p>

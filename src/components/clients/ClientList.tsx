@@ -400,6 +400,19 @@ export function ClientProfile({ id, onClose, onSaved }: { id: string | null; onC
                 </ul>
               </div>
             )}
+            {/*
+              The Journey, rebuilt.
+
+              It used to have `max-h-[42vh] overflow-y-auto` of its own, inside a drawer that already
+              scrolls. That gave two scrollbars side by side — one for the drawer, one for this list — and
+              entries that looked cut off halfway down a panel with plenty of room beneath it. Nobody can
+              scroll two things at once, and the inner one swallowed the wheel whenever the pointer happened
+              to be over it.
+
+              So it does not scroll any more: it is as tall as its contents and the drawer scrolls, once.
+              The rail and the markers are also laid out from the list rather than pulled back into the
+              margin with a negative offset, which is what made them drift out of line as text wrapped.
+            */}
             <div className="rounded-2xl border border-ink-400/15">
               <p className="flex items-center justify-between gap-1.5 border-b border-ink-400/10 px-3 py-2 text-xs font-bold uppercase tracking-wider text-ink-500">
                 <span className="flex items-center gap-1.5">
@@ -407,21 +420,27 @@ export function ClientProfile({ id, onClose, onSaved }: { id: string | null; onC
                 </span>
                 <span className="rounded-full bg-hive-50 px-2 py-0.5 text-[10px] text-hive-800">{d.events.length}</span>
               </p>
-              {/* own scroll area so the last entry is never cut off by the drawer edge */}
-              <ol className="max-h-[42vh] space-y-2.5 overflow-y-auto border-l-2 border-hive-100 py-3 pl-4 pr-3 ml-3">
+              <ol className="px-3 py-3">
                 {d.events.map((e: any, i: number) => {
                   const I = EVENT_ICON[e.type] || StickyNote;
+                  const last = i === d.events.length - 1;
                   return (
-                    <li key={i} className="relative text-xs">
-                      <span className="absolute -left-[27px] grid h-5 w-5 place-items-center rounded-full bg-white ring-2 ring-hive-100">
-                        <I className="h-3 w-3 text-hive-700" />
-                      </span>
-                      <p className="text-ink-400">
-                        {fmtDate(e.at)}
-                        {e.by ? ` · ${e.by}` : ""}
-                      </p>
-                      <p className="font-semibold text-ink-900">{e.title}</p>
-                      {e.detail && e.detail !== e.title && <p className="text-ink-700">{e.detail}</p>}
+                    <li key={i} className="grid grid-cols-[20px_1fr] gap-x-2.5">
+                      {/* the marker, and the rail beneath it — drawn per row so it cannot fall out of step */}
+                      <div className="flex flex-col items-center">
+                        <span className="grid h-5 w-5 shrink-0 place-items-center rounded-full bg-hive-50 ring-1 ring-hive-200">
+                          <I className="h-3 w-3 text-hive-700" />
+                        </span>
+                        {!last && <span className="w-px flex-1 bg-hive-200" />}
+                      </div>
+                      <div className={`min-w-0 text-xs ${last ? "" : "pb-3.5"}`}>
+                        <p className="text-[11px] text-ink-400">
+                          {fmtDate(e.at)}
+                          {e.by ? ` · ${e.by}` : ""}
+                        </p>
+                        <p className="mt-0.5 font-semibold leading-snug text-ink-900">{e.title}</p>
+                        {e.detail && e.detail !== e.title && <p className="mt-0.5 leading-snug text-ink-600">{e.detail}</p>}
+                      </div>
                     </li>
                   );
                 })}

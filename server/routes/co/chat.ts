@@ -335,7 +335,15 @@ r.post("/chat/notices/:id/stop", can("chats:notices", "update"), h(async (req, r
 
 /* ───────────────────────── Devices and real-time ───────────────────────── */
 
-r.post("/chat/devices", can("chats", "read"), h(async (req, res) => {
+/**
+ * Registering this phone for notifications.
+ *
+ * Deliberately needs no permission beyond being signed in. It used to require Chats read, which meant
+ * anybody without that module — every customer, and any staff role that does not include chat — could not
+ * register at all, and so received no notification of anything, ever. What may be *sent* to somebody is
+ * decided when each notification goes out; this only records that a phone belongs to them.
+ */
+r.post("/chat/devices", h(async (req, res) => {
   const b = parse(z.object({ token: z.string().min(10).max(200), platform: z.string().max(10).default("android"), appVersion: z.string().max(20).optional() }), req.body);
   await registerDevice(req.auth!.companyId!, req.auth!.userId, b.token, b.platform || "android", b.appVersion).catch((e: any) => {
     throw badRequest(e.message);
@@ -343,7 +351,7 @@ r.post("/chat/devices", can("chats", "read"), h(async (req, res) => {
   res.status(201).json({ ok: true });
 }));
 
-r.delete("/chat/devices", can("chats", "read"), h(async (req, res) => {
+r.delete("/chat/devices", h(async (req, res) => {
   await forgetDevice(String(req.query.token || ""));
   res.json({ ok: true });
 }));
