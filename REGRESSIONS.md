@@ -69,6 +69,14 @@ checked by `test:workflow`. Mobile App Release shows the repository as "behind" 
 | 33 | A customer could find every other customer of the same company in chat search — and reach them, since the member id travels in the request | 1.14.0 | The directory is filtered for a customer, and all three routes that build a member list refuse one; the number of User reads in `chat.ts` is asserted so a fourth cannot appear unnoticed | `test:tenancy` |
 | 34 | The client and lead search was reachable by a customer whose role happened to include Users | 1.14.0 | It refuses a customer sign-in outright, before the permission is consulted | `test:tenancy` |
 
+## The app's own interface
+
+| # | What went wrong | Release | What stops it now | Check |
+|---|---|---|---|---|
+| 35 | The drawer was the library's stock panel and took 78–82% of a narrow screen, leaving nothing of the app beside it — it read as a web page's menu, not an app | 1.15.0 | The width is a proportion with a ceiling, asserted never wider than the default it replaced and never past 70% on any device | `test:drawer` |
+| 36 | A custom drawer that lists its own items leaves a newly added screen unreachable, and an icon name not in the font renders as a blank box — both silent | 1.15.0 | Items are derived from the navigator's routes with an icon fallback, and every glyph name is checked against the font file | `test:drawer` |
+| 37 | A hook added below an early return crashes only on the move from loading to signed-in, never on first paint | 1.15.0 | The width hook's position is asserted to be above the first early return | `test:drawer` |
+
 ---
 
 ## Before every release
