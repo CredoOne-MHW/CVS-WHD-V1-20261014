@@ -9,7 +9,7 @@
  * answers both in /auth/me, so nothing has to be rebuilt when they change.
  */
 import { useCallback, useEffect, useState } from "react";
-import { ActivityIndicator, StyleSheet, Text, View } from "react-native";
+import { ActivityIndicator, StyleSheet, Text, View, useWindowDimensions } from "react-native";
 import { NavigationContainer, DefaultTheme, createNavigationContainerRef } from "@react-navigation/native";
 import { createDrawerNavigator } from "@react-navigation/drawer";
 import { StatusBar } from "expo-status-bar";
@@ -24,6 +24,7 @@ import Chats from "./screens/Chats";
 import Users from "./screens/Users";
 import Tickets from "./screens/Tickets";
 import Profile from "./screens/Profile";
+import AppDrawer from "./components/AppDrawer";
 import UpdateBar from "./components/UpdateBar";
 import NoticeBanner from "./components/NoticeBanner";
 import { registerForPush, unregisterPush, setLiveConfig, onNotificationTap } from "./lib/live";
@@ -60,6 +61,26 @@ export default function App() {
   const [stage, setStage] = useState<Stage>("loading");
   const [me, setMe] = useState<any>(null);
   const [notice, setNotice] = useState<any>(null);
+
+  /**
+   * The drawer's width, decided here rather than left to the library.
+   *
+   * React Navigation sizes a drawer to `min(screen − 56, 280)`. That subtracts a *fixed* 56, so the
+   * narrower the phone the larger the share it takes: 68% of a 412dp screen, but 78% of a 360 and 82% of a
+   * 320 — and at that point there is almost no app visible beside it, so nothing signals that a panel slid
+   * over the top of something. That is the complaint.
+   *
+   * The rule is therefore a proportion with a ceiling: **never more than 70% of the screen, never more than
+   * 280dp.** At least 30% of the app stays visible on every device. It is never wider than the stock value
+   * and is 28dp narrower on a 360 and 40dp on a 320 — a proportion was checked against a fixed subtraction
+   * precisely because the obvious `screen − 64` is *wider* than the default on a large phone.
+   *
+   * It must be read here, above the early returns below, because a hook called after them would be skipped
+   * while the app is loading and then appear once it is not — which React counts as a different number of
+   * hooks between renders and refuses to continue past.
+   */
+  const { width: screenWidth } = useWindowDimensions();
+  const drawerWidth = Math.min(screenWidth * 0.7, 280);
 
   /** Signed in? Then: has this user accepted the current version of the notice? */
   const start = useCallback(async () => {
@@ -130,17 +151,29 @@ export default function App() {
       <NoticeBanner companyId={me?.companyId} />
       <NavigationContainer ref={navRef} onReady={() => pendingTap && goTo(pendingTap)} theme={{ ...DefaultTheme, colors: { ...DefaultTheme.colors, primary: T.brand, background: T.bg, card: "#fff", text: T.text, border: T.line } }}>
         <Drawer.Navigator
+          drawerContent={(p) => <AppDrawer {...p} me={me} onSignOut={signOut} />}
           screenOptions={{
             headerStyle: { backgroundColor: T.brand },
             headerTintColor: "#fff",
             headerTitleStyle: { fontWeight: "800" },
+            /* kept, so removing the custom drawer above would still leave sane defaults behind */
             drawerActiveBackgroundColor: "rgba(47,92,36,0.1)",
             drawerActiveTintColor: T.brand,
             drawerLabelStyle: { fontWeight: "700" },
+            /* a panel, not a page: fixed width, a rounded outer edge, and the app dimmed behind it */
+            drawerStyle: {
+              width: drawerWidth,
+              backgroundColor: T.card,
+              borderTopRightRadius: 18,
+              borderBottomRightRadius: 18,
+              overflow: "hidden",
+            },
+            overlayColor: "rgba(11,20,15,0.45)",
           }}
         >
           {can("dashboard") && (
-            <Drawer.Screen name="Dashboard" options={{ title: BRAND.companyName }}>
+            /* the header keeps the company name; the menu row says what the screen is */
+            <Drawer.Screen name="Dashboard" options={{ title: BRAND.companyName, drawerLabel: "Dashboard" }}>
               {(p: any) => <Dashboard me={me} {...p} />}
             </Drawer.Screen>
           )}
