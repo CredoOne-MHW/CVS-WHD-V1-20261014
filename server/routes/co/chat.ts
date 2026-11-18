@@ -28,14 +28,31 @@ const oid = (v: any) => new mongoose.Types.ObjectId(String(v));
 const me = (req: any) => ({ id: String(req.auth.userId), name: req.auth.name as string, companyId: req.auth.companyId });
 
 /** Everyone in the company who may be messaged — names and roles only. */
-async function directory(companyId: any) {
+/**
+ * Who somebody may find and talk to, inside their own company.
+ *
+ * The company always comes from the signed-in session, never from the request, so one workspace's people
+ * can never appear in another's — that has been true since this was written and nothing here changes it.
+ *
+ * `forCustomer` is the new part. A customer signs in to talk to the business, so they see the people who
+ * work there and nobody else: other customers are left out entirely, and one customer therefore never
+ * learns that another exists. Staff are unaffected and still see everyone, customers included, because
+ * they are the ones who have to answer them.
+ */
+async function directory(companyId: any, forCustomer = false) {
+  const find: any = { companyId, scope: "company" };
+  // a staff row is anything not explicitly marked a customer, so users created before v1.9.0 count as staff
+  if (forCustomer) find.kind = { $ne: "customer" };
   const [users, roles] = await Promise.all([
-    User.find({ companyId, scope: "company" }).select("name roleId isOwner active").sort({ name: 1 }).limit(2000).lean<any[]>(),
+    User.find(find).select("name roleId isOwner active kind").sort({ name: 1 }).limit(2000).lean<any[]>(),
     Role.find({ companyId }).select("name").lean<any[]>().catch(() => []),
   ]);
   const roleName = new Map(roles.map((x: any) => [String(x._id), x.name]));
   return users.map((u) => publicMember(u, roleName.get(String(u.roleId))));
 }
+
+/** True when this person may not be shown to, or reached by, the person asking. */
+const hiddenFromCustomer = (viewer: any, target: any) => viewer?.kind === "customer" && target?.kind === "customer";
 
 /** The thread, if this person is in it. */
 async function myThread(req: any, threadId: string) {
@@ -48,7 +65,7 @@ async function myThread(req: any, threadId: string) {
 /* ───────────────────────── Who you can talk to ───────────────────────── */
 
 r.get("/chat/people", can("chats", "read"), h(async (req, res) => {
-  const list = await directory(req.auth!.companyId);
+  const list = await directory(req.auth!.companyId, req.auth!.kind === "customer");
   res.json({ people: list.filter((p) => p.userId !== me(req).id), me: list.find((p) => p.userId === me(req).id) || null, realtime: clientConfig() });
 }));
 
@@ -75,8 +92,14 @@ r.post("/chat/direct", can("chats", "create"), h(async (req, res) => {
   const b = parse(z.object({ userId: z.string().regex(/^[a-f0-9]{24}$/) }), req.body);
   const { id, companyId } = me(req);
   if (b.userId === id) throw badRequest("You cannot message yourself");
-  const other = await User.findOne({ _id: b.userId, companyId, scope: "company", active: true }).select("name roleId isOwner").lean<any>();
+  const other = await User.findOne({ _id: b.userId, companyId, scope: "company", active: true }).select("name roleId isOwner kind").lean<any>();
   if (!other) throw notFound("That person is not in this company");
+  /**
+   * Filtering the search alone would be theatre: the id is in the request, so anything that only hid
+   * names could be walked straight past by sending one. The refusal belongs here, where the thread is
+   * actually made.
+   */
+  if (hiddenFromCustomer(req.auth, other)) throw notFound("That person is not in this company");
   const pairKey = [id, b.userId].sort().join(":");
   const existing = await ChatThread.findOne({ companyId, pairKey }).lean<any>();
   if (existing) return res.json(existing);
@@ -108,8 +131,11 @@ r.post("/chat/groups", can("chats:groups", "create"), h(async (req, res) => {
   const b = parse(groupBody, req.body);
   const { id, companyId } = me(req);
   const ids = Array.from(new Set([...(b.memberIds || []), id]));
-  const users = await User.find({ _id: { $in: ids }, companyId, scope: "company", active: true }).select("name roleId isOwner").lean<any[]>();
+  const users = await User.find({ _id: { $in: ids }, companyId, scope: "company", active: true }).select("name roleId isOwner kind").lean<any[]>();
   if (users.length < 1) throw badRequest("Add at least one member");
+  // a customer cannot put another customer in a group either, for the same reason as above
+  if (req.auth!.kind === "customer" && users.some((u: any) => String(u._id) !== id && u.kind === "customer"))
+    throw badRequest("You can only add people who work at the company");
   const thread = await ChatThread.create({
     companyId,
     kind: "group",
@@ -138,7 +164,10 @@ r.put("/chat/groups/:id", can("chats:groups", "update"), h(async (req, res) => {
   if (b.name) set.name = b.name;
   if (b.about !== undefined) set.about = b.about;
   if (b.memberIds) {
-    const users = await User.find({ _id: { $in: b.memberIds }, companyId, scope: "company", active: true }).select("name isOwner").lean<any[]>();
+    const users = await User.find({ _id: { $in: b.memberIds }, companyId, scope: "company", active: true }).select("name isOwner kind").lean<any[]>();
+    // the third way into a member list, and it needs the same refusal as the other two
+    if (req.auth!.kind === "customer" && users.some((u: any) => String(u._id) !== me(req).id && u.kind === "customer"))
+      throw badRequest("You can only add people who work at the company");
     set.members = users.map((u: any) => ({ userId: u._id, name: u.name, isAdmin: !!u.isOwner, joinedAt: new Date() }));
     set.memberIds = users.map((u: any) => u._id);
   }

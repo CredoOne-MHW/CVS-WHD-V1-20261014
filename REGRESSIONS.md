@@ -66,6 +66,8 @@ checked by `test:workflow`. Mobile App Release shows the repository as "behind" 
 | 30 | A customer must never see another customer's tickets | 1.12.0 | Customer endpoints scope by the client on the sign-in, never by a permission | `test:tenancy` |
 | 31 | Registering a phone for notifications needed Chats permission, so customers and chat-less roles could never receive anything | 1.13.0 | Registering a device needs only a valid session | `test:push` |
 | 32 | A build with no Expo project id or Firebase config produces an app that silently receives nothing | 1.13.0 | The build warns loudly for each, and Super Admin shows how many phones are registered | `test:push` |
+| 33 | A customer could find every other customer of the same company in chat search — and reach them, since the member id travels in the request | 1.14.0 | The directory is filtered for a customer, and all three routes that build a member list refuse one; the number of User reads in `chat.ts` is asserted so a fourth cannot appear unnoticed | `test:tenancy` |
+| 34 | The client and lead search was reachable by a customer whose role happened to include Users | 1.14.0 | It refuses a customer sign-in outright, before the permission is consulted | `test:tenancy` |
 
 ---
 

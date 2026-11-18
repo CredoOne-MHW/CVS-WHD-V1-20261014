@@ -797,6 +797,14 @@ r.post("/integrations/events/:eventId/retry", can("integrations", "update"), h(a
  * come back inside a keystroke, and a list longer than a screenful is no more useful than a short one.
  */
 r.get("/people-lookup", can("roles:users", "read"), h(async (req, res) => {
+  /**
+   * Never a customer, whatever permissions their role happens to carry.
+   *
+   * This searches the company's clients and leads — its book of business. A role grid is configured by
+   * hand, so a company could tick Users on their customer role without realising it opens this; the
+   * refusal is here rather than left to that configuration being right.
+   */
+  if (req.auth!.kind === "customer") throw forbidden("Not available to customer sign-ins");
   const q = String(req.query.q || "").trim();
   const find: any = { ...tenant(req), deletedAt: null };
   if (q) {
