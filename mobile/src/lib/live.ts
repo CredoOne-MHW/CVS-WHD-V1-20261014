@@ -78,9 +78,60 @@ export function poller(fn: () => void, ms?: number) {
 
 /* ───────────────────────── Push ───────────────────────── */
 
+/**
+ * What happens when a notification arrives while the app is open.
+ *
+ * A message for the conversation already on screen is **not** shown as a banner — it is already visible,
+ * and a notification for something you are looking at is noise. Everything else alerts as usual. The
+ * thread on screen is recorded by the conversation itself through `setOpenThread`.
+ */
+let openThreadId: string | null = null;
+export const setOpenThread = (id: string | null) => {
+  openThreadId = id;
+};
+
 Notifications.setNotificationHandler({
-  handleNotification: async () => ({ shouldShowAlert: true, shouldPlaySound: true, shouldSetBadge: true }),
+  handleNotification: async (n) => {
+    const data: any = n.request?.content?.data || {};
+    const forThisScreen = data.kind === "chat" && openThreadId && String(data.threadId) === String(openThreadId);
+    return { shouldShowAlert: !forThisScreen, shouldPlaySound: !forThisScreen, shouldSetBadge: true };
+  },
 });
+
+/**
+ * Taps on a notification, routed to the thing the notification was about.
+ *
+ * Covers both cases: the app was already running, and the app was started by the tap — the second needs
+ * `getLastNotificationResponseAsync`, because the listener is attached after the response has gone.
+ * Without this, tapping a message notification opened the app at whatever screen it was last on, which
+ * makes the notification almost pointless.
+ */
+export function onNotificationTap(go: (data: any) => void) {
+  let done = false;
+  const handle = (resp: any) => {
+    const data = resp?.notification?.request?.content?.data;
+    if (data) go(data);
+  };
+  Notifications.getLastNotificationResponseAsync()
+    .then((resp) => {
+      if (resp && !done) handle(resp);
+    })
+    .catch(() => undefined);
+  const sub = Notifications.addNotificationResponseReceivedListener(handle);
+  return () => {
+    done = true;
+    sub.remove();
+  };
+}
+
+/** The number on the app icon. Cleared when there is nothing waiting. */
+export async function setBadge(n: number) {
+  try {
+    await Notifications.setBadgeCountAsync(Math.max(0, Number(n) || 0));
+  } catch {
+    /* some launchers do not support it; never a reason to fail */
+  }
+}
 
 /**
  * Asks once for permission and registers this phone. A refusal is not an error: the app works without

@@ -122,7 +122,7 @@ function PlanTable() {
   }
   const setType = (type: string) => setForm({ ...form, type, frequency: type === "on_demand" ? "on_demand" : form.frequency === "on_demand" ? "monthly" : form.frequency });
 
-  // Create: picking a client lists its services / products with their No of Licenses (from Lead / Client)
+  // Create: picking a client lists its services / products with their Qty (from Lead / Client)
   async function pickClient(clientId: string) {
     setForm((f: any) => ({ ...f, clientId, rows: null }));
     if (!clientId) return;
@@ -159,7 +159,7 @@ function PlanTable() {
         <table className="w-full min-w-[900px]">
           <thead>
             <tr>
-              {["Client", "Services", "Licenses", "Payment Amount", "Payment Type", "Frequency", "Starts", "Action"].map((h) => (
+              {["Client", "Services", "Qty", "Payment Amount", "Payment Type", "Frequency", "Starts", "Action"].map((h) => (
                 <th key={h} className={`th py-2.5 ${h === "Action" ? "text-right" : ""}`}>
                   {h}
                 </th>
@@ -286,11 +286,11 @@ function PlanTable() {
                 <Spinner className="h-5 w-5" />
               </div>
             )}
-            {form.rows && !form.rows.length && <p className="rounded-xl bg-amber-50 px-4 py-3 text-sm text-amber-800">This client has no services yet. Add services and their No of Licenses on the client (Client › Edit), then come back.</p>}
+            {form.rows && !form.rows.length && <p className="rounded-xl bg-amber-50 px-4 py-3 text-sm text-amber-800">This client has no services yet. Add services and their Qty on the client (Client › Edit), then come back.</p>}
             {form.rows?.map((r: any, i: number) => (
               <PlanRow key={r.serviceType} r={r} onChange={(p) => setRow(i, p)} />
             ))}
-            {form.rows?.length > 0 && <p className="text-xs text-ink-500">No of Licenses comes from the client’s services (Lead / Client › Edit) and updates here automatically. Payment Amount = Rate × Licenses.</p>}
+            {form.rows?.length > 0 && <p className="text-xs text-ink-500">Qty comes from the client’s services (Lead / Client › Edit) and updates here automatically. Payment Amount = Rate × Qty.</p>}
           </div>
         )}
         {form && form._id && <PlanRow edit r={form} onChange={(p) => setForm({ ...form, ...p })} />}
@@ -337,7 +337,7 @@ function PlanTable() {
   );
 }
 
-/** One service / product of a client: licences (read-only, from the client) + rate, type, frequency, first due date. */
+/** One service / product of a client: qty (read-only, from the client) + rate, type, frequency, first due date. */
 function PlanRow({ r, onChange, edit }: { r: any; onChange: (p: any) => void; edit?: boolean }) {
   const amount = r.rate !== "" && !isNaN(Number(r.rate)) ? round2(Number(r.rate) * (Number(r.licenses) || 1)) : null;
   const off = !edit && (!r.on || r.exists);
@@ -353,7 +353,7 @@ function PlanRow({ r, onChange, edit }: { r: any; onChange: (p: any) => void; ed
       </div>
       {!off && (
         <div className="mt-3 grid gap-3 sm:grid-cols-3">
-          <Field label="No of Licenses" hint="From the client">
+          <Field label="Qty" hint="From the client">
             <input className="input bg-[#f7f8f6] tabular-nums" readOnly value={r.licenses ?? 1} />
           </Field>
           <Field label="Rate (₹ per licence)" required>

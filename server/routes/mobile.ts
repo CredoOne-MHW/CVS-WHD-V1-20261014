@@ -8,7 +8,7 @@
 import { Router, type Request } from "express";
 import { z } from "zod";
 import multer from "multer";
-import { Company, MobileBuild } from "../models";
+import { Company, MobileBuild, PushDevice } from "../models";
 import { can } from "../middleware/auth";
 import { h, parse, notFound, badRequest, paging } from "../lib/http";
 import { putAt, getObject, deleteObject } from "../lib/s3";
@@ -80,6 +80,23 @@ export function mobileRoutes(scope: Scope) {
       signing: scope === "super" ? await signingSummary(c).catch(() => null) : null,
       setup: scope === "super" ? { ...gate, repo: buildRepo(), workflow: buildWorkflow(), ignoredWorkflow: ignoredWorkflowSetting(), ref: buildRef() || "default branch", requirements: safe(() => setupState(held), []) } : { ok: gate.ok },
       prefix: safe(() => s3Area(c.code, "app"), ""),
+      /**
+       * Whether notifications can actually reach anybody.
+       *
+       * A phone only appears here once it has obtained a push token and sent it in, which it cannot do
+       * without the Expo project id in the build — so "0 registered" is the first and clearest sign that
+       * the push credentials are missing, rather than that nobody has installed the app.
+       */
+      push: await PushDevice.aggregate([
+        { $match: { companyId: c._id } },
+        { $group: { _id: "$platform", n: { $sum: 1 }, active: { $sum: { $cond: [{ $lt: ["$failures", 5] }, 1, 0] } } } },
+      ])
+        .then((rows: any[]) => ({
+          devices: rows.reduce((a, r) => a + r.n, 0),
+          reachable: rows.reduce((a, r) => a + r.active, 0),
+          byPlatform: Object.fromEntries(rows.map((r) => [r._id || "android", r.n])),
+        }))
+        .catch(() => ({ devices: 0, reachable: 0, byPlatform: {} })),
     });
   }));
 

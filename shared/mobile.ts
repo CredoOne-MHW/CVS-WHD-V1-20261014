@@ -53,6 +53,7 @@ export const APP_SCREENS = [
   { key: "leads", label: "Leads", module: "leads", description: "The pipeline, with search and a lead's full history." },
   { key: "clients", label: "Clients", module: "clients", description: "Converted clients, their services and dues." },
   { key: "chats", label: "Chats", module: "chats", description: "One-to-one and group messages, with attachments and the scrolling notice at the top." },
+  { key: "tickets", label: "Support tickets", module: "clients:tickets", description: "Tickets raised by clients and staff. Customers see only their own, and can raise one." },
   { key: "users", label: "Users", module: "roles:users", description: "Add staff and customers, give them a role, and tie a customer to the client or lead they already are." },
   { key: "profile", label: "Profile", module: null, description: "The signed-in user, sign out, and the app's version.", always: true },
 ] as const;
