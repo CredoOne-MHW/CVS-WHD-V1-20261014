@@ -65,8 +65,19 @@ async function myThread(req: any, threadId: string) {
 /* ───────────────────────── Who you can talk to ───────────────────────── */
 
 r.get("/chat/people", can("chats", "read"), h(async (req, res) => {
-  const list = await directory(req.auth!.companyId, req.auth!.kind === "customer");
-  res.json({ people: list.filter((p) => p.userId !== me(req).id), me: list.find((p) => p.userId === me(req).id) || null, realtime: clientConfig() });
+  const { id, companyId } = me(req);
+  const forCustomer = req.auth!.kind === "customer";
+  const list = await directory(companyId, forCustomer);
+  /**
+   * A customer is a customer, so the filter above removes them from their own directory and `me` came
+   * back null. Nothing reads it today, which is exactly why it would have sat there until something did.
+   */
+  let self = list.find((p) => p.userId === id) || null;
+  if (!self && forCustomer) {
+    const u = await User.findOne({ _id: id, companyId }).select("name roleId isOwner active kind").lean<any>();
+    if (u) self = publicMember(u, undefined);
+  }
+  res.json({ people: list.filter((p) => p.userId !== id), me: self, realtime: clientConfig() });
 }));
 
 /* ───────────────────────── Threads ───────────────────────── */

@@ -98,9 +98,12 @@ const route = (path: string, method = "get") => {
 };
 
 /* the company has always come from the session — the thing that must never regress */
+const people = route("/chat/people");
 ok(
   "the people directory takes its company from the session, never the request",
-  /directory\(req\.auth!\.companyId/.test(chatSrc) && !/companyId:\s*(b|req)\.(body|query|params)/.test(chatSrc),
+  /directory\(companyId/.test(people) &&
+    /const \{ id, companyId \} = me\(req\)/.test(people) &&
+    !/companyId:\s*(b|req)\.(body|query|params)/.test(chatSrc),
   "a company id accepted from the request is a cross-workspace leak, whatever else is filtered"
 );
 
@@ -113,8 +116,13 @@ ok(
 );
 ok(
   "the search passes the viewer's own kind",
-  /directory\(req\.auth!\.companyId, req\.auth!\.kind === "customer"\)/.test(route("/chat/people")),
+  /const forCustomer = req\.auth!\.kind === "customer"/.test(people) && /directory\(companyId, forCustomer\)/.test(people),
   "a flag that is never passed is not a filter"
+);
+ok(
+  "a customer still gets their own record back",
+  /if \(!self && forCustomer\)/.test(people),
+  "the customer filter removes the viewer from their own directory, so this would otherwise return null for them"
 );
 
 /* every route that makes a member out of an id in the request */
@@ -149,6 +157,7 @@ for (const [path, method, needle] of DOORS) {
  *   3  POST /chat/groups      the members         — refused if any other is a customer
  *   4  PUT  /chat/groups/:id  the members again   — same refusal
  *   5  POST /chat/notice      ids only, no names  — a send list, discloses nobody, staff-gated
+ *   6  GET  /chat/people      the viewer's own record, by their own id — discloses them to themselves
  *
  * The count is asserted so that a sixth cannot appear unnoticed. If one is added, decide which of the
  * two shapes it is and update this list with it — the failure is the prompt to think, not a nuisance.
@@ -156,8 +165,8 @@ for (const [path, method, needle] of DOORS) {
 const userQueries = [...chatSrc.matchAll(/User\.(find|findOne)\(/g)].length;
 ok(
   "every way of looking a colleague up is accounted for",
-  userQueries === 5,
-  `${userQueries} User queries in chat.ts, 5 expected — see the list above this check.\n        ` +
+  userQueries === 6,
+  `${userQueries} User queries in chat.ts, 6 expected — see the list above this check.\n        ` +
     "A new one needs a kind filter or a refusal, and then this list updated — deliberately, not quietly."
 );
 

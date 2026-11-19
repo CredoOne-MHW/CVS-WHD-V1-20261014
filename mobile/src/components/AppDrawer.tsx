@@ -21,6 +21,7 @@
 import React from "react";
 import { View, Text, StyleSheet, Pressable, ScrollView } from "react-native";
 import type { DrawerContentComponentProps } from "@react-navigation/drawer";
+import { CommonActions, DrawerActions } from "@react-navigation/native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import { T, TYPE, withAlpha } from "../theme";
@@ -66,9 +67,22 @@ export default function AppDrawer({ state, navigation, descriptors, me, onSignOu
     };
   });
 
-  const go = (key: string, name: string) => {
-    const event = navigation.emit({ type: "drawerItemPress" as any, target: key, canPreventDefault: true } as any);
-    if (!(event as any)?.defaultPrevented) navigation.navigate(name as never);
+  /**
+   * Exactly what the library's own drawer dispatches, rather than something that behaves like it.
+   *
+   * `navigation.navigate(name)` looked equivalent and tests against the real router say it is — but the
+   * library closes the drawer explicitly when you tap the screen you are already on, and addresses the
+   * action at this navigator instead of letting it find its own way. Writing a near-equivalent of a
+   * library's own behaviour is a bet that nothing else depends on the difference. There is no reason to
+   * take that bet.
+   */
+  const go = (route: { key: string; name: string }, focused: boolean) => {
+    const event = navigation.emit({ type: "drawerItemPress", target: route.key, canPreventDefault: true });
+    if (event.defaultPrevented) return;
+    navigation.dispatch({
+      ...(focused ? DrawerActions.closeDrawer() : CommonActions.navigate({ name: route.name, merge: true })),
+      target: state.key,
+    });
   };
 
   const Row = ({ it }: { it: (typeof items)[number] }) => {
@@ -76,7 +90,7 @@ export default function AppDrawer({ state, navigation, descriptors, me, onSignOu
     const colour = it.focused ? T.brand : T.muted;
     return (
       <Pressable
-        onPress={() => go(it.key, it.name)}
+        onPress={() => go(it, it.focused)}
         android_ripple={{ color: TINT, borderless: false }}
         accessibilityRole="button"
         accessibilityState={{ selected: it.focused }}
