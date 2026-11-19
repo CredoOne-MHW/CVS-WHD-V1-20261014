@@ -75,7 +75,7 @@ checked by `test:workflow`. Mobile App Release shows the repository as "behind" 
 |---|---|---|---|---|
 | 35 | The drawer was the library's stock panel and took 78–82% of a narrow screen, leaving nothing of the app beside it — it read as a web page's menu, not an app | 1.15.0 | The width is a proportion with a ceiling, asserted never wider than the default it replaced and never past 70% on any device | `test:drawer` |
 | 36 | A custom drawer that lists its own items leaves a newly added screen unreachable, and an icon name not in the font renders as a blank box — both silent | 1.15.0 | Items are derived from the navigator's routes with an icon fallback, and every glyph name is checked against the font file | `test:drawer` |
-| 37 | A hook added below an early return crashes only on the move from loading to signed-in, never on first paint | 1.15.0 | The width hook's position is asserted to be above the first early return | `test:drawer` |
+| 37 | A hook added below an early return crashes only on the move from loading to signed-in, never on first paint | 1.15.0 | The width hook's position is asserted to be above the first early return — **superseded by row 44**, which scans every component instead of this one file | `test:drawer` |
 
 ## Things that were written into the code and are now read from a record
 
@@ -87,6 +87,7 @@ checked by `test:workflow`. Mobile App Release shows the repository as "behind" 
 | 41 | The form's rules are enforced only in the browser, while the endpoint that receives them is public | 1.16.0 | The server validates against the same shared spec — but only for browser posts to a connector that has one, so REST and webhook callers are untouched | `test:forms` |
 | 42 | The app cannot import `shared/`, so the sign-in sentence exists twice and the two copies drift | 1.16.0 | The app's copy is asserted word for word against the server's, and the app is asserted not to import from `shared/` | `test:forms` |
 | 43 | A brand image kind is accepted by the upload route and 404s when it is read back, because each route had its own list | 1.16.0 | One list, read by the upload route, the public route and the Super Admin screen | `test:forms` |
+| 44 | The conversation list threw the instant its data arrived — a hook sat below the early loading return, so the hook count changed between renders. The screen opened and then responded to nothing | 1.16.1 | **Every component in both apps** is scanned for a hook below an early return. The v1.15.0 check for this looked at one file, which is why this went unseen for four days | `test:hooks` |
 
 ---
 

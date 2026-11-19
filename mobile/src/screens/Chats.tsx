@@ -113,17 +113,26 @@ function ThreadList({ navigation, me }: any) {
     setBusy(false);
   };
 
+  /**
+   * The number on the app icon is the unread total, recomputed whenever the list is.
+   *
+   * This must stay **above** the early return below. It was written underneath it, which meant the first
+   * render — while the list was still loading — ran nine hooks and the next one, the moment the
+   * conversations arrived, ran ten. React counts hooks and refuses to continue when the number changes, so
+   * the list threw on the very render that was about to show it. That is why the screen could be opened
+   * and then would not respond to anything.
+   */
+  useEffect(() => {
+    if (!threads) return;
+    setBadge(threads.reduce((n: number, t: any) => n + Number(t.unread || 0), 0));
+  }, [threads]);
+
   if (threads === null)
     return (
       <View style={s.center}>
         <ActivityIndicator color={T.brand} />
       </View>
     );
-
-  /** The number on the app icon is the unread total, recomputed whenever the list is. */
-  useEffect(() => {
-    setBadge(threads.reduce((n: number, t: any) => n + Number(t.unread || 0), 0));
-  }, [threads]);
 
   const shown = threads.filter((t: any) => {
     const q = search.trim().toLowerCase();
