@@ -1,14 +1,32 @@
-import { useState } from "react";
-import { ActivityIndicator, KeyboardAvoidingView, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
+import { useEffect, useState } from "react";
+import { ActivityIndicator, Image, KeyboardAvoidingView, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
 import { BRAND, signIn } from "../lib/api";
+import { builtIn, cachedBrand, refreshBrand, type AppBrand } from "../lib/brand";
 import { T } from "../theme";
 
-/** The company's own sign-in. The address is part of the build, so there is nothing to choose here. */
+/**
+ * The company's own sign-in. The address is part of the build, so there is nothing to choose here.
+ *
+ * The look is no longer part of the build. It starts from what the app was built with, is replaced by the
+ * cached copy as soon as that is read, and then by the current one from the platform. The screen is
+ * complete at every one of those three moments — there is no spinner and no empty frame, because the
+ * first of them needs nothing but the app itself.
+ */
 export default function SignIn({ onDone }: { onDone: () => void }) {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
+  const [b, setB] = useState<AppBrand>(builtIn);
+
+  useEffect(() => {
+    let live = true;
+    cachedBrand().then((x) => live && setB(x));
+    refreshBrand().then((x) => x && live && setB(x));
+    return () => {
+      live = false;
+    };
+  }, []);
 
   async function submit() {
     setBusy(true);
@@ -25,12 +43,17 @@ export default function SignIn({ onDone }: { onDone: () => void }) {
 
   return (
     <KeyboardAvoidingView style={{ flex: 1, backgroundColor: T.bg }} behavior={Platform.OS === "ios" ? "padding" : undefined}>
+      {!!b.bannerUrl && <Image source={{ uri: b.bannerUrl }} style={s.banner} resizeMode="cover" />}
       <ScrollView contentContainerStyle={s.wrap}>
-        <View style={[s.logo, { backgroundColor: T.brand }]}>
-          <Text style={s.logoText}>{BRAND.companyName.slice(0, 2).toUpperCase()}</Text>
-        </View>
-        <Text style={s.title}>{BRAND.companyName}</Text>
-        <Text style={s.sub}>Sign in with the e-mail and password your administrator gave you.</Text>
+        {b.logoUrl ? (
+          <Image source={{ uri: b.logoUrl }} style={s.logoImg} resizeMode="contain" />
+        ) : (
+          <View style={[s.logo, { backgroundColor: T.brand }]}>
+            <Text style={s.logoText}>{b.initials}</Text>
+          </View>
+        )}
+        <Text style={s.title}>{b.heading}</Text>
+        <Text style={s.sub}>{b.subtitle}</Text>
 
         <View style={s.card}>
           <Text style={s.label}>E-mail</Text>
@@ -42,7 +65,12 @@ export default function SignIn({ onDone }: { onDone: () => void }) {
             {busy ? <ActivityIndicator color="#fff" /> : <Text style={s.btnText}>Sign in</Text>}
           </Pressable>
         </View>
-        <Text style={s.foot}>v{BRAND.version} (build {BRAND.build})</Text>
+        {!!b.footerNote && <Text style={s.note}>{b.footerNote}</Text>}
+        {b.showVersion && (
+          <Text style={s.foot}>
+            v{BRAND.version} (build {BRAND.build})
+          </Text>
+        )}
       </ScrollView>
     </KeyboardAvoidingView>
   );
@@ -50,6 +78,9 @@ export default function SignIn({ onDone }: { onDone: () => void }) {
 
 const s = StyleSheet.create({
   wrap: { flexGrow: 1, justifyContent: "center", padding: 24 },
+  banner: { width: "100%", height: 120 },
+  logoImg: { width: 88, height: 88, borderRadius: 44, alignSelf: "center", backgroundColor: "#fff" },
+  note: { textAlign: "center", color: T.muted, fontSize: 12, marginTop: 12 },
   logo: { alignSelf: "center", width: 64, height: 64, borderRadius: 32, alignItems: "center", justifyContent: "center" },
   logoText: { color: "#fff", fontSize: 22, fontWeight: "800" },
   title: { textAlign: "center", marginTop: 14, fontSize: 22, fontWeight: "800", color: T.text },

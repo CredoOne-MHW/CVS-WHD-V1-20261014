@@ -1,4 +1,5 @@
 import { Router } from "express";
+import { normalise as normaliseForm } from "@shared/formspec";
 import multer from "multer";
 import { ctxUpload } from "../../lib/context";
 import bcrypt from "bcryptjs";
@@ -588,6 +589,11 @@ const mcpCfg = z.object({
   defaultSource: z.string().max(60).optional(),
 });
 async function connectorConfig(type: string, cfg: any) {
+  /*
+   * The hosted form's own design. Normalised on the way in, so whatever a browser sends is stored in the
+   * one shape the public page and the intake endpoint both read. Nothing saved means the original form.
+   */
+  if (type === "qr_campaign" || type === "website_form") return cfg?.form ? { form: normaliseForm(cfg.form) } : undefined;
   if (type === "tradeindia") return parse(tradeIndiaCfg, cfg || {});
   if (type === "google_ads") return cfg ? parse(googleAdsCfg, cfg) : undefined;
   if (type === "shopify") return parse(shopifyCfg, cfg || {});
