@@ -1,3 +1,5 @@
+import { normalise as normaliseForm, validate as validateForm, visible as visibleFields } from "@shared/formspec";
+import { BRAND_ASSET_KINDS, mobileBrand } from "@shared/mobilebrand";
 import { pump } from "../lib/jobs";
 import { Router } from "express";
 import { createHmac, timingSafeEqual } from "crypto";
@@ -134,6 +136,19 @@ r.post(["/intake/:key", "/intake/:key/:token"], h(async (req, res) => {
     );
   const formPost = isBrowserForm || c.type === "website_form";
   if (formPost && (body._hp || body.website_url_hp)) return res.json({ ok: true }); // bot honeypot: pretend success
+
+  /*
+   * A company that has edited its own form gets its rules enforced here as well as in the browser.
+   *
+   * This endpoint is public, so the browser's `required` attributes are a courtesy to the visitor and
+   * nothing more — anything can post here directly. Only connectors with a saved form are checked: one
+   * that has never been edited behaves exactly as it always has, which also keeps every REST and webhook
+   * caller of a website-form connector working untouched.
+   */
+  if (isBrowserForm && c.config?.form) {
+    const problem = validateForm(normaliseForm(c.config.form), body);
+    if (problem) throw new HttpError(400, problem);
+  }
 
   if (req.headers.accept?.includes("text/html") && formPost) {
     await processIntake(c, cleanPayload(body)); // classic HTML form post → back to the hosted thank-you page
@@ -609,10 +624,10 @@ r.get("/public/branding", h(async (req, res) => {
   res.status(404).json({ error: "No workspace is set up for this address.", host, baseDomain: baseDomain() || null });
 }));
 
-/** Streams a company's logo / banner / favicon from the private S3 bucket. */
+/** Streams a company's logo / banner / favicon, or its app logo / app banner, from the private S3 bucket. */
 r.get("/public/brand-asset/:companyId/:kind", h(async (req, res) => {
-  const kind = req.params.kind as "logo" | "banner" | "favicon";
-  if (!["logo", "banner", "favicon"].includes(kind)) throw new HttpError(404, "Not found");
+  const kind = req.params.kind;
+  if (![...BRAND_ASSET_KINDS].includes(kind as any)) throw new HttpError(404, "Not found");
   const c = await Company.findOne({ _id: req.params.companyId, deletedAt: null }).select("branding").lean<any>();
   const key = c?.branding?.[`${kind}Key`];
   if (!key) throw new HttpError(404, "Not found");
@@ -622,13 +637,43 @@ r.get("/public/brand-asset/:companyId/:kind", h(async (req, res) => {
   res.send(obj.body);
 }));
 
+/**
+ * How a company's app should look before anyone signs in.
+ *
+ * The app knows its own company code because the build put it there, and asks for this once on launch. It
+ * caches what comes back, so this is never on the path between opening the app and seeing the sign-in
+ * screen — the screen draws from the cache immediately and this refreshes it behind that.
+ *
+ * Public on purpose: it is the screen shown to someone who has not signed in yet. It carries a name, two
+ * colours, some wording and two image addresses, and nothing else — no counts, no people, no settings.
+ */
+r.get("/public/app-brand", h(async (req, res) => {
+  const code = String(req.query.code || "").trim().toUpperCase();
+  if (!code) throw new HttpError(400, "Pass the company code");
+  const c = await Company.findOne({ code, deletedAt: null }).select("name code branding whiteLabel status").lean<any>();
+  if (!c) throw new HttpError(404, "No company with that code");
+  const v = c.branding?.updatedAt ? new Date(c.branding.updatedAt).getTime() : 0;
+  const asset = (kind: string, key?: string) => (key ? `/api/public/brand-asset/${c._id}/${kind}?v=${v}` : undefined);
+  res.setHeader("Cache-Control", "public, max-age=300");
+  res.json(mobileBrand(c, asset));
+}));
+
 /** Public info for the hosted QR / campaign form page. */
 r.get("/forms/:key", h(async (req, res) => {
   const c = await loadConnector(req.params.key);
   if (!["qr_campaign", "website_form"].includes(c.type)) throw new HttpError(404, "Not a form connector");
   const company = await Company.findById(c.companyId).lean<any>();
   const brand = company ? publicBranding(company) : null;
-  res.json({ title: c.name, company: brand?.shortName || company?.name, campaign: c.defaultCampaign, logoUrl: brand?.logoUrl, themeColor: brand?.themeColor, accentColor: brand?.accentColor });
+  res.json({
+    title: c.name,
+    company: brand?.shortName || company?.name,
+    campaign: c.defaultCampaign,
+    logoUrl: brand?.logoUrl,
+    themeColor: brand?.themeColor,
+    accentColor: brand?.accentColor,
+    /* a connector with nothing saved gets the original four fields and the original wording back */
+    form: normaliseForm(c.config?.form),
+  });
 }));
 
 /* ───────────── Vercel Cron ───────────── */

@@ -9,6 +9,7 @@ import { api, fmtDate } from "@/lib/api";
 import { PageHeader, Btn, Modal, Field, Badge, Spinner, Confirm, JsonView, useToast } from "@/components/ui";
 import { usePerm } from "@/components/Shell";
 import { Tabs } from "@/components/Logs";
+import { FormBuilder } from "@/components/FormBuilder";
 import { SsoConnect } from "@/components/SsoConnect";
 import { isSsoType, SSO_INFO, type SsoType } from "@shared/sso";
 
@@ -72,6 +73,8 @@ const HELP: Record<string, string> = {
 const PULL_ONLY = ["mcp", "tradeindia", "web_prospect"]; // nothing to paste anywhere — we fetch
 const HAS_PULL = ["mcp", "tradeindia", "indiamart", "woocommerce", "web_prospect"];
 const HAS_SETTINGS = ["mcp", "tradeindia", "indiamart", "google_ads", "shopify", "woocommerce", "web_prospect"];
+/** Connectors whose leads arrive from a page this platform hosts, so the company can design that page. */
+const HAS_FORM = ["qr_campaign", "website_form"];
 const PUSH_PLATFORMS = ["indiamart", "justdial", "sulekha", "shopify"]; // one self-authenticating Lead URL
 const blankCfg = (t: string) =>
   t === "mcp" ? { ...blankMcp } : t === "tradeindia" ? { ...blankTradeIndia } : t === "google_ads" ? { ...blankGoogleAds } : t === "shopify" ? { ...blankShopify } : t === "woocommerce" ? { ...blankWoo } : t === "web_prospect" ? { ...blankProspect, sources: { ...blankProspect.sources } } : undefined;
@@ -313,7 +316,7 @@ export default function Integrations() {
 }
 
 function ConnectorDrawer({ c, onClose, onChanged, onReconnect }: { c: any; onClose: () => void; onChanged: () => void; onReconnect: (c: any) => void }) {
-  const [tab, setTab] = useState<"setup" | "settings" | "mapping" | "deliveries">("setup");
+  const [tab, setTab] = useState<"setup" | "settings" | "form" | "mapping" | "deliveries">("setup");
   const [pushUrl, setPushUrl] = useState<string | undefined>();
   const [platformKey, setPlatformKey] = useState("");
   const [running, setRunning] = useState(false);
@@ -336,7 +339,7 @@ function ConnectorDrawer({ c, onClose, onChanged, onReconnect }: { c: any; onClo
     setMap(c.fieldMap || {});
     setEvents(null);
     setLastRun(c.lastRun ? { ...c.lastRun, at: c.lastRunAt } : null);
-    setCfg(HAS_SETTINGS.includes(c.type) ? { ...(blankCfg(c.type) || {}), ...(c.config || {}) } : null);
+    setCfg(HAS_SETTINGS.includes(c.type) || HAS_FORM.includes(c.type) ? { ...(blankCfg(c.type) || {}), ...(c.config || {}) } : null);
     setNewSecret("");
     setPlatformKey("");
     setPushUrl(c.pushUrl);
@@ -357,10 +360,31 @@ function ConnectorDrawer({ c, onClose, onChanged, onReconnect }: { c: any; onClo
         tabs={[
           { key: "setup", label: "Setup" },
           ...(HAS_SETTINGS.includes(c.type) ? [{ key: "settings" as const, label: "Settings" }] : []),
+          ...(HAS_FORM.includes(c.type) ? [{ key: "form" as const, label: "Form" }] : []),
           { key: "mapping" as const, label: "Field mapping" },
           { key: "deliveries" as const, label: "Deliveries" },
         ]}
       />
+      {tab === "form" && HAS_FORM.includes(c.type) && (
+        <div className="space-y-4">
+          <FormBuilder cfg={cfg} set={setCfg} />
+          {perm.update && (
+            <Btn
+              onClick={async () => {
+                try {
+                  await api(`/co/integrations/${c._id}`, { method: "PUT", body: { config: cfg } });
+                  toast("ok", "Form saved — the hosted page uses it straight away");
+                  onChanged();
+                } catch (e: any) {
+                  toast("err", e.message);
+                }
+              }}
+            >
+              Save form
+            </Btn>
+          )}
+        </div>
+      )}
       {tab === "setup" && c.type === "web_prospect" && <ProspectPanel c={c} onChanged={onChanged} />}
       {tab === "setup" && isSsoType(c.type) && <SsoPanel c={c} onChanged={onChanged} onClose={onClose} onReconnect={() => onReconnect(c)} onDelete={() => setDel(true)} />}
       {tab === "setup" && HAS_PULL.includes(c.type) && c.type !== "web_prospect" && (

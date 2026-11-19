@@ -1,3 +1,4 @@
+import { BRAND_ASSET_KINDS } from "@shared/mobilebrand";
 import { Router } from "express";
 import bcrypt from "bcryptjs";
 import { z } from "zod";
@@ -640,14 +641,14 @@ const BRAND_IMAGE_MAX_MB = 8; // a side banner is a large image by nature — 3 
 const imgUpload = ctxUpload(multer({ storage: multer.memoryStorage(), limits: { fileSize: BRAND_IMAGE_MAX_MB * 1024 * 1024 } }));
 r.post("/companies/:id/brand-asset/:kind", can("companies", "update"), imgUpload.single("file"), h(async (req, res) => {
   const kind = req.params.kind;
-  if (!["logo", "banner", "favicon"].includes(kind)) throw badRequest("kind must be logo, banner or favicon");
+  if (![...BRAND_ASSET_KINDS].includes(kind as any)) throw badRequest(`kind must be one of ${BRAND_ASSET_KINDS.join(", ")}`);
   if (!req.file) throw badRequest("Attach an image");
   if (!/^image\/(png|jpe?g|webp|svg\+xml|x-icon|vnd\.microsoft\.icon)$/.test(req.file.mimetype)) throw badRequest("Use PNG, JPG, WebP, SVG or ICO");
   const c = await Company.findOne({ _id: req.params.id, deletedAt: null });
   if (!c) throw notFound();
   const old = c.branding?.[`${kind}Key`];
   const folder = await folderFor(c);
-  const sub = kind === "banner" ? "banner" : "logo"; // favicon lives with the logo
+  const sub = kind === "banner" || kind === "appBanner" ? "banner" : "logo"; // favicon and the app logo live with the logo
   const { key } = await putObject(`${folder}/${sub}`, `${kind}-${req.file.originalname}`, req.file.buffer, req.file.mimetype);
   c.set(`branding.${kind}Key`, key);
   c.set("branding.updatedAt", new Date());

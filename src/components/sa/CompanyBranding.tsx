@@ -8,8 +8,9 @@ import { TemplatePicker } from "@/components/TemplatePicker";
 import { LogoDisc } from "@/components/LogoDisc";
 import { TemplateThumb, LOGIN_TEMPLATES, type LoginBrand } from "@/components/LoginTemplates";
 import { SIDEBAR_STYLES, CORNER_STYLES, FONTS } from "@shared/platform";
+import { DEFAULT_SUBTITLE } from "@shared/mobilebrand";
 
-export type Kind = "logo" | "banner" | "favicon";
+export type Kind = "logo" | "banner" | "favicon" | "appLogo" | "appBanner";
 const slugify = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 63);
 const bytes = (n: number) => (n > 1048576 ? `${(n / 1048576).toFixed(1)} MB` : n > 1024 ? `${Math.round(n / 1024)} KB` : `${n} B`);
 
@@ -267,6 +268,8 @@ export function BrandingTab({
           </div>
         </section>
 
+        <MobileBrandSection form={form} setB={setB} previews={previews} pick={pick} removeImage={removeImage} />
+
         <section>
           <h3 className="mb-1 flex items-center gap-2 font-bold">
             <Smartphone className="h-4 w-4 text-hive-700" /> App themes
@@ -406,5 +409,135 @@ export function WhiteLabelTab({ form, set }: { form: any; set: (k: string, v: an
         <textarea className="input min-h-[140px] font-mono text-xs" placeholder=".page-watermark { display: none; }" value={w.customCss || ""} onChange={(e) => setW("customCss", e.target.value)} />
       </section>
     </div>
+  );
+}
+
+/* ───────────────────────── Mobile app branding ───────────────────────── */
+
+/**
+ * How the company's phone app looks before anyone signs in.
+ *
+ * Until now this screen could not be changed at all: it drew two initials in a circle, the company name,
+ * and one sentence written into the app's source. Anything else needed a new build.
+ *
+ * Everything here reaches an **installed** app without rebuilding it — the app asks for these values on
+ * launch and caches them. The app icon and splash screen are the exception and stay on the Mobile App tab,
+ * because those are part of the installed package and only a build can change them.
+ */
+function MobileBrandSection({
+  form,
+  setB,
+  previews,
+  pick,
+  removeImage,
+}: {
+  form: any;
+  setB: (k: string, v: any) => void;
+  previews: Partial<Record<Kind, string>>;
+  pick: (kind: Kind, f?: File | null) => void;
+  removeImage: (kind: Kind) => void;
+}) {
+  const m = form.branding.mobile || {};
+  const setM = (k: string, v: any) => setB("mobile", { ...m, [k]: v });
+  const appName = form.whiteLabel?.appNames?.mobile || form.branding.shortName || form.name || "Leads";
+  const logo = previews.appLogo || (m.useCompanyLogo === false ? undefined : previews.logo);
+
+  return (
+    <section>
+      <h3 className="mb-1 flex items-center gap-2 font-bold">
+        <Smartphone className="h-4 w-4 text-hive-700" /> Mobile app branding
+      </h3>
+      <p className="mb-3 text-xs text-ink-500">
+        The app’s sign-in screen. Changes reach phones that already have the app — no new build needed. The app icon and splash screen are on the <b>Mobile App</b> tab, because only a build can change those.
+      </p>
+
+      <div className="grid gap-5 lg:grid-cols-[1fr_240px]">
+        <div className="space-y-4">
+          <div className="grid gap-4 sm:grid-cols-2">
+            {(
+              [
+                ["appLogo", "App logo", "Shown in a circle above the name"],
+                ["appBanner", "Sign-in banner", "Optional strip across the top · 1200×600"],
+              ] as [Kind, string, string][]
+            ).map(([kind, label, hint]) => (
+              <div key={kind}>
+                <p className="label">{label}</p>
+                <label className={`group relative flex cursor-pointer flex-col items-center justify-center overflow-hidden rounded-2xl border-2 border-dashed border-ink-400/25 bg-[#fafbf9] text-center transition hover:border-hive-400 hover:bg-hive-50 ${kind === "appBanner" ? "aspect-[2/1]" : "aspect-square"}`}>
+                  {previews[kind] ? (
+                    <img src={previews[kind]} alt="" className={`h-full w-full ${kind === "appBanner" ? "object-cover" : "object-contain p-4"}`} />
+                  ) : (
+                    <>
+                      <ImagePlus className="h-6 w-6 text-ink-400 group-hover:text-hive-600" />
+                      <span className="mt-1.5 px-2 text-[11.5px] text-ink-500">{hint}</span>
+                    </>
+                  )}
+                  <input type="file" accept="image/png,image/jpeg,image/webp,image/svg+xml" className="sr-only" onChange={(e) => pick(kind, e.target.files?.[0])} />
+                </label>
+                {previews[kind] && (
+                  <button type="button" className="mt-1.5 flex items-center gap-1 text-xs font-semibold text-ink-500 hover:text-red-600" onClick={() => removeImage(kind)}>
+                    <X className="h-3.5 w-3.5" /> Remove
+                  </button>
+                )}
+              </div>
+            ))}
+          </div>
+
+          <label className="flex items-start gap-3 rounded-2xl border border-ink-400/15 bg-white p-3 text-sm">
+            <input type="checkbox" className="mt-0.5 h-4 w-4 accent-hive-700" checked={m.useCompanyLogo !== false} onChange={(e) => setM("useCompanyLogo", e.target.checked)} />
+            <span>
+              <b>Use the company logo when there is no app logo</b>
+              <span className="block text-ink-500">Untick to show the two-letter circle instead, which is what the app did before this existed.</span>
+            </span>
+          </label>
+
+          <div className="grid gap-4 sm:grid-cols-2">
+            <Field label="Heading" hint={`Blank uses “${appName}”`}>
+              <input className="input" placeholder={appName} value={m.heading || ""} onChange={(e) => setM("heading", e.target.value)} />
+            </Field>
+            <Field label="Footer note" hint="Small line above the version">
+              <input className="input" placeholder="Optional" value={m.footerNote || ""} onChange={(e) => setM("footerNote", e.target.value)} />
+            </Field>
+            <Field label="Line under the heading" className="sm:col-span-2">
+              <textarea className="input min-h-[60px]" placeholder={DEFAULT_SUBTITLE} value={m.subtitle || ""} onChange={(e) => setM("subtitle", e.target.value)} />
+            </Field>
+          </div>
+
+          <label className="flex items-center gap-2 text-sm">
+            <input type="checkbox" className="h-4 w-4 accent-hive-700" checked={m.showVersion !== false} onChange={(e) => setM("showVersion", e.target.checked)} />
+            Show the version and build number at the bottom
+          </label>
+        </div>
+
+        {/* the screen itself, at the size it is drawn on a phone */}
+        <div className="lg:sticky lg:top-0 lg:self-start">
+          <p className="label">Sign-in screen</p>
+          <div className="overflow-hidden rounded-[22px] border border-ink-400/20 bg-[#f6f7f5] shadow-lift" style={{ width: 240 }}>
+            {previews.appBanner && <img src={previews.appBanner} alt="" className="h-20 w-full object-cover" />}
+            <div className="px-4 pb-5 pt-6 text-center">
+              {logo ? (
+                <img src={logo} alt="" className="mx-auto h-16 w-16 rounded-full bg-white object-contain" />
+              ) : (
+                <div className="mx-auto flex h-16 w-16 items-center justify-center rounded-full text-lg font-extrabold text-white" style={{ background: form.branding.themeColor || "#2f5c24" }}>
+                  {appName.slice(0, 2).toUpperCase()}
+                </div>
+              )}
+              <p className="mt-3 text-[15px] font-extrabold text-ink-900">{m.heading || appName}</p>
+              <p className="mt-1 text-[10.5px] leading-snug text-ink-500">{m.subtitle || DEFAULT_SUBTITLE}</p>
+              <div className="mt-4 space-y-2 rounded-2xl border border-ink-400/15 bg-white p-3 text-left">
+                <p className="text-[9.5px] font-bold text-ink-700">E-mail</p>
+                <div className="h-6 rounded-lg border border-ink-400/20" />
+                <p className="text-[9.5px] font-bold text-ink-700">Password</p>
+                <div className="h-6 rounded-lg border border-ink-400/20" />
+                <div className="mt-1 flex h-7 items-center justify-center rounded-lg text-[10.5px] font-bold text-white" style={{ background: form.branding.themeColor || "#2f5c24" }}>
+                  Sign in
+                </div>
+              </div>
+              {!!m.footerNote && <p className="mt-2.5 text-[9.5px] text-ink-500">{m.footerNote}</p>}
+              {m.showVersion !== false && <p className="mt-1.5 text-[9.5px] text-ink-400">v1.15.0 (build 1)</p>}
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
   );
 }

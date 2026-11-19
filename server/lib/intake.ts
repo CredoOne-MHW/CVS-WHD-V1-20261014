@@ -1,3 +1,4 @@
+import { normalise as normaliseForm, visible as visibleFields, CORE_KEYS as CORE_FORM_KEYS } from "@shared/formspec";
 import { Lead, IntakeEvent, Connector, Company } from "../models";
 import { normalizePhone, LEAD_STATUSES } from "../../shared/constants";
 import { sha256, decrypt } from "./crypto";
@@ -241,8 +242,31 @@ export async function adapt(connector: any, payload: any): Promise<{ leads: Lead
     }
     case "telephony":
       return { leads: [{ ...mapFields(payload, fm), source: "phone_call", medium: payload.CallType || payload.call_type || "call" }], naturalId: payload.CallSid || payload.call_id || payload.uuid };
-    default:
-      return { leads: [mapFields(payload, fm)], naturalId: payload.lead_id || payload.id || payload.submission_id };
+    default: {
+      const lead = mapFields(payload, fm);
+      /*
+       * Fields the company added to its own form.
+       *
+       * `mapFields` keeps only the keys it recognises — name, phone, e-mail and so on — and silently drops
+       * everything else. That is right for a webhook full of a platform's bookkeeping, and completely wrong
+       * for a field somebody deliberately added to their form: without this, a new question would appear on
+       * the form, a visitor would answer it, and the answer would be thrown away with nothing logged.
+       *
+       * Only the keys the saved form actually declares are carried over, so this cannot be used to push
+       * arbitrary data onto a lead by posting extra keys.
+       */
+      const spec = connector.config?.form;
+      if (spec) {
+        const extras: Record<string, any> = {};
+        for (const f of visibleFields(normaliseForm(spec))) {
+          if (CORE_FORM_KEYS.includes(f.key as any)) continue;
+          const v = payload?.[f.key];
+          if (v != null && v !== "") extras[f.label || f.key] = f.type === "checkbox" ? (/^(y|yes|true|1|on)$/i.test(String(v)) ? "Yes" : "No") : String(v).trim();
+        }
+        if (Object.keys(extras).length) lead.customFields = { ...(lead.customFields || {}), ...extras };
+      }
+      return { leads: [lead], naturalId: payload.lead_id || payload.id || payload.submission_id };
+    }
   }
 }
 
