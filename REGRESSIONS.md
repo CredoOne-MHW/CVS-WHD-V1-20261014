@@ -77,6 +77,17 @@ checked by `test:workflow`. Mobile App Release shows the repository as "behind" 
 | 36 | A custom drawer that lists its own items leaves a newly added screen unreachable, and an icon name not in the font renders as a blank box — both silent | 1.15.0 | Items are derived from the navigator's routes with an icon fallback, and every glyph name is checked against the font file | `test:drawer` |
 | 37 | A hook added below an early return crashes only on the move from loading to signed-in, never on first paint | 1.15.0 | The width hook's position is asserted to be above the first early return | `test:drawer` |
 
+## Things that were written into the code and are now read from a record
+
+| # | What would go wrong | Release | What stops it now | Check |
+|---|---|---|---|---|
+| 38 | Every printed QR code points at a form that has never been edited — if "nothing saved" stops meaning "exactly as it was", every leaflet already in circulation now leads somewhere different | 1.16.0 | The untouched form is asserted field by field against the wording of the page it replaced, including the four keys that fill the lead's columns and which two are required | `test:forms` |
+| 39 | A question is added to a form, a visitor answers it, and `mapFields` drops the answer — nothing fails and nothing is logged | 1.16.0 | Answers to added fields are carried onto the lead as custom fields, and only for keys the saved form declares | `test:forms` |
+| 40 | A built-in field is re-keyed or switched off, so the form still looks right while the lead's phone or name column stops filling | 1.16.0 | Core keys and types are fixed; name and phone can be neither renamed, switched off nor made optional | `test:forms` |
+| 41 | The form's rules are enforced only in the browser, while the endpoint that receives them is public | 1.16.0 | The server validates against the same shared spec — but only for browser posts to a connector that has one, so REST and webhook callers are untouched | `test:forms` |
+| 42 | The app cannot import `shared/`, so the sign-in sentence exists twice and the two copies drift | 1.16.0 | The app's copy is asserted word for word against the server's, and the app is asserted not to import from `shared/` | `test:forms` |
+| 43 | A brand image kind is accepted by the upload route and 404s when it is read back, because each route had its own list | 1.16.0 | One list, read by the upload route, the public route and the Super Admin screen | `test:forms` |
+
 ---
 
 ## Before every release
